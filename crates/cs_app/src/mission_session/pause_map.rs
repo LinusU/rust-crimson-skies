@@ -162,16 +162,20 @@ impl PauseButtonKind {
     }
 }
 
-/// The chart: a bitmap drawn at a position and clipped to a rectangle.
+/// The chart: the `CLIP` rectangle is a *source* rectangle of the bitmap
+/// (the island art, past the label panel and inside the border), and
+/// `POSITION` is where that rectangle's corner lands on the screen. Drawing
+/// the whole bitmap at `POSITION` instead leaves the label panel's strip and a
+/// 40 % blank gap (#1984).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PauseChart {
     /// The bitmap (`HA-m1MAP`).
     pub bitmap: String,
-    /// Where the bitmap's corner is drawn.
+    /// Where the source rectangle's corner is drawn.
     pub at: Point,
-    /// The clip rectangle's top-left corner.
+    /// The source rectangle's top-left corner, in bitmap pixels.
     pub clip_top_left: Point,
-    /// The clip rectangle's bottom-right corner.
+    /// The source rectangle's bottom-right corner, in bitmap pixels.
     pub clip_bottom_right: Point,
     /// The `WORLD` rectangle `[left, top, right, bottom]`, kept as authored.
     /// Its mapping onto the chart is unread (the player icon needs it).
@@ -805,8 +809,8 @@ pub fn pin_flag_bitmap(authored: &str, row: Option<&PauseObjectiveRow>) -> Strin
     }
 }
 
-/// The candidate chart mapping: the `WORLD` rectangle is the chart's clip
-/// rectangle, world `x` runs left to right and world `z` runs **down** (the
+/// The candidate chart mapping: the `WORLD` rectangle is the chart as drawn
+/// (the source rectangle's size at `POSITION`), world `x` runs left to right and world `z` runs **down** (the
 /// record's second `WORLD` component is `-z`, descending top to bottom).
 /// Candidate only: no engine decode and no owner capture fits it
 /// (`2026-10-22-pause-map-live-objectives.md`). `None` for a degenerate
@@ -823,8 +827,8 @@ pub fn world_to_chart_pixel(chart: &PauseChart, x: f32, z: f32) -> Option<(f32, 
     let clip_width = (chart.clip_bottom_right.x - chart.clip_top_left.x) as f32;
     let clip_height = (chart.clip_bottom_right.y - chart.clip_top_left.y) as f32;
     Some((
-        chart.clip_top_left.x as f32 + u * clip_width,
-        chart.clip_top_left.y as f32 + v * clip_height,
+        chart.at.x as f32 + u * clip_width,
+        chart.at.y as f32 + v * clip_height,
     ))
 }
 
@@ -1041,12 +1045,13 @@ fn spawn_pause_map(
     for (name, at) in &scene.background {
         image_part(commands, name, (at.x as f32, at.y as f32), Z_BACKGROUND);
     }
-    // The chart is clipped: a container at the clip rectangle holds the
-    // bitmap at its position relative to the container's corner.
+    // The chart shows the bitmap's source rectangle at `POSITION`: a container
+    // of the rectangle's size at `POSITION` holds the bitmap shifted so the
+    // rectangle's corner sits on the container's corner.
     let chart = &scene.chart;
     let clip = Placed {
-        x: chart.clip_top_left.x as f32,
-        y: chart.clip_top_left.y as f32,
+        x: chart.at.x as f32,
+        y: chart.at.y as f32,
         width: (chart.clip_bottom_right.x - chart.clip_top_left.x) as f32,
         height: (chart.clip_bottom_right.y - chart.clip_top_left.y) as f32,
     };
@@ -1068,8 +1073,8 @@ fn spawn_pause_map(
                     absolute(),
                     ImageNode::new(handle),
                     Placed {
-                        x: (chart.at.x - chart.clip_top_left.x) as f32,
-                        y: (chart.at.y - chart.clip_top_left.y) as f32,
+                        x: -chart.clip_top_left.x as f32,
+                        y: -chart.clip_top_left.y as f32,
                         width,
                         height,
                     },
@@ -1305,7 +1310,7 @@ fn spawn_live(
         (live.player, clip, handle_of(&scene.own_ship))
         && let Some((px, py)) = world_to_chart_pixel(&scene.chart, fix.x, fix.z)
     {
-        let origin = scene.chart.clip_top_left;
+        let origin = scene.chart.at;
         commands.entity(clip).with_children(|parent| {
             parent.spawn((
                 absolute(),

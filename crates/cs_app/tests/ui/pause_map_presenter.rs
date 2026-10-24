@@ -586,20 +586,21 @@ fn accept_parity3_pause_map_02b_numbering_rules_are_the_named_functions() {
     assert_eq!(pin_flag_bitmap("pin6", None), "pin6");
     assert_eq!(pin_flag_bitmap("pin6", Some(&row(true))), "pin2");
 
-    // The candidate mapping puts Lighthouse (-7898, 280, -5765) where the
-    // record's clip rectangle says (the data finding's 405, 248).
+    // The candidate mapping puts Lighthouse (-7898, 280, -5765) at the
+    // finding's (405, 248) in the clip rectangle, moved to where the source
+    // rectangle is drawn: (405 - 211 + 16, 248 - 51 + 19).
     let source = synthetic_source();
     let (x, y) = world_to_chart_pixel(&source.scene.chart, -7898.0, -5765.0).expect("a mapping");
     assert!(
-        (x - 405.0).abs() < 1.0 && (y - 248.0).abs() < 1.0,
+        (x - 210.0).abs() < 1.0 && (y - 216.0).abs() < 1.0,
         "{x},{y}"
     );
-    // The corners map onto the clip rectangle's corners.
+    // The corners map onto the drawn chart's corners.
     let [left, top, right, bottom] = source.scene.chart.world;
     let (cx, cy) = world_to_chart_pixel(&source.scene.chart, left, -top).expect("corner");
-    assert_eq!((cx.round(), cy.round()), (211.0, 51.0));
+    assert_eq!((cx.round(), cy.round()), (16.0, 19.0));
     let (cx, cy) = world_to_chart_pixel(&source.scene.chart, right, -bottom).expect("corner");
-    assert_eq!((cx.round(), cy.round()), (784.0, 551.0));
+    assert_eq!((cx.round(), cy.round()), (589.0, 519.0));
 
     // Heading: the nose along -z is the chart's top; +x is clockwise a quarter.
     let up = player_fix(Vec3::ZERO, Quat::IDENTITY);
@@ -726,8 +727,8 @@ fn accept_parity3_pause_map_02b_the_player_icon_follows_position_and_heading() {
     let expect = |x: f32, z: f32| {
         let (px, py) = world_to_chart_pixel(&source.scene.chart, x, z).expect("a mapping");
         (
-            bevy::prelude::Val::Px(px - 211.0 - 16.0),
-            bevy::prelude::Val::Px(py - 51.0 - 16.0),
+            bevy::prelude::Val::Px(px - 16.0 - 16.0),
+            bevy::prelude::Val::Px(py - 19.0 - 16.0),
         )
     };
     let (left, top, _, rotation) = icon_node(&mut app);
@@ -786,4 +787,38 @@ fn accept_parity3_pause_map_02b_reads_the_objective_rows_icon_and_list_records()
             .unwrap_or_else(|| panic!("no {name}"));
         assert_eq!((art.width(), art.height()), (width, height), "{name}");
     }
+}
+
+/// #1984: `CLIP` is the bitmap's source rectangle and `POSITION` where it is
+/// drawn, so the island art fills the screen from the frame's left edge
+/// rather than starting at the clip's screen offset.
+#[test]
+fn accept_parity3_pause_map_02a_chart_draws_the_source_rectangle_at_its_position() {
+    use bevy::prelude::{Node, Overflow, Val};
+    let source = synthetic_source();
+    let chart_colour = colour_of(&source, "ha-m1map");
+    let mut app = app();
+    tap_escape(&mut app);
+    run(&mut app, 3);
+
+    let container = {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Node, (With<PauseMapPart>, bevy::prelude::Without<ImageNode>)>();
+        query
+            .iter(app.world())
+            .find(|node| node.overflow == Overflow::clip())
+            .map(|node| (node.left, node.top, node.width, node.height))
+            .expect("the chart's clip container")
+    };
+    assert_eq!(
+        container,
+        (Val::Px(16.0), Val::Px(19.0), Val::Px(573.0), Val::Px(500.0)),
+        "the container is the source rectangle's size, drawn at POSITION"
+    );
+    assert_eq!(
+        picture_at(&mut app, -211.0, -51.0),
+        Some(chart_colour),
+        "the bitmap is shifted so the source rectangle's corner meets the container's"
+    );
 }
