@@ -7,7 +7,8 @@
 
 use cs_app::cli::{self, CliRequest};
 use cs_app::mission_session::{
-    Check, ConvoyKillMetrics, MissionSmokeMode, SmokeMeasurements, evaluate_mission_smoke,
+    Check, ConvoyKillMetrics, ConvoyLayoutRow, MissionSmokeMode, SmokeMeasurements,
+    evaluate_mission_smoke,
 };
 use cs_sim::damage::ActorId;
 
@@ -28,6 +29,38 @@ fn rows(in_play: bool) -> Vec<(String, Option<bool>)> {
     TRUCKS
         .iter()
         .map(|node| ((*node).to_owned(), Some(in_play)))
+        .collect()
+}
+
+/// Every truck's drawn layout before the first shot: the intact side drawn,
+/// the `destroyed` one hidden.
+fn layout_before() -> Vec<ConvoyLayoutRow> {
+    TRUCKS
+        .iter()
+        .map(|node| ConvoyLayoutRow {
+            node: (*node).to_owned(),
+            intact_visible: 4,
+            intact_hidden: 0,
+            destroyed_visible: 0,
+            destroyed_hidden: usize::from(*node != "bridge_truck01") * 3,
+            has_destroyed_layout: *node != "bridge_truck01",
+        })
+        .collect()
+}
+
+/// Every truck's drawn layout after the settle frames: the intact side
+/// hidden, the `destroyed` one drawn where the record authors it.
+fn layout_after() -> Vec<ConvoyLayoutRow> {
+    TRUCKS
+        .iter()
+        .map(|node| ConvoyLayoutRow {
+            node: (*node).to_owned(),
+            intact_visible: 0,
+            intact_hidden: 4,
+            destroyed_visible: usize::from(*node != "bridge_truck01") * 3,
+            destroyed_hidden: 0,
+            has_destroyed_layout: *node != "bridge_truck01",
+        })
         .collect()
 }
 
@@ -62,6 +95,8 @@ fn full() -> ConvoyKillMetrics {
         frames_delivered: true,
         intact_permille: 900,
         destroyed_permille: 900,
+        layout_before: layout_before(),
+        layout_after: layout_after(),
         gave_up_on: None,
     }
 }
@@ -117,6 +152,7 @@ fn accept_convoy_kill_empty_stage_fails_every_check() {
     for id in [
         "convoy_destroyed_by_fire_key",
         "convoy_observation_follows",
+        "convoy_layout_swaps",
         "convoy_frames_drawn",
     ] {
         assert!(
@@ -137,7 +173,7 @@ fn accept_convoy_kill_whole_sequence_passes() {
 #[test]
 fn accept_convoy_kill_each_missing_piece_fails_its_own_check() {
     type Mutate = fn(&mut ConvoyKillMetrics);
-    let cases: [(&str, Mutate); 7] = [
+    let cases: [(&str, Mutate); 11] = [
         ("convoy_destroyed_by_fire_key", |c| {
             c.destroyed.pop();
         }),
@@ -153,6 +189,22 @@ fn accept_convoy_kill_each_missing_piece_fails_its_own_check() {
         }),
         ("convoy_frames_drawn", |c| c.destroyed_permille = 10),
         ("convoy_frames_drawn", |c| c.frames_delivered = false),
+        // The bug this check exists for: the destroyed truck keeps drawing
+        // its intact layout.
+        ("convoy_layout_swaps", |c| {
+            c.layout_after[0].intact_visible = 4
+        }),
+        // The wreck layout staying hidden is the other half of the defect.
+        ("convoy_layout_swaps", |c| {
+            c.layout_after[1].destroyed_visible = 0;
+            c.layout_after[1].destroyed_hidden = 3;
+        }),
+        // A wreck drawn before the first shot is as wrong as one never drawn.
+        ("convoy_layout_swaps", |c| {
+            c.layout_before[2].destroyed_visible = 3
+        }),
+        // No visible-node-state sample at all is a loud failure, not a pass.
+        ("convoy_layout_swaps", |c| c.layout_after.clear()),
     ];
     for (id, mutate) in cases {
         let mut convoy = full();
