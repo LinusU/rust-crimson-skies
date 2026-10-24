@@ -118,8 +118,8 @@ impl PlaneRecord {
 /// # Errors
 ///
 /// [`DraftRecordError::Refused`] when the record's stores are not storable;
-/// the actor is then returned unchanged inside the error's caller (it is
-/// consumed only on success).
+/// the actor is consumed either way, so a caller that wants to keep it clones
+/// first.
 pub fn commit_record(
     actor: ScenarioActorSpec,
     record: &PlaneRecord,
