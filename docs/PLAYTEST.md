@@ -752,6 +752,28 @@ photographs the restarted mission (`frame_dbNNNNN_replayed.png`); the check
 `debrief_replay_restarts_the_mission` needs a new session generation, no
 terminal, no `AppExit` and a mostly non-black frame. Use `--smoke-seconds 60`.
 
+#### The success mode, part A (#2081 `M01-SMOKE-SUCCESS-A`)
+
+```sh
+target/release/cs --cs-path /path/to/retail --mission M01 \
+  --smoke-seconds 120 --smoke-success --capture-dir private/evidence/M01-SMOKE-SUCCESS-A
+```
+
+`--smoke-success` (valid only with `--mission … --smoke-seconds`, not with the
+other modes) is the first stage of a scripted win of "The Lost Treasure"
+(`ZBD/C3/M01`, route in `docs/findings/2026-10-24-m01-c3-win-route-census.md`).
+Part A waits 60 frames after the player has control, then **places the player**
+(a labelled test placement, re-applied every 6 frames) 120 m from the
+`shipwreck` site, inside `OBJECTIVE12`'s 200 m radius, and records which blocks
+the mission host's lifecycle report listed as completed. It photographs the
+site on arrival (`frame_scNNNNN_success_near.png`) and once `OBJECTIVE27`
+(woken 2 s after `OBJECTIVE12`) has completed (`…_success_marked.png`), and
+judges `success_proximity_block_completed`, `success_mark_block_completed`,
+`success_frames_drawn` and `smoke_shots_delivered`. `report.json` carries a
+`success` section. Nothing is written to the damage authority or the host. The
+later beats (drop-off landing, Medusa wave, hydrogen fire, docking) are #2082.
+See `docs/findings/2026-10-24-m01-smoke-success-a.md`.
+
 #### The crash mode (#1857 `PARITY4-CRASH-E`)
 
 ```sh
