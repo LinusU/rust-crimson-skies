@@ -22,9 +22,10 @@ use std::sync::OnceLock;
 use cs_app::mission_start::AIRFRAME_TABLE;
 use cs_app::ui::instant_action::{
     DIFFICULTY_UNMEASURED_REASON, DirectoryInputs, FACTION_UNMEASURED_REASON, IA_CATALOG_CLAIM,
-    IA_PRESET_CLAIM, IaAction, IaEdit, IaScreen, InstantActionFlow, LOADOUT_UNMEASURED_REASON,
-    LowerError, RetailCatalogError, directory_presets, directory_roster, lower_preset,
-    lower_preset_roster, preset_seed, retail_instant_action_catalog,
+    IA_PRESET_CLAIM, IA_WINGMAN_BASE_ROLE, IA_WINGMAN_FOLLOWER_ROLE, IaAction, IaEdit, IaScreen,
+    InstantActionFlow, LOADOUT_UNMEASURED_REASON, LowerError, RetailCatalogError,
+    directory_presets, directory_roster, lower_preset, lower_preset_roster, preset_seed,
+    retail_instant_action_catalog,
 };
 use cs_content::ai::{DeclaredSkillTier, DifficultyTier};
 use cs_content::instant_action::{
@@ -258,19 +259,33 @@ fn accept_f49_d_03_retail_every_preset_lowers_to_its_declared_actors() {
                 }
             }
 
-            // Wingmen: one slot each, plane unmeasured. An undeclared count is
-            // the executable's default of none (#1573).
+            // Wingmen: one slot each, flying the record's `wingman_plane`.
+            // No retail descriptor declares the key, so they keep the
+            // initialiser's row 5 (#1639); an undeclared count is the
+            // executable's default of none (#1573).
             let wingmen = on(ScenarioSide::Ally);
             let expected = aircraft.wingmen().unwrap_or(0);
             assert_eq!(wingmen.len(), expected as usize, "{}", preset.id());
             assert!(lowered.unmeasured.is_empty());
             for wingman in wingmen {
-                assert!(wingman.geometry.is_err(), "no wingman plane is measured");
+                assert_eq!(
+                    wingman
+                        .geometry
+                        .as_ref()
+                        .expect("the engine default wingman plane lowers")
+                        .as_content(),
+                    &table_airframe("Devastator")
+                );
             }
 
             // Enemy groups, in record order, then the ace.
             let enemies = on(ScenarioSide::Enemy);
-            assert_eq!(enemies.len(), aircraft.enemy_groups().len() + 1);
+            // The spawn routine seats the named ace for `dogfight_ace` only.
+            let seats_ace = preset.original_mission_type() == Some("dogfight_ace");
+            assert_eq!(
+                enemies.len(),
+                aircraft.enemy_groups().len() + usize::from(seats_ace)
+            );
             for (entry, group) in enemies.iter().zip(aircraft.enemy_groups()) {
                 let plane = group.plane().expect("every retail group names a plane");
                 assert_eq!(
@@ -295,17 +310,19 @@ fn accept_f49_d_03_retail_every_preset_lowers_to_its_declared_actors() {
                     Some(format!("group{}", group.index()).as_str())
                 );
             }
-            let ace = enemies.last().expect("the ace is the last enemy entry");
-            assert_eq!(ace.role.as_deref(), Some("ace"));
-            assert_eq!(
-                ace.geometry
-                    .as_ref()
-                    .expect("the ace plane lowers")
-                    .as_content(),
-                &table_airframe(aircraft.ace().plane().expect("an ace plane"))
-            );
-            assert_eq!(ace.label.as_deref(), aircraft.ace().name_label());
-            assert_eq!(ace.skill, Some(DeclaredSkillTier::Ace));
+            if seats_ace {
+                let ace = enemies.last().expect("the ace is the last enemy entry");
+                assert_eq!(ace.role.as_deref(), Some("ace"));
+                assert_eq!(
+                    ace.geometry
+                        .as_ref()
+                        .expect("the ace plane lowers")
+                        .as_content(),
+                    &table_airframe(aircraft.ace().plane().expect("an ace plane"))
+                );
+                assert_eq!(ace.label.as_deref(), aircraft.ace().name_label());
+                assert_eq!(ace.skill, Some(DeclaredSkillTier::Ace));
+            }
             checked += 1;
         }
     }
@@ -720,6 +737,7 @@ fn spawn_list(count: usize) -> Vec<u8> {
 struct Descriptor<'a> {
     player_plane: Option<&'a str>,
     wingmen: Option<u32>,
+    wingman_plane: Option<&'a str>,
     enemy_plane: &'a str,
     enemy_skill: &'a str,
     offered: &'a [&'a str],
@@ -730,6 +748,7 @@ impl Default for Descriptor<'_> {
         Self {
             player_plane: Some("Fury"),
             wingmen: Some(2),
+            wingman_plane: None,
             enemy_plane: "Kestrel",
             enemy_skill: "veteran",
             offered: &["dogfight_ace", "dogfight_squadron"],
@@ -749,6 +768,10 @@ fn descriptor_bytes(descriptor: &Descriptor<'_>) -> Vec<u8> {
     if let Some(count) = descriptor.wingmen {
         children.push(zrd_text("num_wingmen"));
         children.push(zrd_list(vec![zrd_int(count)]));
+    }
+    if let Some(plane) = descriptor.wingman_plane {
+        children.push(zrd_text("wingman_plane"));
+        children.push(wrapped_text(plane));
     }
     let mut spawn = Vec::new();
     for name in descriptor.offered {
@@ -845,7 +868,7 @@ fn accept_f49_d_03_a_plane_outside_the_airframe_table_is_refused_by_name() {
         enemy_plane: "Zeppelin9",
         ..Descriptor::default()
     });
-    let error = directory_roster(&bad, &inputs, &span(&inputs))
+    let error = directory_roster(&bad, "dogfight_ace", &inputs, &span(&inputs))
         .expect_err("an unknown enemy plane is not defaulted");
     let RetailCatalogError::UnknownPlane { role, plane, .. } = &error else {
         panic!("expected UnknownPlane, got {error:?}");
@@ -858,7 +881,7 @@ fn accept_f49_d_03_a_plane_outside_the_airframe_table_is_refused_by_name() {
         ..Descriptor::default()
     });
     assert!(matches!(
-        directory_roster(&bad_player, &inputs, &span(&inputs)),
+        directory_roster(&bad_player, "dogfight_ace", &inputs, &span(&inputs)),
         Err(RetailCatalogError::UnknownPlane { role, .. }) if role == "player_plane"
     ));
 }
@@ -868,8 +891,13 @@ fn accept_f49_d_03_a_plane_the_option_table_does_not_offer_is_refused() {
     // The fixture's own airframe list holds none of the executable's rows.
     let options = synthetic_scenario_options();
     let inputs = inputs(&options);
-    let error = directory_roster(&directory(&Descriptor::default()), &inputs, &span(&inputs))
-        .expect_err("a plane outside the option table is refused");
+    let error = directory_roster(
+        &directory(&Descriptor::default()),
+        "dogfight_ace",
+        &inputs,
+        &span(&inputs),
+    )
+    .expect_err("a plane outside the option table is refused");
     assert!(
         matches!(error, RetailCatalogError::PlaneNotOffered { .. }),
         "{error:?}"
@@ -885,7 +913,7 @@ fn accept_f49_d_03_a_skill_outside_the_measured_vocabulary_is_refused() {
         ..Descriptor::default()
     });
     assert!(matches!(
-        directory_roster(&bad, &inputs, &span(&inputs)),
+        directory_roster(&bad, "dogfight_ace", &inputs, &span(&inputs)),
         Err(RetailCatalogError::UnknownSkill { skill, .. }) if skill == "legend"
     ));
 }
@@ -1184,5 +1212,79 @@ fn accept_f49_d_03_a_partial_option_table_keeps_only_unmeasured_lists_empty() {
         )
         .validate(),
         Err(ScenarioSchemaError::EmptyOptionTable { what: "loadouts" })
+    ));
+}
+
+/// The wingmen fly the descriptor's `wingman_plane` when it declares one and
+/// the initialiser's row 5 (an inferred value) when it does not; the ace is
+/// seated for `dogfight_ace` only and the wingman template follows the type.
+#[test]
+fn accept_f49_d_03_fu_rules_roster_synthetic_the_roster_follows_the_type_and_the_wingman_plane() {
+    let options = options_with_real_airframes();
+    let inputs = inputs(&options);
+    let airframe = |actor: &ScenarioActorSpec| match actor.airframe() {
+        Resolved::Known(known) => known.value.clone(),
+        Resolved::Unknown { .. } => panic!("the wingman airframe is measured"),
+    };
+
+    // No `wingman_plane`: row 5, recorded as inferred from the absent key.
+    let presets = directory_presets(&directory(&Descriptor::default()), &inputs)
+        .expect("a well-formed descriptor assembles");
+    let by_type = |presets: &[InstantActionPreset], name: &str| {
+        presets
+            .iter()
+            .find(|preset| preset.original_mission_type() == Some(name))
+            .unwrap_or_else(|| panic!("a {name} preset"))
+            .parameters()
+            .roster()
+            .clone()
+    };
+    let ace_roster = by_type(&presets, "dogfight_ace");
+    let squadron_roster = by_type(&presets, "dogfight_squadron");
+    for roster in [&ace_roster, &squadron_roster] {
+        let wingmen = roster.actors_on(ScenarioSide::Ally);
+        assert_eq!(wingmen.len(), 2);
+        for wingman in wingmen {
+            assert_eq!(airframe(wingman), table_airframe("Devastator"));
+            let Resolved::Known(known) = wingman.airframe() else {
+                unreachable!("checked above")
+            };
+            assert_eq!(known.provenance.class, ClaimStatus::Inferred);
+        }
+    }
+    // The ace only under `dogfight_ace`; the template only under the squadron.
+    assert_eq!(ace_roster.actors_on(ScenarioSide::Enemy).len(), 2);
+    assert_eq!(squadron_roster.actors_on(ScenarioSide::Enemy).len(), 1);
+    assert_eq!(
+        ace_roster.actors_on(ScenarioSide::Ally)[0].role(),
+        Some(IA_WINGMAN_FOLLOWER_ROLE)
+    );
+    assert_eq!(
+        squadron_roster.actors_on(ScenarioSide::Ally)[0].role(),
+        Some(IA_WINGMAN_BASE_ROLE)
+    );
+
+    // A declared `wingman_plane` is resolved through the table, not defaulted.
+    let declared = directory(&Descriptor {
+        wingman_plane: Some("Kestrel"),
+        ..Descriptor::default()
+    });
+    let presets = directory_presets(&declared, &inputs).expect("assembles");
+    for actor in by_type(&presets, "dogfight_ace").actors_on(ScenarioSide::Ally) {
+        assert_eq!(airframe(actor), table_airframe("Kestrel"));
+        let Resolved::Known(known) = actor.airframe() else {
+            unreachable!("checked above")
+        };
+        assert_eq!(known.provenance.class, ClaimStatus::ObservedTool);
+    }
+
+    // A name outside the table is refused by name, as for every other plane.
+    let bad = directory(&Descriptor {
+        wingman_plane: Some("Nonesuch"),
+        ..Descriptor::default()
+    });
+    assert!(matches!(
+        directory_roster(&bad, "dogfight_ace", &inputs, &span(&inputs)),
+        Err(RetailCatalogError::UnknownPlane { role, .. }) if role == "wingman_plane"
     ));
 }

@@ -44,10 +44,11 @@ use cs_content::ai::DeclaredSkillTier;
 use cs_content::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use cs_content::environment::EnvironmentId;
 use cs_content::instant_action::{
-    IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError, IaWingmen,
-    InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec,
-    ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed,
-    ScenarioSide, measured_ia_victory_rules, retail_scenario_options_with_pilots,
+    IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError,
+    IaWingmanPlane, IaWingmanTemplate, IaWingmen, InstantActionCatalog, InstantActionPreset,
+    RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec, ScenarioOptions, ScenarioParameters,
+    ScenarioRoster, ScenarioSchemaError, ScenarioSeed, ScenarioSide, ia_spawns_named_ace,
+    ia_wingman_template, measured_ia_victory_rules, retail_scenario_options_with_pilots,
     survey_retail_instant_action,
 };
 use cs_content::world::WorldId;
@@ -75,8 +76,6 @@ pub const IA_FACTION_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.faction";
 pub const IA_LOADOUT_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.loadout";
 /// Unmeasured: the actors' survivability.
 pub const IA_SURVIVABILITY_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.survivability";
-/// Unmeasured: the wingmen's planes.
-pub const IA_WINGMAN_PLANE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.wingman-plane";
 /// Unmeasured: an enemy group without a plane.
 pub const IA_GROUP_PLANE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.group-plane";
 /// Unmeasured: the preset title.
@@ -103,9 +102,11 @@ pub const SURVIVABILITY_UNMEASURED_REASON: &str = "neither the ia.zrd descriptor
      per-group value it sets around the call is the GameIntensity console variable (always 1, \
      a difficulty value, not mortality), so whether an actor is mortal is not measured \
      (docs/findings/2026-10-18-f49-d-03-fu-faction-survivability.md)";
-/// Why a wingman's plane is unmeasured.
-pub const WINGMAN_PLANE_UNMEASURED_REASON: &str = "the ia.zrd descriptor declares a wingman \
-     count but no wingman plane key";
+/// The role of a wingman seated as the airframe row's `w` follower record.
+pub const IA_WINGMAN_FOLLOWER_ROLE: &str = "wingman";
+/// The role of a wingman seated as the airframe row's `base` record (the plain
+/// aircraft an enemy group of that airframe also uses).
+pub const IA_WINGMAN_BASE_ROLE: &str = "wingman_base";
 /// Why a preset's title is unmeasured.
 pub const TITLE_UNMEASURED_REASON: &str = "the original's Instant Action preset titles are not \
      measured (F49-D.01 records the identities, not the display names)";
@@ -368,8 +369,11 @@ fn actor(
     .map_err(schema)
 }
 
-/// The roster one directory's descriptor declares, with the executable's own
-/// defaults for a `player_plane` / `num_wingmen` it leaves out.
+/// The roster the executable's spawn routine (`0x45a390`) seats for one
+/// directory under one mission type: the declared aircraft, with the
+/// executable's own defaults for a `player_plane` / `num_wingmen` /
+/// `wingman_plane` the descriptor leaves out, and without the named ace for
+/// every type but `dogfight_ace`.
 ///
 /// # Errors
 ///
@@ -377,6 +381,7 @@ fn actor(
 /// the airframe table or option table and for a skill outside the vocabulary.
 pub fn directory_roster(
     directory: &IaDirectory,
+    mission_type: &str,
     inputs: &DirectoryInputs<'_>,
     source: &SourceSpan,
 ) -> Result<ScenarioRoster, RetailCatalogError> {
@@ -418,21 +423,39 @@ pub fn directory_roster(
         &subject,
     )?);
 
+    // The wingmen fly the record's `wingman_plane`; no retail descriptor
+    // declares the key, so they keep the initialiser's row 5. The vehicle
+    // record they are seated as depends on the mission type (the role names
+    // it).
     let wingmen = directory.wingmen();
     let wingman_provenance = match wingmen {
         IaWingmen::Declared(_) => &provenance,
         IaWingmen::EngineDefault(_) => &default_provenance,
     };
+    let (wingman_airframe, wingman_plane_provenance) = match directory.wingman_plane() {
+        IaWingmanPlane::Declared(plane) => (
+            known(resolve_airframe(&plane, "wingman_plane", inputs)?),
+            wingman_provenance.clone(),
+        ),
+        IaWingmanPlane::EngineDefault { index } => (
+            Resolved::Known(Known::new(
+                resolve_airframe_index(index, "wingman_plane", inputs)?,
+                default_provenance.clone(),
+            )),
+            default_provenance.clone(),
+        ),
+    };
+    let wingman_role = match ia_wingman_template(mission_type) {
+        Some(IaWingmanTemplate::Base) => IA_WINGMAN_BASE_ROLE,
+        Some(IaWingmanTemplate::Follower) | None => IA_WINGMAN_FOLLOWER_ROLE,
+    };
     for slot in 0..wingmen.count() {
         actors.push(actor(
             ScenarioSide::Ally,
             slot,
-            "wingman",
-            unknown(
-                IA_WINGMAN_PLANE_UNMEASURED_CLAIM,
-                WINGMAN_PLANE_UNMEASURED_REASON,
-            )?,
-            wingman_provenance,
+            wingman_role,
+            wingman_airframe.clone(),
+            &wingman_plane_provenance,
             &subject,
         )?);
     }
@@ -471,8 +494,11 @@ pub fn directory_roster(
     // The named ace. The descriptor states no side for it; it is seated on the
     // enemy side beside the `enemy_*` groups, which the finding records as an
     // inference from the key set rather than a measured side.
+    //
+    // The spawn routine seats the ace for `dogfight_ace` only.
     let ace = directory.aircraft().ace();
-    if ace.plane().is_some() || ace.skill().is_some() || ace.name_label().is_some() {
+    let seats_ace = ia_spawns_named_ace(mission_type).unwrap_or(true);
+    if seats_ace && (ace.plane().is_some() || ace.skill().is_some() || ace.name_label().is_some()) {
         let airframe = match ace.plane() {
             Some(plane) => known(resolve_airframe(plane, "ace", inputs)?),
             None => unknown(
@@ -549,8 +575,6 @@ pub fn directory_presets(
         )),
         Err(reason) => unknown(IA_ENVIRONMENT_CLAIM, reason)?,
     };
-    let roster = directory_roster(directory, inputs, &source)?;
-
     let mut presets = Vec::new();
     for ((preset_id, scenario_id), offered) in directory
         .preset_ids()
@@ -559,6 +583,7 @@ pub fn directory_presets(
         .zip(directory.offered())
     {
         let mission_type = offered.mission_type();
+        let roster = directory_roster(directory, mission_type, inputs, &source)?;
         let mut parameters = ScenarioParameters::new_unmeasured_rules(
             world.clone(),
             environment.clone(),
