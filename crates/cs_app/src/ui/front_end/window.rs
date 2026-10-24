@@ -275,8 +275,7 @@ impl HubState {
         let Some(pilot) = &self.pilot else {
             return;
         };
-        self.page
-            .set_feed(pilot.hub_feed(self.page.airframe_names()));
+        pilot.feed_hub(&mut self.page);
         if let Some(feed) = pilot.purchase_feed() {
             match self.page.set_purchase_feed(feed) {
                 Ok(_) => {}
@@ -2294,6 +2293,11 @@ fn name_step(
             // A new pilot's start state is `fAllowAll` = 0: the profile's
             // value is unread (docs/findings/2026-10-24-parity5-new-pilot-start-state.md).
             hub.pilot = super::pilot_plane::PilotPlane::new_pilot(false, default_loadout);
+            if SmokeScene::from_env() == SmokeScene::Hangar
+                && let Some(pilot) = hub.pilot.as_mut()
+            {
+                seed_smoke_planes(pilot);
+            }
             hub.feed_pilot();
             match flow.as_mut() {
                 Some(flow) => {
@@ -3713,6 +3717,23 @@ fn smoke_planes() -> Vec<Option<super::construction_hangar::SavedPlane>> {
     ]
 }
 
+/// The Sell hangar smoke's stand-in saved planes, as records in the pilot's
+/// store (kind, airframe and the working plane's other words), selected
+/// record 5 and [`SMOKE_CASH`]. Synthetic: the owner-command smoke only.
+fn seed_smoke_planes(pilot: &mut super::pilot_plane::PilotPlane) {
+    for (slot, plane) in smoke_planes().into_iter().enumerate() {
+        let Some(plane) = plane else {
+            continue;
+        };
+        let mut words = pilot.working_words().to_vec();
+        words[0] = plane.kind as i32;
+        words[0x2c / 4] = plane.airframe as i32;
+        pilot.save_plane(slot, &plane.name, words);
+    }
+    pilot.select(5);
+    pilot.set_cash(SMOKE_CASH as i64);
+}
+
 /// The deterministic pass over the Sell hangar (#2063): the cabin, the Plane
 /// Name dialog and its OK (the hub), Sell, the list opened and a row picked,
 /// Sell on it (the yes/no box), N, Sell and Y (the sale), Sell on the kept
@@ -4889,7 +4910,7 @@ pub(super) fn shell_app_with(
     let audio_page = audio_page_setup(request, &screens, &layout);
     let previous = previous_missions_setup(request, &screens, &layout);
     let plane = plane_name_setup(request, &screens, &layout);
-    let mut hub = construction_hub_setup(request, &screens, &layout);
+    let hub = construction_hub_setup(request, &screens, &layout);
     if hub.is_some() {
         // The airframes' blueprints, which no pane row names (#2051).
         for airframe in 0..super::construction_stats::AIRFRAMES as u32 {
@@ -4898,12 +4919,6 @@ pub(super) fn shell_app_with(
                 art.entry(name.to_ascii_lowercase()).or_insert(artwork);
             }
         }
-    }
-    if request.smoke.is_some()
-        && scene == SmokeScene::Hangar
-        && let Some(page) = hub.as_mut()
-    {
-        page.set_saved_planes(smoke_planes(), 5, SMOKE_CASH);
     }
     if previous.is_some()
         && let Some(artwork) = screens.graphic_artwork(super::previous_missions::ICON_ART)
