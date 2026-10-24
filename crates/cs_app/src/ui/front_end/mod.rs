@@ -96,6 +96,7 @@ mod memento;
 mod movie;
 mod notice_view;
 mod original;
+mod pane_transform;
 mod paths;
 mod pilot_page;
 mod pilot_view;
@@ -161,6 +162,10 @@ pub use original::{
     FlightCheckSelectionError, FlightCheckSlot, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
     OriginalScreens, SCREEN_SECTIONS, ScreenHandlers, ScreenRefusal, ScreenReport, ScreenScripts,
     UnboundButton, UnboundReason, script_member,
+};
+pub use pane_transform::{
+    CABIN_MEMENTO, CABIN_MEMENTO_POSITION, HALF_PIXEL_BIAS, PERSPECTIVE_DISTANCE, PaneTransform,
+    SCALE_UNIT, TURN_RADIANS, radians as pane_rotate_radians,
 };
 pub use paths::{
     NavigationInputs, PathReview, PathStep, StepOutcome, SuppliedInput, review_navigation,
