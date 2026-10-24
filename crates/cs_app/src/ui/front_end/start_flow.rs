@@ -237,8 +237,7 @@ pub struct NotImplemented {
 /// blocks release, it never passes); none is left. (Previous Missions was
 /// built by #1956: [`super::previous_missions`]; Change Memento by #1957:
 /// [`super::memento`]; the Plane Name dialog by #1958: [`super::plane_name`].)
-pub const NOT_IMPLEMENTED: &[NotImplemented] = &[
-}];
+pub const NOT_IMPLEMENTED: &[NotImplemented] = &[];
 
 /// What the Plane Name dialog's OK opens: `planeconstruction.script`, the
 /// construction screen proper. Its presenter is not built (the dialog before
