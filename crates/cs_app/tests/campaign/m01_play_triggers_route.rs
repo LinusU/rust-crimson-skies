@@ -1,3 +1,14 @@
+//! **Not the owner's M01.** This route was measured on `ZBD/C1C/M01`, work
+//! order **M06 "The Red Menace"** (`label("M06")` below), under the M01-PLAY
+//! names it was written with. The owner's M01 "The Lost Treasure" is
+//! `ZBD/C3/M01` (`docs/findings/2026-10-17-m01-archive-decision.md`): it has no
+//! `workersvoyagezep`, no engine part chains and different block meanings, so
+//! nothing below (blocks 2, 5, 7, 8, 10, 14..17, 23) applies to it. Do not
+//! build a C3/M01 route on this file; the C3/M01 win route is in
+//! `docs/findings/2026-10-24-m01-c3-win-route-census.md` and
+//! `m01_c3_win_route_census.rs`. The test names keep their `m01_play_triggers_route`
+//! prefix only because the committed evidence report selects them by it.
+//!
 //! Acceptance suite M01-PLAY-TRIGGERS (#1439): the **headless scripted route**
 //! reaches M01's own `INSTANTWIN`.
 //!
