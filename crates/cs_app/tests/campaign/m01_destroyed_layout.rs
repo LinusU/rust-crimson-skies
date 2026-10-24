@@ -322,6 +322,22 @@ fn accept_m01_destroyed_layout_retail_bound_slots_keep_nested_targets_separate()
             );
         }
     }
+
+    // No target's `destroyed` layout owns another bound target's root: the
+    // pass asserts each slot for exactly one target, so a wreck subtree that
+    // swallowed a live target's nodes would draw them past the target's own
+    // state. M01's data nests targets only under intact presentations.
+    for outer in &binding.targets {
+        for inner in &binding.targets {
+            assert!(
+                inner.index == outer.index || !outer.destroyed_slots.contains(&inner.index),
+                "{}'s destroyed layout contains {}'s root (slot {})",
+                outer.node,
+                inner.node,
+                inner.index
+            );
+        }
+    }
 }
 
 /// **On the composed retail stage a destroyed convoy truck draws its wreck
