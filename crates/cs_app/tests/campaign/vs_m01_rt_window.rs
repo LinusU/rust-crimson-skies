@@ -311,6 +311,7 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         damage_trail: None,
         wing_fire: None,
         flak_effect: None,
+        flak_trails: None,
         launch_cinematic: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),
         cache_root: scratch.join("cache"),

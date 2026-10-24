@@ -233,9 +233,12 @@ pub use external_view::{
 };
 pub use flak_burst_fx::{
     FLAK_EFFECT_ANIMATION, FLAK_EFFECT_MEMBER, FLAK_FLICKER_SEQUENCE, FLAK_FX_DESIGN_CLAIM,
-    FlakBurstFxPlugin, FlakBurstFxReport, FlakEffectDefinition, FlakEffectError,
-    FlakEffectResource, FlakFlash, FlakFlicker, FlashStep, FlickerStep, PendingFlakBursts,
+    FLAK_TRAILS_ANIMATION, FLAK_TRAILS_DESIGN_CLAIM, FLAK_TRAILS_MEMBER, FlakBurstFxPlugin,
+    FlakBurstFxReport, FlakEffectDefinition, FlakEffectError, FlakEffectResource, FlakFlash,
+    FlakFlicker, FlakTrail, FlakTrailBody, FlakTrailsDefinition, FlakTrailsResource, FlashStep,
+    FlickerStep, PendingFlakBursts, TrailBody, TrailLaunch, TrailMotion, TrailPuffer,
     definition_from, flash_range_at, flicker_color_at, flickers, read_flak_effect,
+    read_flak_trails, trail_launch, trails_from,
 };
 pub use flak_round::{
     BURST_IMPACT_ROW, BurstCause, FLAK_RECORD, FlakFireRefusal, FlakRecord, FlakRecordError,

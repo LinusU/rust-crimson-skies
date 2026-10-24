@@ -314,6 +314,9 @@ pub struct MissionStage {
     /// The measured `flak_effect` a flak round's burst presents (FLAK-C3,
     /// #1885). `Some` only for M01's retail stage.
     pub flak_effect: Option<super::flak_burst_fx::FlakEffectDefinition>,
+    /// The measured `call_flak_trails` that effect calls (FLAK-C3-TRAILS,
+    /// #1925). `Some` only for M01's retail stage.
+    pub flak_trails: Option<super::flak_burst_fx::FlakTrailsDefinition>,
     /// The measured length of the launch cinematic that holds the player's
     /// control after Fly Mission (#1663). `None` for a stage with no launch
     /// cinematic: every synthetic stage and every mission but M01.
@@ -715,6 +718,14 @@ pub fn stage_for(
     } else {
         None
     };
+    let flak_trails = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::flak_burst_fx::read_flak_trails(install_root)
+                .map_err(MissionCompositionError::FlakEffect)?,
+        )
+    } else {
+        None
+    };
     let world_group = WorldGroup::new(&plan.group_dir).map_err(|error| {
         MissionCompositionError::Identity(format!(
             "the world group {:?} is not a valid spelling: {error}",
@@ -911,6 +922,7 @@ pub fn stage_for(
         damage_trail,
         wing_fire,
         flak_effect,
+        flak_trails,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
@@ -1460,6 +1472,9 @@ fn add_composition(
     // flak round's burst.
     if let Some(effect) = &stage.flak_effect {
         app.insert_resource(crate::mission_session::FlakEffectResource(effect.clone()));
+    }
+    if let Some(trails) = &stage.flak_trails {
+        app.insert_resource(crate::mission_session::FlakTrailsResource(trails.clone()));
     }
     app.add_plugins(crate::mission_session::FlakBurstFxPlugin);
 

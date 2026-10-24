@@ -171,6 +171,7 @@ mod accept_flak_b3_turret_fire;
 mod accept_flak_b_turret_runtime;
 mod accept_flak_c1_trace;
 mod accept_flak_c3_burst_fx;
+mod accept_flak_c3_trails;
 mod accept_flak_c4_sounds;
 mod accept_flak_c5_smoke;
 mod accept_flak_c_round_and_effect;

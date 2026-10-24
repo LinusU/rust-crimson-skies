@@ -315,7 +315,7 @@ pub fn puff_pose(puff: &BurstPuff, age_ticks: u64, tick_hz: f32) -> (Vec3, f32) 
     (puff.origin + puff.velocity * travelled, fade)
 }
 
-fn build_art(
+pub(super) fn build_art(
     source: Option<Res<BurstPuffSourceResource>>,
     art: Option<Res<BurstPuffArt>>,
     mut images: ResMut<Assets<Image>>,
@@ -364,24 +364,39 @@ pub(super) fn spawn_burst_puffs(
     for burst in bursts {
         report.bursts_drawn += 1;
         for (puff, texture) in plan_burst(&art.definition, burst, tick_hz) {
-            let material = materials.add(StandardMaterial {
-                base_color: Color::WHITE,
-                base_color_texture: art.textures.get(texture).cloned(),
-                unlit: true,
-                alpha_mode: AlphaMode::Blend,
-                cull_mode: None,
-                ..Default::default()
-            });
-            commands.spawn((
-                puff,
-                Mesh3d(art.mesh.clone()),
-                MeshMaterial3d(material),
-                Transform::from_translation(puff.origin).with_scale(Vec3::splat(puff.size)),
-                Visibility::Visible,
-            ));
+            spawn_puff(&mut commands, &art, &mut materials, puff, texture);
             report.puffs_spawned += 1;
         }
     }
+}
+
+/// Spawns one puff with the art's mesh and the `texture`-th texture (taken
+/// modulo the number of textures the art holds).
+pub(super) fn spawn_puff(
+    commands: &mut Commands,
+    art: &BurstPuffArt,
+    materials: &mut Assets<StandardMaterial>,
+    puff: BurstPuff,
+    texture: usize,
+) {
+    let material = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: art
+            .textures
+            .get(texture % art.textures.len().max(1))
+            .cloned(),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..Default::default()
+    });
+    commands.spawn((
+        puff,
+        Mesh3d(art.mesh.clone()),
+        MeshMaterial3d(material),
+        Transform::from_translation(puff.origin).with_scale(Vec3::splat(puff.size)),
+        Visibility::Visible,
+    ));
 }
 
 fn advance_burst_puffs(
