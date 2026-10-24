@@ -91,6 +91,7 @@ pub mod construction_armor_paint;
 pub mod construction_hub;
 mod construction_hub_view;
 pub mod construction_panels;
+pub mod construction_slots;
 mod flight_check_view;
 mod flow;
 mod import_dialog;

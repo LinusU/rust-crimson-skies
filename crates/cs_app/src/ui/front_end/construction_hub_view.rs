@@ -13,6 +13,7 @@ use cs_content::ui_layout::AspectFit;
 
 use super::construction_hub::HubPage;
 use super::construction_panels::ChoicePanel;
+use super::construction_slots::SlotPanel;
 use super::previous_missions_view::{CAPTION_Z, Canvas, DEFAULT_SIZE, Z, argb};
 use super::shell::{SECTION_SURFACE, ShellRect};
 
@@ -124,6 +125,8 @@ pub(super) fn spawn_page(
         );
     } else if let Some(panel) = page.choice_panel(page.selected()) {
         draw_choice_panel(&mut canvas, panel);
+    } else if let Some(panel) = page.slot_panel(page.selected()) {
+        draw_slot_panel(&mut canvas, panel);
     } else if page.panel_built(page.selected()) {
         draw_armor_paint_panel(&mut canvas, page);
     } else {
@@ -294,4 +297,79 @@ fn draw_item(
             z,
         );
     }
+}
+
+/// The Guns or Hardpoints panel: its texts, every position's closed box with
+/// the chosen entry and, while one is open, its list. The description box
+/// stays empty (its text source is unread).
+fn draw_slot_panel(canvas: &mut Canvas<'_>, panel: &SlotPanel) {
+    for text in panel.texts() {
+        canvas.text(
+            text.rect,
+            &text.text,
+            text.size.map_or(DEFAULT_SIZE, |size| size as f32),
+            argb(text.color),
+            text.justify,
+            Z + 0.5,
+        );
+    }
+    let line = |rect: ShellRect| ShellRect {
+        x: rect.x + 4,
+        y: rect.y + 2,
+        width: rect.width.saturating_sub(8),
+        height: rect.height,
+    };
+    for slot in 0..panel.kind().slots() {
+        let Some(dropdown) = panel.dropdown(slot) else {
+            continue;
+        };
+        canvas.block(dropdown.rect, argb(GROUND), Z + 0.1);
+        canvas.frame(dropdown.rect, argb(FRAME), Z + 0.3);
+        if let Some(option) = panel
+            .selected(slot)
+            .and_then(|index| panel.options().get(index))
+        {
+            canvas.text(
+                line(dropdown.rect),
+                &option.name,
+                DEFAULT_SIZE + 2.0,
+                argb(ITEM_TEXT),
+                0,
+                Z + 0.2,
+            );
+        }
+    }
+    let Some(slot) = panel.open_slot() else {
+        return;
+    };
+    let Some(dropdown) = panel.dropdown(slot) else {
+        return;
+    };
+    for (index, option) in panel.options().iter().enumerate() {
+        let Some(row) = panel.item_rect(slot, index) else {
+            continue;
+        };
+        canvas.block(row, argb(GROUND), LIST_Z);
+        if Some(index) == panel.rolled().or(panel.selected(slot)) {
+            canvas.block(row, argb(HIGHLIGHT), LIST_Z + 0.1);
+        }
+        canvas.text(
+            line(row),
+            &option.name,
+            DEFAULT_SIZE + 2.0,
+            argb(ITEM_TEXT),
+            0,
+            LIST_Z + 0.2,
+        );
+    }
+    canvas.frame(
+        ShellRect {
+            x: dropdown.rect.x,
+            y: dropdown.rect.y + dropdown.rect.height as i32,
+            width: dropdown.rect.width,
+            height: dropdown.rect.height * panel.options().len() as u32,
+        },
+        argb(FRAME),
+        LIST_Z + 0.3,
+    );
 }

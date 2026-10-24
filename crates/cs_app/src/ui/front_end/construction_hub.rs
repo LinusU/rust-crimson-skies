@@ -79,6 +79,7 @@ use super::construction_armor_paint::{
     ArmorFeed, ArmorPanel, DescBox, DropList, PaintFeed, PaintPanel, PanelEdit,
 };
 use super::construction_panels::{ChoiceKind, ChoiceOption, ChoicePanel, ChoicePress};
+use super::construction_slots::{SlotKind, SlotOption, SlotPanel, SlotPress};
 use super::original::{OriginalLayout, Section};
 use super::pilot_page::EditBox;
 use super::previous_missions::{colour, split_tag};
@@ -404,6 +405,17 @@ pub enum HubOutcome {
         /// The content chosen.
         id: ContentId,
     },
+    /// An entry of the Guns or Hardpoints panel's list was chosen (`mail
+    /// 10015`); [`super::construction_slots::apply_slot_choice`] puts it into
+    /// the draft. `id` is `None` for the empty position.
+    ChooseSlot {
+        /// The panel.
+        panel: Panel,
+        /// The position in the panel.
+        slot: usize,
+        /// The content chosen.
+        id: Option<ContentId>,
+    },
     /// A press opened or closed a panel's list.
     List,
     /// Ready: its panel is not built.
@@ -434,6 +446,8 @@ pub struct HubPage {
     unread: Vec<String>,
     airframe: Option<ChoicePanel>,
     engine: Option<ChoicePanel>,
+    guns: Option<SlotPanel>,
+    hardpoints: Option<SlotPanel>,
     dirty: bool,
     armor: Option<ArmorPanel>,
     paint: Option<PaintPanel>,
@@ -557,6 +571,8 @@ impl HubPage {
             // notice (rule 5: a missing screen blocks, it never passes).
             airframe: ChoicePanel::from_layout(layout, ChoiceKind::Airframe, name).ok(),
             engine: ChoicePanel::from_layout(layout, ChoiceKind::Engine, name).ok(),
+            guns: SlotPanel::from_layout(layout, SlotKind::Guns, name).ok(),
+            hardpoints: SlotPanel::from_layout(layout, SlotKind::HardPoints, name).ok(),
             dirty: true,
             // A layout without a panel's rows leaves its tab on the marked
             // notice.
@@ -584,16 +600,57 @@ impl HubPage {
         }
     }
 
+    /// The Guns or Hardpoints panel, when the layout supplied its rows.
+    #[must_use]
+    pub fn slot_panel(&self, panel: Panel) -> Option<&SlotPanel> {
+        match panel {
+            Panel::Guns => self.guns.as_ref(),
+            Panel::Hardpoints => self.hardpoints.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn slot_panel_mut(&mut self, panel: Panel) -> Option<&mut SlotPanel> {
+        match panel {
+            Panel::Guns => self.guns.as_mut(),
+            Panel::Hardpoints => self.hardpoints.as_mut(),
+            _ => None,
+        }
+    }
+
     /// Whether `panel` is built (task #2043: Airframe and Engine; #2044:
-    /// Armor and Paint; each when its rows are in the layout).
+    /// Armor and Paint; #2045: Guns and Hardpoints; each when its rows are in
+    /// the layout).
     #[must_use]
     pub fn panel_built(&self, panel: Panel) -> bool {
         self.choice_panel(panel).is_some()
+            || self.slot_panel(panel).is_some()
             || match panel {
                 Panel::Armor => self.armor.is_some(),
                 Panel::Paint => self.paint.is_some(),
                 _ => false,
             }
+    }
+
+    /// Hands a Guns or Hardpoints panel its entries and what the draft holds
+    /// in each position. Does nothing for a panel that is not built.
+    pub fn set_slot_options(
+        &mut self,
+        panel: Panel,
+        options: Vec<SlotOption>,
+        held: &[Option<ContentId>],
+    ) {
+        if let Some(slots) = self.slot_panel_mut(panel) {
+            slots.set_options(options, held);
+            self.dirty = true;
+        }
+    }
+
+    /// The draft changed: the Guns or Hardpoints panel's choices follow it.
+    pub fn follow_slots(&mut self, panel: Panel, held: &[Option<ContentId>]) {
+        if let Some(slots) = self.slot_panel_mut(panel) {
+            slots.follow(held);
+        }
     }
 
     /// Hands a panel its entries and the one the draft holds. Does nothing
@@ -633,6 +690,9 @@ impl HubPage {
                 if let Some(choice) = self.choice_panel_mut(selected) {
                     choice.hover_at(point);
                 }
+                if let Some(slots) = self.slot_panel_mut(selected) {
+                    slots.hover_at(point);
+                }
                 false
             }
         };
@@ -668,6 +728,17 @@ impl HubPage {
                 Some(())
             }),
             _ => {
+                if let Some(slots) = self.slot_panel_mut(selected) {
+                    return match slots.press_at(x, y) {
+                        SlotPress::Nothing => HubOutcome::Nothing,
+                        SlotPress::Toggled => HubOutcome::List,
+                        SlotPress::Chose { slot, id } => HubOutcome::ChooseSlot {
+                            panel: selected,
+                            slot,
+                            id,
+                        },
+                    };
+                }
                 let Some(choice) = self.choice_panel_mut(selected) else {
                     return HubOutcome::Nothing;
                 };
@@ -704,6 +775,9 @@ impl HubPage {
                 }
             }
             selected => {
+                if let Some(slots) = self.slot_panel_mut(selected) {
+                    return slots.close_list();
+                }
                 return self
                     .choice_panel_mut(selected)
                     .is_some_and(ChoicePanel::close_list);
@@ -724,9 +798,13 @@ impl HubPage {
                 .paint
                 .as_ref()
                 .is_some_and(|paint| paint.lists().any(DropList::is_open)),
-            selected => self
-                .choice_panel(selected)
-                .is_some_and(ChoicePanel::is_open),
+            selected => {
+                self.choice_panel(selected)
+                    .is_some_and(ChoicePanel::is_open)
+                    || self
+                        .slot_panel(selected)
+                        .is_some_and(|slots| slots.open_slot().is_some())
+            }
         }
     }
 
@@ -789,6 +867,12 @@ impl HubPage {
     pub fn take_dirty(&mut self) -> bool {
         let mut changed = std::mem::take(&mut self.dirty);
         for panel in [self.airframe.as_mut(), self.engine.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            changed |= panel.take_dirty();
+        }
+        for panel in [self.guns.as_mut(), self.hardpoints.as_mut()]
             .into_iter()
             .flatten()
         {

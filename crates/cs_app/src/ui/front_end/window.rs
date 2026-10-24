@@ -391,6 +391,20 @@ impl ShellResource {
             .unwrap_or_default()
     }
 
+    /// Hands the hub's Guns or Hardpoints panel its entries and what the draft
+    /// holds in each position (#2045). Does nothing without a hub or a built
+    /// panel.
+    pub fn set_hub_slots(
+        &mut self,
+        panel: super::construction_hub::Panel,
+        options: Vec<super::construction_slots::SlotOption>,
+        held: &[Option<cs_types::content::ContentId>],
+    ) {
+        if let Some(hub) = self.hub.as_mut() {
+            hub.page.set_slot_options(panel, options, held);
+        }
+    }
+
     /// The Plane Construction hub, when the run has one.
     #[must_use]
     pub fn construction_hub(&self) -> Option<&HubPage> {
@@ -1995,7 +2009,8 @@ fn hub_step(
         HubOutcome::ConfirmLeave
         | HubOutcome::Stay
         | HubOutcome::List
-        | HubOutcome::Choose { .. } => Some(StartStep::Stay),
+        | HubOutcome::Choose { .. }
+        | HubOutcome::ChooseSlot { .. } => Some(StartStep::Stay),
         // A built panel (#2043) is the page's own; the others put up the
         // marked notice.
         HubOutcome::Panel(panel) if hub.page.panel_built(panel) => Some(StartStep::Stay),
