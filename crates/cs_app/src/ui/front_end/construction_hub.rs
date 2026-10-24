@@ -75,6 +75,9 @@ use cs_content::construction::BudgetQuantity;
 
 use cs_types::content::ContentId;
 
+use super::construction_armor_paint::{
+    ArmorFeed, ArmorPanel, DescBox, DropList, PaintFeed, PaintPanel, PanelEdit,
+};
 use super::construction_panels::{ChoiceKind, ChoiceOption, ChoicePanel, ChoicePress};
 use super::original::{OriginalLayout, Section};
 use super::pilot_page::EditBox;
@@ -432,6 +435,9 @@ pub struct HubPage {
     airframe: Option<ChoicePanel>,
     engine: Option<ChoicePanel>,
     dirty: bool,
+    armor: Option<ArmorPanel>,
+    paint: Option<PaintPanel>,
+    edits: Vec<PanelEdit>,
 }
 
 /// A stand-in for the width the engine measures a caption at: the face is not
@@ -552,6 +558,11 @@ impl HubPage {
             airframe: ChoicePanel::from_layout(layout, ChoiceKind::Airframe, name).ok(),
             engine: ChoicePanel::from_layout(layout, ChoiceKind::Engine, name).ok(),
             dirty: true,
+            // A layout without a panel's rows leaves its tab on the marked
+            // notice.
+            armor: ArmorPanel::from_layout(layout, name).ok(),
+            paint: PaintPanel::from_layout(layout, name).ok(),
+            edits: Vec::new(),
         })
     }
 
@@ -573,11 +584,16 @@ impl HubPage {
         }
     }
 
-    /// Whether `panel` is built (task #2043: Airframe and Engine, when their
-    /// rows are in the layout).
+    /// Whether `panel` is built (task #2043: Airframe and Engine; #2044:
+    /// Armor and Paint; each when its rows are in the layout).
     #[must_use]
     pub fn panel_built(&self, panel: Panel) -> bool {
         self.choice_panel(panel).is_some()
+            || match panel {
+                Panel::Armor => self.armor.is_some(),
+                Panel::Paint => self.paint.is_some(),
+                _ => false,
+            }
     }
 
     /// Hands a panel its entries and the one the draft holds. Does nothing
@@ -604,9 +620,23 @@ impl HubPage {
     /// The pointer moved: the open list's rolled-over entry follows it.
     pub fn hover_at(&mut self, point: Option<(i32, i32)>) {
         let selected = self.selected;
-        if let Some(choice) = self.choice_panel_mut(selected) {
-            choice.hover_at(point);
-        }
+        let changed = match selected {
+            Panel::Armor => self
+                .armor
+                .as_mut()
+                .is_some_and(|armor| armor.hover_at(point)),
+            Panel::Paint => self
+                .paint
+                .as_mut()
+                .is_some_and(|paint| paint.hover_at(point)),
+            _ => {
+                if let Some(choice) = self.choice_panel_mut(selected) {
+                    choice.hover_at(point);
+                }
+                false
+            }
+        };
+        self.dirty |= changed;
     }
 
     /// A pointer press at a logical point, offered to the selected panel's
@@ -617,31 +647,86 @@ impl HubPage {
             return HubOutcome::Nothing;
         }
         let selected = self.selected;
-        let Some(choice) = self.choice_panel_mut(selected) else {
-            return HubOutcome::Nothing;
+        let took = match selected {
+            Panel::Armor => self.armor.as_mut().and_then(|armor| {
+                let changed = armor.press_at(x, y)?;
+                if !changed.is_empty() {
+                    self.edits.push(match armor.fitments() {
+                        Ok(fitments) => PanelEdit::Armor(fitments),
+                        Err(error) => PanelEdit::Refused(format!("{error:?}")),
+                    });
+                }
+                Some(())
+            }),
+            Panel::Paint => self.paint.as_mut().and_then(|paint| {
+                if paint.press_at(x, y)? {
+                    self.edits.push(match paint.selection() {
+                        Ok(selection) => PanelEdit::Paint(selection),
+                        Err(error) => PanelEdit::Refused(format!("{error:?}")),
+                    });
+                }
+                Some(())
+            }),
+            _ => {
+                let Some(choice) = self.choice_panel_mut(selected) else {
+                    return HubOutcome::Nothing;
+                };
+                return match choice.press_at(x, y) {
+                    ChoicePress::Nothing => HubOutcome::Nothing,
+                    ChoicePress::Toggled => HubOutcome::List,
+                    ChoicePress::Chose(id) => HubOutcome::Choose {
+                        panel: selected,
+                        id,
+                    },
+                };
+            }
         };
-        match choice.press_at(x, y) {
-            ChoicePress::Nothing => HubOutcome::Nothing,
-            ChoicePress::Toggled => HubOutcome::List,
-            ChoicePress::Chose(id) => HubOutcome::Choose {
-                panel: selected,
-                id,
-            },
+        if took.is_some() {
+            self.dirty = true;
+            HubOutcome::List
+        } else {
+            HubOutcome::Nothing
         }
     }
 
     /// Closes the selected panel's open list (Esc); whether one was open.
     pub fn close_list(&mut self) -> bool {
-        let selected = self.selected;
-        self.choice_panel_mut(selected)
-            .is_some_and(ChoicePanel::close_list)
+        let was_open = self.list_open();
+        match self.selected {
+            Panel::Armor => {
+                if let Some(armor) = &mut self.armor {
+                    armor.close();
+                }
+            }
+            Panel::Paint => {
+                if let Some(paint) = &mut self.paint {
+                    paint.close();
+                }
+            }
+            selected => {
+                self.choice_panel_mut(selected)
+                    .is_some_and(ChoicePanel::close_list);
+            }
+        }
+        was_open
     }
 
     /// Whether the selected panel's list is open.
     #[must_use]
     pub fn list_open(&self) -> bool {
-        self.choice_panel(self.selected)
-            .is_some_and(ChoicePanel::is_open)
+        match self.selected {
+            Panel::Armor => self
+                .armor
+                .as_ref()
+                .is_some_and(|armor| armor.lists().iter().any(DropList::is_open)),
+            Panel::Paint => self
+                .paint
+                .as_ref()
+                .is_some_and(|paint| paint.lists().any(DropList::is_open)),
+            selected => self
+                .choice_panel(selected)
+                .is_some_and(ChoicePanel::is_open),
+        }
     }
 
     /// The plane-name edit box.
@@ -695,6 +780,10 @@ impl HubPage {
             .is_some_and(|planes| planes >= SELL_MIN_PLANES)
     }
 
+    pub(super) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     /// Whether the model changed since the last call; clears the flag.
     pub fn take_dirty(&mut self) -> bool {
         let mut changed = std::mem::take(&mut self.dirty);
@@ -714,6 +803,100 @@ impl HubPage {
         self.selected = Panel::Airframe;
         self.prompt = None;
         self.dirty = true;
+        if let Some(armor) = &mut self.armor {
+            armor.close();
+        }
+        if let Some(paint) = &mut self.paint {
+            paint.close();
+        }
+    }
+
+    /// The armor panel, when the layout supplied its rows.
+    #[must_use]
+    pub fn armor(&self) -> Option<&ArmorPanel> {
+        self.armor.as_ref()
+    }
+
+    /// The paint panel, when the layout supplied its rows.
+    #[must_use]
+    pub fn paint(&self) -> Option<&PaintPanel> {
+        self.paint.as_ref()
+    }
+
+    /// The layout section whose panes the selected panel draws, when it is
+    /// built.
+    #[must_use]
+    pub fn panel_section(&self) -> Option<&'static str> {
+        match self.selected {
+            Panel::Armor if self.armor.is_some() => Some(super::construction_armor_paint::ARMOR_SECTION),
+            Panel::Paint if self.paint.is_some() => Some(super::construction_armor_paint::PAINT_SECTION),
+            _ => None,
+        }
+    }
+
+    /// Hands the armor panel its lists and what the draft fits.
+    pub fn set_armor_feed(&mut self, feed: ArmorFeed) -> bool {
+        match &mut self.armor {
+            Some(armor) => {
+                armor.set_feed(feed);
+                self.dirty = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Hands the paint panel its lists and what the draft carries.
+    pub fn set_paint_feed(&mut self, feed: PaintFeed) -> bool {
+        match &mut self.paint {
+            Some(paint) => {
+                paint.set_feed(feed);
+                self.dirty = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The selected panel's drop-down lists (none for a tab with no panel).
+    #[must_use]
+    pub fn panel_lists(&self) -> Vec<&DropList> {
+        match self.selected {
+            Panel::Armor => self
+                .armor
+                .as_ref()
+                .map(|armor| armor.lists().iter().collect())
+                .unwrap_or_default(),
+            Panel::Paint => self
+                .paint
+                .as_ref()
+                .map(|paint| paint.lists().collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The selected panel's description box and the text in it.
+    #[must_use]
+    pub fn panel_description(&self) -> Option<(DescBox, &str)> {
+        match self.selected {
+            Panel::Armor => {
+                let armor = self.armor.as_ref()?;
+                Some((armor.desc_box(), armor.description()?))
+            }
+            Panel::Paint => {
+                let paint = self.paint.as_ref()?;
+                Some((paint.desc_box(), paint.description()?))
+            }
+            _ => None,
+        }
+    }
+
+    /// The edits the panels made to the draft since the last call, in order;
+    /// [`super::construction_armor_paint::apply_edits`] hands them to the
+    /// construction screen.
+    pub fn take_edits(&mut self) -> Vec<PanelEdit> {
+        std::mem::take(&mut self.edits)
     }
 
     /// Replaces the numbers the page draws.
@@ -809,6 +992,11 @@ impl HubPage {
                 justify: label.justify,
             });
         }
+        match self.selected {
+            Panel::Armor => out.extend(self.armor.iter().flat_map(ArmorPanel::texts)),
+            Panel::Paint => out.extend(self.paint.iter().flat_map(PaintPanel::texts)),
+            _ => {}
+        }
         if let (Some(label), Some(cash)) = (&self.cash, feed.cash) {
             out.push(HubText {
                 id: label.id.clone(),
@@ -880,7 +1068,7 @@ fn fill(template: &str, value: &str) -> String {
 }
 
 /// The box a `T` row states: `X, Y, Width, Height` at columns 1, 2, 4, 5.
-fn row_rect(row: &super::original::Row) -> Result<ShellRect, HubError> {
+pub(super) fn row_rect(row: &super::original::Row) -> Result<ShellRect, HubError> {
     let number = |index: usize| {
         row.fields
             .get(index)
@@ -903,7 +1091,7 @@ fn row_rect(row: &super::original::Row) -> Result<ShellRect, HubError> {
 }
 
 /// The `T` rows with a resource id `name` answers.
-fn read_labels(
+pub(super) fn read_labels(
     section: &Section,
     name: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Vec<HubLabel>, HubError> {

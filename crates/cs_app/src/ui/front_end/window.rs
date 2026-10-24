@@ -229,6 +229,10 @@ struct HubState {
     scene: Vec<Entity>,
     /// The surface the overlay was laid out for.
     drawn_surface: (u32, u32),
+    /// The hub section's own panes, kept while a panel's are added to them.
+    base_panes: Option<Vec<super::shell::ShellPane>>,
+    /// The panel section whose panes the hub section now carries.
+    panes_of: Option<&'static str>,
 }
 
 /// The Plane Name page's live state.
@@ -361,6 +365,30 @@ impl ShellResource {
         if let Some(hub) = self.hub.as_mut() {
             hub.page.set_choices(panel, options, selected);
         }
+    }
+
+    /// Hands the hub's Armor panel its lists. `false` when the run has no hub
+    /// or the layout gave the panel no rows.
+    pub fn set_hub_armor_feed(&mut self, feed: super::construction_armor_paint::ArmorFeed) -> bool {
+        self.hub
+            .as_mut()
+            .is_some_and(|hub| hub.page.set_armor_feed(feed))
+    }
+
+    /// Hands the hub's Paint panel its lists. `false` when the run has no hub
+    /// or the layout gave the panel no rows.
+    pub fn set_hub_paint_feed(&mut self, feed: super::construction_armor_paint::PaintFeed) -> bool {
+        self.hub
+            .as_mut()
+            .is_some_and(|hub| hub.page.set_paint_feed(feed))
+    }
+
+    /// The edits the hub's panels made to the draft since the last call.
+    pub fn take_hub_edits(&mut self) -> Vec<super::construction_armor_paint::PanelEdit> {
+        self.hub
+            .as_mut()
+            .map(|hub| hub.page.take_edits())
+            .unwrap_or_default()
     }
 
     /// The Plane Construction hub, when the run has one.
@@ -831,6 +859,8 @@ impl Plugin for FrontEndShellPlugin {
                     keys: MessageCursor::default(),
                     scene: Vec::new(),
                     drawn_surface: (0, 0),
+                    base_panes: None,
+                    panes_of: None,
                 }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
@@ -1265,6 +1295,9 @@ fn frame_shell(world: &mut World) {
     let previous = &mut state.previous;
     let plane = &mut state.plane;
     let hub = &mut state.hub;
+    if on_hub && let Some(hub) = hub.as_mut() {
+        hub.page.hover_at(point);
+    }
     if on_toc && let Some(previous) = previous.as_mut() {
         previous.page.hover_at(point);
     }
@@ -2043,12 +2076,13 @@ fn sync_hub_scene(world: &mut World, state: &mut ShellResource) {
         .shell
         .section_name()
         .is_some_and(|name| name.eq_ignore_ascii_case(HUB_SECTION));
-    if active && let Some(hub) = state.hub.as_ref() {
+    if active && let Some(hub) = state.hub.as_mut() {
         state.shell.set_latched(Some(hub.page.selected().button()));
         let _ = state.shell.set_enabled(
             super::construction_hub::SELL_BUTTON,
             hub.page.sell_enabled(),
         );
+        install_panel_panes(&mut state.shell, hub);
     }
     if !state.visuals {
         return;
@@ -2082,6 +2116,39 @@ fn sync_hub_scene(world: &mut World, state: &mut ShellResource) {
         hub.scene = super::construction_hub_view::spawn_page(world, &hub.page, &buttons, surface);
         hub.drawn_surface = surface;
     }
+}
+
+/// Puts the selected panel's panes (its rules) into the hub section after the
+/// hub's own: the panel's rows are nested sections of the layout, which the
+/// shell presents on their own. The decal sheet is only a source the script
+/// blits from (`deactivate(CLA)`), so it is left out.
+fn install_panel_panes(shell: &mut MenuShell, hub: &mut HubState) {
+    let wanted = hub.page.panel_section();
+    if hub.panes_of == wanted && hub.base_panes.is_some() {
+        return;
+    }
+    let extra: Vec<super::shell::ShellPane> = wanted
+        .and_then(|name| shell.sections().get(&name.to_ascii_uppercase()))
+        .map(|section| {
+            section
+                .panes
+                .iter()
+                .filter(|pane| {
+                    !pane
+                        .id
+                        .eq_ignore_ascii_case(super::construction_armor_paint::DECAL_SHEET_PANE)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(section) = shell.section_mut(HUB_SECTION) else {
+        return;
+    };
+    let base = hub.base_panes.get_or_insert_with(|| section.panes.clone());
+    section.panes = base.iter().cloned().chain(extra).collect();
+    hub.panes_of = wanted;
+    hub.page.mark_dirty();
 }
 
 /// Keeps the not-implemented notice drawn while the flow has one up.
