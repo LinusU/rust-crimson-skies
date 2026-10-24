@@ -5264,6 +5264,10 @@ fn smoke_flight_check(
         return;
     }
     probe.0 = ProbeMode::Restored;
+    if data.ordinance.step == 0 && phase.ordinance().is_none() {
+        // A phase without the screen has no detour to make.
+        data.ordinance.step = 2;
+    }
     if data.ordinance.step == 0 {
         // The Change Ammo detour (#2070): the screen is opened here and the
         // Flight Check comes back to this point once it has been left.
