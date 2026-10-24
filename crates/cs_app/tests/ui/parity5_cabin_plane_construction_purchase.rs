@@ -85,11 +85,11 @@ PU_P_BACKGROUND=P,bg.png,0,0,1,1,0,0,0
     format!("{GLOBALS}{hub}\n{PURCHASE_ROWS}\n{HANGAR_ROWS}")
 }
 
-fn layout() -> OriginalLayout {
+pub(super) fn layout() -> OriginalLayout {
     OriginalLayout::parse(&layout_text()).expect("the fixture parses")
 }
 
-fn purchase_names(name: &str) -> Option<String> {
+pub(super) fn purchase_names(name: &str) -> Option<String> {
     Some(
         match name {
             "IDS_PUR_TITLE" => "[AB14I]CONSTRUCTION TOTALS",
@@ -105,7 +105,7 @@ fn purchase_names(name: &str) -> Option<String> {
 }
 
 /// The engine's strings in their real format, invented names.
-fn purchase_ids(id: u32) -> Option<String> {
+pub(super) fn purchase_ids(id: u32) -> Option<String> {
     let text = match id {
         203 => "[COUR9]You must enter a name for your new plane.".to_owned(),
         204 => "[COUR9]You have reached your hangar limit of planes.".to_owned(),

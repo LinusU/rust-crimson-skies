@@ -324,7 +324,7 @@ fn accept_parity5_cabin_plane_construction_hangar_the_default_loadout_box_picks_
 
 /// The hub fixture's art plus the hangar's buttons (four 32-row frames) and
 /// the end-of-screen Done strip.
-fn hangar_extents(art: &str) -> Option<(u32, u32)> {
+pub(super) fn hangar_extents(art: &str) -> Option<(u32, u32)> {
     match art.to_ascii_lowercase().as_str() {
         "fc_b_paperbutton.png" | "ms_b_done.png" => Some((150, 128)),
         "ps_background.jpg" => Some((800, 600)),
