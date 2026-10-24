@@ -69,16 +69,16 @@ Strings (installation's `langui.dll`): 203, 1027 to 1049 (the hub's captions:
 * **The statistics and the bar graphs.** `PX_T_TOPSPEED`, `_AGILITY`, `_ARMOR`,
   `_OFFENSE` and the 20 `PX_P_OS/AD/SI/OC` bar panes depend on `E 2015` tables.
   Nothing is drawn for the texts and the panes are not presented. Affected: the
-  hub's statistics block. Follow-up filed.
+  hub's statistics block. Resolving task: #2051.
 * **The plane picture** (`PX_P_PLANE0..3`, `PX_P_SMALLICONS`, `E 2243`): the
-  central blueprint is not drawn. Affected: the hub's centre. Follow-up filed.
+  central blueprint is not drawn. Affected: the hub's centre. Resolving task: #2051.
 * **Where the figures come from in a real run.** The start flow keeps no
   per-pilot plane, cash or `ConstructionScreen`, so the windowed run feeds an
   empty `HubFeed`: the cash, cost, airframe and weight lines are not drawn. The
   mapping from the draft's units to the engine's (*lbs.*, dollars) is unmeasured.
-  Affected: every figure on the hub. Follow-up filed.
+  Affected: every figure on the hub. Resolving task: #2052.
 * **Ready's purchase panel** (`[@Purchase@]`, *7) CONSTRUCTION TOTALS*) is not
-  one of #2043 to #2046. Follow-up filed.
+  one of #2043 to #2046. Resolving task: #2053.
 * **Message box 4's look** (the `MessageBox` section's presenter is unbuilt) and
   **the cash row's face** (`callback($$NB$$, 91, …)`): stand-ins.
 * **`callback($$A$$, 2507, 0/9)`**, **`callback($$NB$$, 4005, …)`**,
