@@ -14,7 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use cs_app::ui::instant_action::{
-    DIFFICULTY_UNMEASURED_REASON, IA_DIFFICULTY_UNMEASURED_CLAIM, retail_instant_action_catalog,
+    DIFFICULTY_PER_ACTOR_REASON, IA_DIFFICULTY_PER_ACTOR_CLAIM, retail_instant_action_catalog,
 };
 use cs_content::instant_action::Declared;
 
@@ -217,22 +217,27 @@ fn accept_f49_d_03_fu_rules_difficulty_retail_the_setup_binds_the_ace_and_the_gr
 }
 
 #[test]
-fn accept_f49_d_03_fu_rules_difficulty_the_catalog_cites_the_measurement_and_stays_unmeasured() {
+fn accept_f49_d_03_fu_rules_difficulty_the_catalog_cites_the_measurement_and_carries_it_per_actor()
+{
     assert_eq!(
-        IA_DIFFICULTY_UNMEASURED_CLAIM,
-        "f49.d.03.unmeasured.difficulty"
+        IA_DIFFICULTY_PER_ACTOR_CLAIM,
+        "f49.d.03.difficulty-per-actor"
     );
-    for needle in ["GameIntensity", "0x47c210", "ace_skill", FINDING] {
+    for needle in [
+        "GameIntensity",
+        "0x47c210",
+        "ace_skill",
+        "docs/findings/2026-10-25-f49-d-03-fu-intensity.md",
+    ] {
         assert!(
-            DIFFICULTY_UNMEASURED_REASON.contains(needle),
-            "{DIFFICULTY_UNMEASURED_REASON}"
+            DIFFICULTY_PER_ACTOR_REASON.contains(needle),
+            "{DIFFICULTY_PER_ACTOR_REASON}"
         );
     }
     // The finding the reason cites exists and states the same conclusion.
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let finding = fs::read_to_string(root.join(FINDING)).expect("the finding is committed");
     for needle in [
-        "f49.d.03.unmeasured.difficulty",
         "GameIntensity",
         "0x45acbe",
         "0x45b100",
@@ -252,9 +257,9 @@ fn accept_f49_d_03_fu_rules_difficulty_retail_no_preset_is_given_a_difficulty() 
     assert_eq!(catalog.presets().len(), 30);
     for preset in catalog.presets() {
         match preset.parameters().difficulty() {
-            Declared::Unmeasured { claim_id, reason } => {
-                assert_eq!(claim_id.as_str(), IA_DIFFICULTY_UNMEASURED_CLAIM);
-                assert_eq!(reason, DIFFICULTY_UNMEASURED_REASON);
+            Declared::PerActor { claim_id, reason } => {
+                assert_eq!(claim_id.as_str(), IA_DIFFICULTY_PER_ACTOR_CLAIM);
+                assert_eq!(reason, DIFFICULTY_PER_ACTOR_REASON);
             }
             other => panic!(
                 "{}: a preset difficulty was invented: {other:?}",

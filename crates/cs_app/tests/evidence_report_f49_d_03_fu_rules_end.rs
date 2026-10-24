@@ -235,7 +235,9 @@ fn binding_json(
                     rules.respawns().per_side(),
                     jstr(rules.tie_outcome().label()),
                 ),
-                Declared::Unmeasured { .. } => "\"unmeasured\"".to_owned(),
+                Declared::Unmeasured { .. } | Declared::PerActor { .. } => {
+                    "\"unmeasured\"".to_owned()
+                }
             };
             let refusal = match lower_preset(catalog, preset.id()) {
                 Ok(_) => "launches".to_owned(),

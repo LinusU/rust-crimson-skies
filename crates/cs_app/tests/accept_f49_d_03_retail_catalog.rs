@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 use cs_app::mission_start::AIRFRAME_TABLE;
 use cs_app::ui::instant_action::{
-    DIFFICULTY_UNMEASURED_REASON, DirectoryInputs, FACTION_UNMEASURED_REASON, IA_CATALOG_CLAIM,
+    DIFFICULTY_PER_ACTOR_REASON, DirectoryInputs, FACTION_UNMEASURED_REASON, IA_CATALOG_CLAIM,
     IA_PRESET_CLAIM, IA_WINGMAN_BASE_ROLE, IA_WINGMAN_FOLLOWER_ROLE, IaAction, IaEdit, IaScreen,
     InstantActionFlow, LOADOUT_UNMEASURED_REASON, LowerError, RetailCatalogError,
     directory_presets, directory_roster, lower_preset, lower_preset_roster, preset_seed,
@@ -419,7 +419,7 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
         let preset_id = preset.id();
         assert!(matches!(
             preset.parameters().difficulty(),
-            Declared::Unmeasured { .. }
+            Declared::PerActor { .. }
         ));
         // The rules are the engine-image binding for the preset's measured
         // mission type, not an unmeasured record.
@@ -435,21 +435,16 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
 
         let refusal = lower_preset(&retail.catalog, preset_id)
             .expect_err("no retail preset launches while its dimensions are unmeasured");
-        let LowerError::UnknownValue {
-            field,
-            claim_id,
-            reason,
-        } = &refusal
-        else {
+        let LowerError::UnknownValue { field, reason, .. } = &refusal else {
             panic!("{preset_id}: expected UnknownValue, got {refusal:?}");
         };
-        assert_eq!(field, "scenario difficulty", "{preset_id}");
-        assert_eq!(reason, DIFFICULTY_UNMEASURED_REASON);
-        assert!(claim_id.as_str().starts_with("f49.d.03.unmeasured."));
-        // The refusal reads as a sentence naming field and reason.
+        // The difficulty is carried per actor, so it no longer refuses: the
+        // first actor's faction is the first unmeasured dimension.
+        assert_eq!(field, "player slot 0 faction", "{preset_id}");
+        assert_eq!(reason, FACTION_UNMEASURED_REASON);
         let sentence = refusal.to_string();
-        assert!(sentence.contains("scenario difficulty is unknown"));
-        assert!(sentence.contains("F32-D"));
+        assert!(sentence.contains("player slot 0 faction is unknown"));
+        assert!(DIFFICULTY_PER_ACTOR_REASON.contains("F32-D"));
 
         // Supply difficulty from the fixture: with the rules measured, the
         // first actor's faction refuses next.
@@ -1053,15 +1048,18 @@ fn accept_f49_d_03_an_unmeasured_dimension_cannot_be_defaulted_into_a_launch() {
         Declared::<u8>::unmeasured(ClaimId::new("f49.d.03.test").expect("a claim"), " ").is_err()
     );
 
-    // The preset keeps its difficulty unmeasured while its rules carry the
+    // The preset carries its difficulty per actor while its rules carry the
     // measured mission-type binding; the lowering refuses an unmeasured
     // dimension instead of launching a defaulted scenario.
     let preset = catalog.preset(&first).expect("held");
-    assert!(!preset.parameters().difficulty().is_declared());
+    assert!(matches!(
+        preset.parameters().difficulty(),
+        Declared::PerActor { .. }
+    ));
     assert!(preset.parameters().rules().is_declared());
     let refusal = lower_preset(&catalog, &first).expect_err("an unmeasured preset does not launch");
     // The synthetic archive has no weather, which is the first thing the
-    // lowering reads; the unmeasured difficulty follows it.
+    // lowering reads; the unmeasured factions follow it.
     assert!(
         matches!(&refusal, LowerError::UnknownValue { field, .. } if field == "scenario environment"),
         "{refusal:?}"

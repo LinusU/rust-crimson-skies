@@ -216,12 +216,8 @@ fn accept_f49_a_every_discovered_preset_launches_with_its_expected_actors_world_
                 .tie_outcome()
         );
         assert_eq!(
-            lowered.difficulty(),
-            declared
-                .difficulty()
-                .declared()
-                .expect("the fixture declares its difficulty")
-                .tier()
+            lowered.difficulty().tier(),
+            declared.difficulty().declared().map(|d| d.tier())
         );
 
         // Seed: explicit, never derived from anything else.
@@ -408,7 +404,7 @@ fn accept_f49_a_a_valid_custom_request_lowers_to_its_declared_scenario() {
             .condition()
     );
     assert_eq!(lowered.seed(), request.parameters().seed());
-    assert_eq!(lowered.difficulty(), DifficultyTier::Standard);
+    assert_eq!(lowered.difficulty().tier(), Some(DifficultyTier::Standard));
 }
 
 /// An unmeasured plane refuses at the lowering boundary instead of becoming a
