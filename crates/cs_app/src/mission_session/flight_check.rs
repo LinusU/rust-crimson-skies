@@ -1330,8 +1330,15 @@ impl FlightCheckStrings {
     /// reads the face from it (the Audio page, #1996).
     #[must_use]
     pub fn resolve_tagged(&self, name: &str) -> Option<String> {
-        let id = self.defines.get(name)?;
-        match self.catalog.resolve(*id, None) {
+        self.resolve_id_tagged(*self.defines.get(name)?)
+    }
+
+    /// The text string-table id `id` answers, `[FONT]` tag kept, for a native
+    /// call that addresses a string by number (the Previous Missions list,
+    /// #1956), or `None` when the image answers nothing or two rows.
+    #[must_use]
+    pub fn resolve_id_tagged(&self, id: u32) -> Option<String> {
+        match self.catalog.resolve(id, None) {
             cs_content::config::StringLookup::Found(row) => row.text.clone(),
             _ => None,
         }
