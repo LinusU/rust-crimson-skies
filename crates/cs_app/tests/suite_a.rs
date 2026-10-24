@@ -248,6 +248,7 @@ mod accept_parity6_m01_audio_07_burst_triggers;
 mod accept_parity6_m01_audio_08_group_pick;
 mod accept_parity6_m01_audio_09_touchdown_and_crash;
 mod accept_parity6_m01_audio_10_engine_rate;
+mod accept_parity6_m01_audio_33864_source;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_damage_graph;
 mod accept_parity_m01_player_damage_trail;
