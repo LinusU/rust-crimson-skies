@@ -85,7 +85,7 @@ pub(crate) fn sounds_zrd(root: &Path) -> ZrdValue {
 }
 
 /// `(group name, member file, flags)` of every sound record in `sounds.zrd`.
-fn sound_records(node: &ZrdValue, out: &mut Vec<(String, String, Vec<String>)>) {
+pub(crate) fn sound_records(node: &ZrdValue, out: &mut Vec<(String, String, Vec<String>)>) {
     let Some(children) = node.as_list() else {
         return;
     };
