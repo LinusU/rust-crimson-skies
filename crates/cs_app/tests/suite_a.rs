@@ -18,6 +18,7 @@ mod campaign {
     mod accept_crash_c_crash_flow;
     mod accept_crash_e_smoke;
     mod accept_m01_b_wake;
+    mod accept_trucks_smoke;
     mod common;
     mod f27_c_fx_render;
     mod f29_c_3b_score;

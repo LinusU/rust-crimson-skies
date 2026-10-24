@@ -388,9 +388,9 @@ pub use smoke::{
     MISSION_SMOKE_FRAME_HZ, MissionSmokeHandle, MissionSmokeMode, MissionSmokePlugin,
     MissionSmokeReport, PauseMapMetrics, RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE,
     SUN_SCREEN_FRACTION, SeaMetrics, SmokeMeasurements, StartFlowMetrics, TargetingMetrics,
-    TerrainMetrics, WINGMAN_SAMPLE_SECONDS, WingmanSample, evaluate as evaluate_mission_smoke,
-    finish as finish_mission_smoke, flare_aim, near_terrain_luminance, objective_line_of,
-    region_difference, sky_below_horizon,
+    TerrainMetrics, TrucksMetrics, WINGMAN_SAMPLE_SECONDS, WingmanSample,
+    evaluate as evaluate_mission_smoke, finish as finish_mission_smoke, flare_aim,
+    near_terrain_luminance, objective_line_of, region_difference, sky_below_horizon,
 };
 pub use spyglass::{
     FALLBACK_RADIUS_M, SPYGLASS_TEXTURE_PX, SpyglassCamera, SpyglassPlugin, SpyglassState,

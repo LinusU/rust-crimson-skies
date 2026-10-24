@@ -139,6 +139,7 @@ mod camera_modes;
 mod crash;
 mod debrief;
 mod start_flow;
+mod trucks;
 pub mod voice_trace;
 
 pub use briefing::{
@@ -152,6 +153,7 @@ pub use camera_modes::{
 };
 pub use crash::CrashMetrics;
 pub use start_flow::StartFlowMetrics;
+pub use trucks::TrucksMetrics;
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
 pub const MISSION_SMOKE_FRAME_HZ: f64 = 60.0;
@@ -1062,6 +1064,12 @@ pub enum MissionSmokeMode {
     /// through the map's own click path — the `Abandoned` the chain's next
     /// leg resumes on, or the process end on the replay leg.
     StartFlow,
+    /// `--smoke-trucks`: the player walks the declared objective route until
+    /// the mission script's own `WAKEUP_TURRETS` wakes the convoy trucks,
+    /// is placed in their range, and the turret report's fire orders, the
+    /// hull drop and framebuffer screenshots of the trucks are judged
+    /// (#1926). No turret is woken by the smoke.
+    Trucks,
 }
 
 /// Everything the engagement mode measured about the idle player's hull.
@@ -1334,6 +1342,8 @@ pub struct SmokeMeasurements {
     pub crash: Option<crash::CrashMetrics>,
     /// The leave-the-flight stage ([`MissionSmokeMode::StartFlow`] only).
     pub start_flow: Option<start_flow::StartFlowMetrics>,
+    /// The woken-trucks stage ([`MissionSmokeMode::Trucks`] only).
+    pub trucks: Option<trucks::TrucksMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1366,6 +1376,9 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     }
     if m.crash.is_some() {
         return crash::evaluate(m);
+    }
+    if m.trucks.is_some() {
+        return trucks::evaluate(m);
     }
     if m.start_flow.is_some() {
         return start_flow::evaluate(m);
@@ -3003,6 +3016,7 @@ fn add_script_systems(app: &mut App) {
             smoke_hull,
             debrief::smoke_debrief,
             crash::smoke_crash,
+            trucks::smoke_trucks,
             smoke_cockpit,
             camera_modes::smoke_camera_modes,
             smoke_lens_flare,
@@ -3807,6 +3821,9 @@ fn smoke_sample(
         if config.mode == MissionSmokeMode::Crash {
             data.measurements.crash = Some(crash::CrashMetrics::default());
         }
+        if config.mode == MissionSmokeMode::Trucks {
+            data.measurements.trucks = Some(trucks::TrucksMetrics::default());
+        }
         if config.mode == MissionSmokeMode::Engagement {
             data.measurements.engagement = Some(EngagementMetrics {
                 watch_frames: config.request.seconds.saturating_mul(60),
@@ -4222,6 +4239,9 @@ fn smoke_script(
         // `crash::smoke_crash` dives the player, photographs the crash and
         // hands over to `Final`.
         _ if config.mode == MissionSmokeMode::Crash => {}
+        // `trucks::smoke_trucks` walks the route, holds the player in range
+        // and photographs the trucks, then hands over to `Final`.
+        _ if config.mode == MissionSmokeMode::Trucks => {}
         _ if config.mode == MissionSmokeMode::Engagement => {
             if data.phase != Phase::Final && data.phase != Phase::Ended {
                 let metrics = data.measurements.engagement.clone().unwrap_or_default();
@@ -6661,7 +6681,7 @@ fn write_artifacts(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
          \"engagement\":{engagement},\
-         \"debrief\":{debrief},\"crash\":{crash},\
+         \"debrief\":{debrief},\"crash\":{crash},\"trucks\":{trucks},\
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
@@ -6708,6 +6728,8 @@ fn write_artifacts(
             "failure"
         } else if report.measurements.crash.is_some() {
             "crash"
+        } else if report.measurements.trucks.is_some() {
+            "trucks"
         } else if report.measurements.start_flow.is_some() {
             "start_flow"
         } else if report.measurements.no_teleport {
@@ -6719,6 +6741,7 @@ fn write_artifacts(
         engagement = engagement,
         debrief = debrief::debrief_json(report.measurements.debrief.as_ref()),
         crash = crash::crash_json(report.measurements.crash.as_ref()),
+        trucks = trucks::trucks_json(report.measurements.trucks.as_ref()),
         threshold = MAX_WINGMAN_DISTANCE_M,
         wingmen = wingmen,
         frames = report.frames,
