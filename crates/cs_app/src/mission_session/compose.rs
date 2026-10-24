@@ -2000,6 +2000,10 @@ pub fn teardown(app: &mut App) {
                 With<super::world_draw::WorldSceneryRoot>,
                 // The cannon turrets' weapon bodies (FLAK-B3, #1882).
                 With<super::turret_fire::TurretBody>,
+                // The live wing-fire and damage-trail puffs carry no actor
+                // marker; a puff of this composition must not outlive it.
+                With<super::WingFirePuff>,
+                With<super::TrailPuff>,
             )>,
         )>();
         query.iter(world).collect()
@@ -2048,6 +2052,16 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::mission_session::MissionCockpitActions>();
     world.remove_resource::<crate::weapons::WeaponSession>();
     world.remove_resource::<crate::weapons::SessionDamageResolver>();
+    // The wing-fire and damage-trail plugins' state: a second stage without
+    // the effects must not see this one's art, source or emitter cursors.
+    world.remove_resource::<super::PlayerVictim>();
+    world.remove_resource::<super::WingFireState>();
+    world.remove_resource::<super::WingFireArt>();
+    world.remove_resource::<super::WingFireSourceResource>();
+    world.remove_resource::<super::DamageTrailReport>();
+    world.remove_resource::<super::DamageTrailCursor>();
+    world.remove_resource::<super::DamageTrailArt>();
+    world.remove_resource::<super::DamageTrailSourceResource>();
     world.remove_resource::<crate::targeting::TargetingSession>();
     world.remove_resource::<ExpectedLoad>();
     world.remove_resource::<MissionStage>();

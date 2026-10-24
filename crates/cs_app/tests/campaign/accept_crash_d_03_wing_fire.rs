@@ -456,3 +456,72 @@ fn accept_crash_d_03_retail_m01_wing_hit_burns_at_the_drawn_pdp3_part() {
     assert!(!state.spawned_by_node.contains_key("pdp2"));
     teardown(&mut app);
 }
+
+/// #1970: tearing a composition down takes the wing-fire and damage-trail
+/// plugins' resources and their live puffs with it.
+#[test]
+fn accept_crash_d_03_teardown_removes_particle_state_and_puffs() {
+    use cs_app::mission_session::{
+        DamageTrailArt, DamageTrailCursor, DamageTrailDefinition, DamageTrailReport,
+        DamageTrailSource, DamageTrailSourceResource, TrailKind, TrailPuff, WingFireSource,
+        WingFireSourceResource, teardown,
+    };
+
+    let mut rig = rig();
+    let app = &mut rig.app;
+    let puff = TrailPuff {
+        kind: TrailKind::Smoke,
+        born: 0,
+        life_ticks: 100,
+        origin: Vec3::ZERO,
+        velocity: Vec3::ZERO,
+        size: 1.0,
+        friction: 0.0,
+        cycle_index: 0,
+    };
+    app.world_mut().spawn(WingFirePuff {
+        puff,
+        emitter: [0; 3],
+    });
+    app.world_mut().spawn(puff);
+    app.insert_resource(WingFireState::default());
+    app.insert_resource(DamageTrailReport::default());
+    app.insert_resource(DamageTrailCursor::default());
+    app.insert_resource(DamageTrailArt::from_handles(
+        DamageTrailDefinition {
+            smoke: emitter(),
+            fire: emitter(),
+        },
+        BTreeMap::new(),
+        Handle::default(),
+    ));
+    app.insert_resource(WingFireSourceResource(WingFireSource {
+        definition: definition(),
+        images: Vec::new(),
+        texture_archive: String::new(),
+    }));
+    app.insert_resource(DamageTrailSourceResource(DamageTrailSource {
+        definition: DamageTrailDefinition {
+            smoke: emitter(),
+            fire: emitter(),
+        },
+        images: Vec::new(),
+        texture_archive: String::new(),
+    }));
+    assert!(app.world().contains_resource::<PlayerVictim>());
+    assert!(app.world().contains_resource::<WingFireArt>());
+
+    teardown(app);
+
+    let world = app.world_mut();
+    assert!(!world.contains_resource::<PlayerVictim>());
+    assert!(!world.contains_resource::<WingFireState>());
+    assert!(!world.contains_resource::<WingFireArt>());
+    assert!(!world.contains_resource::<WingFireSourceResource>());
+    assert!(!world.contains_resource::<DamageTrailReport>());
+    assert!(!world.contains_resource::<DamageTrailCursor>());
+    assert!(!world.contains_resource::<DamageTrailArt>());
+    assert!(!world.contains_resource::<DamageTrailSourceResource>());
+    assert_eq!(world.query::<&WingFirePuff>().iter(world).count(), 0);
+    assert_eq!(world.query::<&TrailPuff>().iter(world).count(), 0);
+}
