@@ -3089,6 +3089,7 @@ fn add_script_systems(app: &mut App) {
         (
             convoy_kill::sample_convoy_observation.before(convoy_kill::smoke_convoy_kill),
             convoy_kill::sample_convoy_layout.before(convoy_kill::smoke_convoy_kill),
+            success::sample_success_node.before(success::smoke_success),
             success::smoke_success,
         ),
     );

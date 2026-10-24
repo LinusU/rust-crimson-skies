@@ -10,9 +10,18 @@ use cs_app::cli::{self, CliRequest};
 use cs_app::mission_session::{
     Check, MissionSmokeMode, SmokeMeasurements, SuccessMetrics, evaluate_mission_smoke,
 };
+use cs_sim::damage::ActorId;
+use cs_types::net::SessionId;
 
 fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+fn actor(serial: u64) -> ActorId {
+    ActorId {
+        session: SessionId::new(1).expect("a nonzero session generation"),
+        serial,
+    }
 }
 
 fn check<'a>(checks: &'a [Check], id: &str) -> &'a Check {
@@ -27,12 +36,19 @@ fn full() -> SuccessMetrics {
         start_frame: Some(2_600),
         centre: Some([0.0, 500.0, 0.0]),
         placements: 90,
-        completed: vec![(11, 2_610), (26, 2_740)],
+        completed: vec![(11, 2_610), (26, 2_740), (20, 3_000), (22, 3_700)],
         frames_delivered: true,
         near_permille: 900,
         marked_permille: 900,
         marked_shot_frame: Some(2_740),
-        site_never_found: false,
+        landing_placements: 40,
+        kestrel_actors: vec![("medkestrel_1".to_owned(), actor(1))],
+        fire_presses: 100,
+        kestrel_placements: 50,
+        kestrels_destroyed: vec![("medkestrel_1".to_owned(), 3_900)],
+        landed_permille: 900,
+        kestrels_permille: 900,
+        ..SuccessMetrics::default()
     }
 }
 
