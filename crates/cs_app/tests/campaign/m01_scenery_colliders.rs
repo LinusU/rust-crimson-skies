@@ -291,3 +291,40 @@ fn accept_m01_scenery_collider_ring_and_cliffs_stop_a_fast_body() {
         .count();
     assert_eq!(left, 0, "teardown left scenery colliders");
 }
+
+/// #2032: a ray straight down at the owner's observed crash point and across the
+/// jungle plateau around it meets solid scenery above the sea.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_scenery_collider_jungle_plateau_is_solid_from_above() {
+    let mut app = compose();
+    let tris = solid_triangles(&app);
+    assert!(!tris.is_empty(), "no solid scenery triangles");
+    let down = Vec3::NEG_Y;
+    let top = 1000.0;
+
+    let (d, slot, name) = first_hit(&tris, Vec3::new(-5055.0, top, -4718.0), down)
+        .expect("a ray down at the observed crash point meets scenery");
+    let y = top - d;
+    eprintln!("(-5055,-4718): y {y:.1} node {slot} {name}");
+    assert!(y > 1.0, "the first hit is the sea level, y {y}");
+
+    let (mut hit, mut total) = (0, 0);
+    let mut z = -4900.0;
+    while z <= -4300.0 {
+        let mut x = -7000.0;
+        while x <= -3500.0 {
+            total += 1;
+            if let Some((d, _, _)) = first_hit(&tris, Vec3::new(x, top, z), down) {
+                if top - d > 1.0 {
+                    hit += 1;
+                }
+            }
+            x += 100.0;
+        }
+        z += 100.0;
+    }
+    eprintln!("grid: {hit}/{total} columns meet scenery above the sea");
+    assert!(hit > 0, "no column of the plateau grid meets scenery");
+    teardown(&mut app);
+}
