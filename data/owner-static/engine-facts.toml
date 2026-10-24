@@ -6415,6 +6415,30 @@ flag_a_va = 0x647b5c
 flag_b_va = 0x647b68
 flag_c_va = 0x647b6c
 progress_cell_va = 0x64b678
+# Where the three flag cells are named. The start-up registration at
+# 0x402030..0x4020e0 pushes `(name, cell, 1, 0, 0)` per variable for 0x406ff0;
+# `*_register_va` is the pushed cell address's operand, `*_name_va` the
+# NUL-terminated name it is registered under: flag_a "fAllowAll", flag_b
+# "fMultiPlayerConstruction", flag_c "fIAConstruction". No instruction stores to the
+# three cells (they are only read and compared); the registration passes their
+# addresses on, and whether 0x406ff0 writes through them is unread. No script of the
+# installation names them (docs/findings/2026-10-24-parity5-ordinance-draft.md).
+flag_a_register_va = 0x4020d5
+flag_a_name_va = 0x61e824
+flag_b_register_va = 0x40205d
+flag_b_name_va = 0x61e7dc
+flag_c_register_va = 0x40207b
+flag_c_name_va = 0x61e7f8
+# The three stores to the progress cell, each an operand address (the dword there
+# is the cell's address): in the function at 0x405ce0 the cell becomes the larger of
+# itself and `progress_count_va` (0x405d84); the handler at 0x409f27 sets it to the
+# count minus one after clamping the count to 24 (0x40a029); the new-campaign reset at
+# 0x41144b..0x411477 zeroes it together with the count (0x411473). The meaning of the
+# count cell (a mission count) is a reading, not a verified fact.
+progress_max_store_va = 0x405d84
+progress_count_store_va = 0x40a029
+progress_reset_store_va = 0x411473
+progress_count_va = 0x64b340
 ammo_rows = 5
 ammo_row_base = 3360
 rocket_row_base = 3395
