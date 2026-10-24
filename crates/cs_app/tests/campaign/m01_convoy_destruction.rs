@@ -1,6 +1,6 @@
 //! M01 convoy truck destruction (#2017, follow-up to BUG-M01-CONVOY-GUN-HITS
 //! #1998): what the destroyed trucks do to the mission's objective
-//! observation, what a restart gives back, and whether the designed ground
+//! observation, what a restart gives back, and whether the ground target
 //! boxes collide with anything else. Task test prefix:
 //! `accept_m01_convoy_destruction_`.
 //!
@@ -22,8 +22,7 @@
 use bevy::prelude::{App, Vec3};
 use cs_app::damage::DamageScheduleReport;
 use cs_app::mission_actors::{
-    DESIGNED_GROUND_TARGET_HALF_EXTENTS_M, MissionGroundTarget, MissionGroundTargetReport,
-    MissionGroundTargetSweep,
+    MissionGroundTarget, MissionGroundTargetReport, MissionGroundTargetSweep,
 };
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
@@ -213,7 +212,15 @@ fn accept_m01_convoy_destruction_restart_restores_the_trucks() {
             .get::<PartSweptBox>(bound.entity)
             .unwrap_or_else(|| panic!("{node} has a fresh swept box"));
         assert_eq!(swept.node, key(node));
-        assert_eq!(swept.half_extents_m, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M);
+        let stored = app
+            .world()
+            .get::<MissionGroundTarget>(bound.entity)
+            .unwrap_or_else(|| panic!("{node} is a ground target"))
+            .target_half_extents_m;
+        assert_eq!(
+            swept.half_extents_m, stored,
+            "{node}: the fresh box takes the node's stored extents"
+        );
     }
 
     // The old burst is gone: with the player back at the start, nothing
@@ -236,17 +243,18 @@ fn accept_m01_convoy_destruction_restart_restores_the_trucks() {
     teardown(&mut app);
 }
 
-/// **The designed ground boxes do not collide with the zeppelin parts, and
-/// the convoy overlaps nothing but the bridge's own target.**
+/// **The ground target boxes overlap exactly the recorded pairs.**
 ///
 /// The zeppelin-container ground target M01 binds (`rock_zeppelin`, at the
 /// container origin) and the four convoy trucks are checked against every
-/// other swept box. The only overlap is `susp_bridge`'s designed box meeting
-/// `t_truck03`'s by about a metre in depth; a round through that sliver
-/// damages both actors, which the finding records.
+/// other swept box, each at its stored node box (#2048). The trucks sit on the
+/// bridge, whose stored box is 17 x 97 x 563 m, so each overlaps
+/// `susp_bridge`; `rock_zeppelin` overlaps the `pzhookpoint` part box. A round
+/// through an overlap damages both actors (one hit per distinct actor); the
+/// finding records this.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_convoy_destruction_designed_boxes_overlap_nothing_else() {
+fn accept_m01_convoy_destruction_ground_box_overlaps_are_the_recorded_ones() {
     let mut app = retail_app();
     let world = app.world_mut();
     let boxes: Vec<(bevy::prelude::Entity, [f64; 3], Vec3)> = world
@@ -260,7 +268,7 @@ fn accept_m01_convoy_destruction_designed_boxes_overlap_nothing_else() {
             )
         })
         .collect();
-    let grounds: Vec<(bevy::prelude::Entity, String, Vec3)> = world
+    let grounds: Vec<(bevy::prelude::Entity, String, Vec3, [f64; 3])> = world
         .query::<(
             bevy::prelude::Entity,
             &MissionGroundTarget,
@@ -273,13 +281,13 @@ fn accept_m01_convoy_destruction_designed_boxes_overlap_nothing_else() {
                 entity,
                 target.node.clone(),
                 Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32),
+                sweep.half_extents_m,
             )
         })
         .collect();
-    let half = DESIGNED_GROUND_TARGET_HALF_EXTENTS_M;
 
     let mut overlaps: Vec<(String, f32, bevy::prelude::Entity)> = Vec::new();
-    for (entity, node, centre) in &grounds {
+    for (entity, node, centre, half) in &grounds {
         if !(TRUCKS.contains(&node.as_str()) || node == "rock_zeppelin") {
             continue;
         }
@@ -297,22 +305,24 @@ fn accept_m01_convoy_destruction_designed_boxes_overlap_nothing_else() {
                 let least = depth.iter().copied().fold(f32::MAX, f32::min);
                 let name = grounds
                     .iter()
-                    .find(|(e, _, _)| e == other)
-                    .map_or_else(|| "<part box>".to_owned(), |(_, n, _)| n.clone());
+                    .find(|(e, _, _, _)| e == other)
+                    .map_or_else(|| "<part box>".to_owned(), |(_, n, _, _)| n.clone());
                 overlaps.push((format!("{node} x {name}"), least, *other));
             }
         }
     }
+    let mut pairs: Vec<&str> = overlaps.iter().map(|(pair, _, _)| pair.as_str()).collect();
+    pairs.sort_unstable();
     assert_eq!(
-        overlaps.len(),
-        1,
-        "only the bridge sliver may overlap: {overlaps:?}"
-    );
-    let (pair, depth, _) = &overlaps[0];
-    assert_eq!(pair, "t_truck03 x susp_bridge", "the one overlap");
-    assert!(
-        *depth < 1.5,
-        "the sliver is under a metre and a half deep: {depth}"
+        pairs,
+        [
+            "bridge_truck01 x susp_bridge",
+            "rock_zeppelin x pzhookpoint",
+            "t_truck01 x susp_bridge",
+            "t_truck02 x susp_bridge",
+            "t_truck03 x susp_bridge",
+        ],
+        "the recorded overlaps, and no others: {overlaps:?}"
     );
     teardown(&mut app);
 }

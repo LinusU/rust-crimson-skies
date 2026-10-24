@@ -29,7 +29,7 @@ line when the last truck dies is **unknown**; no data seen here says so.
 After shooting down `t_truck01` and `t_truck02`, with a gun burst in flight at
 `t_truck03`, a composed restart (`MissionHostRestartRequest`) gives: new actors on a
 new session for all four trucks, none destroyed, full designed integrity, a fresh
-`PartSweptBox` with the designed half extents, the old actors unknown to the new
+`PartSweptBox` with the node's stored half extents, the old actors unknown to the new
 resolver, no damage to any truck over 180 idle frames, and a truck destructible
 again.
 
@@ -38,33 +38,23 @@ again.
 M01 binds one of the four zeppelin-container names the task listed:
 `rock_zeppelin` (container origin, target point `[0, 4.5, 62.9]`). `workersvoyagezep`,
 `blackswanzep` and `hooks` are not in M01's bound-target list (`pzhookpoint` is a
-separate node). Its designed box overlaps no other swept box (the two zeppelin
-actors sit ~1.4 km and ~7 km away).
+separate node). With the node boxes of #2048 its box (centre at the target point) overlaps the
+`pzhookpoint` part box by about 20 m.
 
-The only overlap of the four trucks and `rock_zeppelin` with any other box is
-`susp_bridge`'s designed box against `t_truck03`'s: about 1.1 m deep in z. Gun hits
-are one per distinct actor (`Ballistics::sweep`), so a round through that sliver can
-damage both the truck and the bridge. The test bounds the depth below 1.5 m.
+The four convoy trucks each overlap `susp_bridge`'s box (8.6-9.5 m deep at the least
+axis) because the trucks sit on the bridge and its stored box is 17 x 97 x 563 m. Gun
+hits are one per distinct actor (`Ballistics::sweep`), so a round through the
+overlap can damage both the truck and the bridge. The test pins exactly these five
+pairs (four bridge pairs, `rock_zeppelin` x `pzhookpoint`), so a changed box shows
+up. Whether the engine resolves only the first actor hit is unproven here.
 The trucker rows in the world (`trucker1..4`, 4-11 m apart) have overlapping
-5 m-half-extent boxes too; they are not M01 convoy trucks and are untouched here.
+boxes too; they are not M01 convoy trucks and are untouched here.
 
-## 4. Measured extents: evidence for the follow-up
+## 4. Measured extents
 
-The container node field `unk164` (min, max corners) looks like the node's local
-bounding box, not proven:
+Done by #2048 (`docs/findings/2026-10-24-node-box-unk164.md`): the ground target boxes
+take the node's stored box; the designed `[5, 3, 5]` only backs a node that stores none.
 
-| node | `unk164` min | `unk164` max |
-| --- | --- | --- |
-| `t_truck01..03` | `[-1.48, -0.17, -2.79]` | `[1.48, 4.45, 4.41]` |
-| `bridge_truck01` | `[-1.92, 0, -13.6]` | `[1.92, 5.87, 3.97]` |
-| `susp_bridge` | `[-5468.6, 72.1, -5683.0]` | `[-5451.4, 169.5, -5119.9]` |
+## Owner smoke
 
-The truck box is a plausible truck (3 m wide, 7 m long); `susp_bridge` is already in
-world coordinates and matches its target point. Neither the field's meaning nor its
-frame is decoded, so `GROUND_TARGET_BOX_CLAIM`'s designed `[5, 3, 5]` stays. Item 5
-of #2017 remains open.
-
-## Not done here
-
-The owner-command smoke with framebuffer screenshots of a destroyed truck needs a
-new smoke mode beside `--smoke-trucks`; it is a separate slice.
+Item 3 was done by #2047: `docs/findings/2026-10-24-convoy-kill-owner-command-smoke.md`.
