@@ -9,7 +9,7 @@ handler was read for this task.
 
 ## What shipped
 
-`crates/cs_app/src/ui/front_end/construction_panels.rs` (module docs hold the
+`crates/cs_app/src/ui/front_end/construction_armor_paint.rs` (module docs hold the
 readings), drawn by `construction_hub_view.rs` and wired through `HubPage`
 (`construction_hub.rs`) and `window.rs`:
 
@@ -27,7 +27,7 @@ readings), drawn by `construction_hub_view.rs` and wired through `HubPage`
   hands them to the production `ConstructionScreen` (`fit_armor`, `set_paint`).
   The armor zones become `ArmorFitment`s over feed-declared damage-graph nodes; the
   pattern becomes the blueprint's mask and a decal a placement over it.
-* **Hub.** A built tab returns `HubOutcome::Shown` and puts up no notice; the
+* **Hub.** A built tab returns `HubOutcome::Panel` (`panel_built` is true) and puts up no notice; the
   panel's panes (the rules `AR_P_LINE*`, `PT_P_LINE*`; not the decal sheet, which
   the script deactivates) are added to the hub section while its tab is
   selected. A layout without a panel's rows keeps the marked notice.

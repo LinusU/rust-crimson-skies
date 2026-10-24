@@ -15,7 +15,7 @@ use bevy::input::InputSystems;
 use bevy::prelude::{IntoScheduleConfigs, PreUpdate, Vec2};
 
 use cs_app::construction::{ConstructionContext, ConstructionScreen};
-use cs_app::ui::front_end::construction_panels::{
+use cs_app::ui::front_end::construction_armor_paint::{
     ARMOR_SECTION, ArmorFeed, ArmorOption, ArmorPanel, DECAL_VARIANTS, PAINT_SECTION, PaintFeed,
     PaintPanel, PanelEdit, PatternOption, apply_edits,
 };
@@ -422,15 +422,21 @@ fn accept_parity5_cabin_plane_construction_armor_paint_e_the_armor_panel_edits_t
     let before = screen.view(&ctx, &draft.state);
     assert!(!before.dirty);
     let mut page = hub_page();
-    assert_eq!(page.press("PX_B_ARMOR"), HubOutcome::Shown(HubPanel::Armor));
+    assert_eq!(page.press("PX_B_ARMOR"), HubOutcome::Panel(HubPanel::Armor));
     assert!(page.set_armor_feed(armor_feed()));
     // Heavy plates on both sides and the nose.
     for zone_index in [0usize, 2] {
         let panel = page.armor().expect("built");
         let rect = panel.lists()[zone_index].row().rect;
-        assert!(page.press_at(centre(rect).0, centre(rect).1));
+        assert_eq!(
+            page.press_at(centre(rect).0, centre(rect).1),
+            HubOutcome::List
+        );
         let item = page.armor().expect("built").lists()[zone_index].item_rect(1, 0);
-        assert!(page.press_at(centre(item).0, centre(item).1));
+        assert_eq!(
+            page.press_at(centre(item).0, centre(item).1),
+            HubOutcome::List
+        );
     }
     let edits = page.take_edits();
     assert_eq!(edits.len(), 2);
@@ -560,7 +566,7 @@ fn accept_parity5_cabin_plane_construction_armor_paint_h_the_paint_panel_edits_t
     };
     let mut screen = ConstructionScreen::open(&draft.state, declared_synthetic_blueprint(), vec![]);
     let mut page = hub_page();
-    assert_eq!(page.press("PX_B_PAINT"), HubOutcome::Shown(HubPanel::Paint));
+    assert_eq!(page.press("PX_B_PAINT"), HubOutcome::Panel(HubPanel::Paint));
     assert!(page.set_paint_feed(paint_feed()));
     let pattern = page
         .paint()
@@ -570,7 +576,10 @@ fn accept_parity5_cabin_plane_construction_armor_paint_h_the_paint_panel_edits_t
         .expect("list")
         .row()
         .rect;
-    assert!(page.press_at(centre(pattern).0, centre(pattern).1));
+    assert_eq!(
+        page.press_at(centre(pattern).0, centre(pattern).1),
+        HubOutcome::List
+    );
     let item = page
         .paint()
         .expect("built")
@@ -578,7 +587,10 @@ fn accept_parity5_cabin_plane_construction_armor_paint_h_the_paint_panel_edits_t
         .next()
         .expect("list")
         .item_rect(0, 0);
-    assert!(page.press_at(centre(item).0, centre(item).1));
+    assert_eq!(
+        page.press_at(centre(item).0, centre(item).1),
+        HubOutcome::List
+    );
     // The same pick twice in two decal slots: the second is refused, whole.
     for slot in [7usize, 8] {
         let rect = page
@@ -653,7 +665,7 @@ fn accept_parity5_cabin_plane_construction_armor_paint_i_the_tab_shows_the_panel
     );
     assert_eq!(
         state(&app).hub_outcomes(),
-        [HubOutcome::Shown(HubPanel::Armor)]
+        [HubOutcome::Panel(HubPanel::Armor)]
     );
     app.update();
     let panes = |app: &App| -> Vec<String> {

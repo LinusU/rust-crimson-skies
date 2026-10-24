@@ -704,7 +704,8 @@ impl HubPage {
                 }
             }
             selected => {
-                self.choice_panel_mut(selected)
+                return self
+                    .choice_panel_mut(selected)
                     .is_some_and(ChoicePanel::close_list);
             }
         }
@@ -828,8 +829,12 @@ impl HubPage {
     #[must_use]
     pub fn panel_section(&self) -> Option<&'static str> {
         match self.selected {
-            Panel::Armor if self.armor.is_some() => Some(super::construction_armor_paint::ARMOR_SECTION),
-            Panel::Paint if self.paint.is_some() => Some(super::construction_armor_paint::PAINT_SECTION),
+            Panel::Armor if self.armor.is_some() => {
+                Some(super::construction_armor_paint::ARMOR_SECTION)
+            }
+            Panel::Paint if self.paint.is_some() => {
+                Some(super::construction_armor_paint::PAINT_SECTION)
+            }
             _ => None,
         }
     }
