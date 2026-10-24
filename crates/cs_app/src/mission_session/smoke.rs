@@ -142,6 +142,7 @@ mod crash;
 mod debrief;
 mod ordinance;
 mod start_flow;
+mod success;
 mod trucks;
 pub mod voice_trace;
 
@@ -157,6 +158,7 @@ pub use camera_modes::{
 pub use convoy_kill::{ConvoyKillMetrics, ConvoyLayoutRow};
 pub use crash::CrashMetrics;
 pub use start_flow::StartFlowMetrics;
+pub use success::SuccessMetrics;
 pub use trucks::TrucksMetrics;
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
@@ -1090,6 +1092,11 @@ pub enum MissionSmokeMode {
     /// every truck, and framebuffer screenshots of the intact and the
     /// destroyed convoy are judged (#2047). No damage is written by the smoke.
     ConvoyKill,
+    /// `--smoke-success`: the player is placed inside `OBJECTIVE3`'s radius of
+    /// `workersvoyagezep`, presses the guns key until the zeppelin's engine
+    /// parts are out of play, and the blocks the host reported completed are
+    /// recorded (#2081). No damage is written by the smoke.
+    Success,
 }
 
 /// Everything the engagement mode measured about the idle player's hull.
@@ -1366,6 +1373,8 @@ pub struct SmokeMeasurements {
     pub trucks: Option<trucks::TrucksMetrics>,
     /// The convoy-kill stage ([`MissionSmokeMode::ConvoyKill`] only).
     pub convoy_kill: Option<convoy_kill::ConvoyKillMetrics>,
+    /// The success stage ([`MissionSmokeMode::Success`] only).
+    pub success: Option<success::SuccessMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1404,6 +1413,9 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     }
     if m.convoy_kill.is_some() {
         return convoy_kill::evaluate(m);
+    }
+    if m.success.is_some() {
+        return success::evaluate(m);
     }
     if m.start_flow.is_some() {
         return start_flow::evaluate(m);
@@ -3078,7 +3090,12 @@ fn add_script_systems(app: &mut App) {
         (
             convoy_kill::sample_convoy_observation.before(convoy_kill::smoke_convoy_kill),
             convoy_kill::sample_convoy_layout.before(convoy_kill::smoke_convoy_kill),
+            success::smoke_success,
         ),
+    );
+    app.add_systems(
+        bevy::prelude::FixedPostUpdate,
+        success::record_success_completions.after(super::host::mission_host_tick),
     );
 }
 
@@ -3881,6 +3898,9 @@ fn smoke_sample(
         if config.mode == MissionSmokeMode::ConvoyKill {
             data.measurements.convoy_kill = Some(convoy_kill::ConvoyKillMetrics::default());
         }
+        if config.mode == MissionSmokeMode::Success {
+            data.measurements.success = Some(success::SuccessMetrics::default());
+        }
         if config.mode == MissionSmokeMode::Engagement {
             data.measurements.engagement = Some(EngagementMetrics {
                 watch_frames: config.request.seconds.saturating_mul(60),
@@ -4302,6 +4322,9 @@ fn smoke_script(
         // `convoy_kill::smoke_convoy_kill` places the player, fires the guns
         // and photographs the convoy, then hands over to `Final`.
         _ if config.mode == MissionSmokeMode::ConvoyKill => {}
+        // `success::smoke_success` places the player, fires the guns and
+        // photographs the zeppelin, then hands over to `Final`.
+        _ if config.mode == MissionSmokeMode::Success => {}
         _ if config.mode == MissionSmokeMode::Engagement => {
             if data.phase != Phase::Final && data.phase != Phase::Ended {
                 let metrics = data.measurements.engagement.clone().unwrap_or_default();
@@ -6780,7 +6803,7 @@ fn write_artifacts(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
          \"engagement\":{engagement},\
-         \"debrief\":{debrief},\"crash\":{crash},\"trucks\":{trucks},\"convoy_kill\":{convoy_kill},\
+         \"debrief\":{debrief},\"crash\":{crash},\"trucks\":{trucks},\"convoy_kill\":{convoy_kill},\"success\":{success},\
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
@@ -6831,6 +6854,8 @@ fn write_artifacts(
             "trucks"
         } else if report.measurements.convoy_kill.is_some() {
             "convoy_kill"
+        } else if report.measurements.success.is_some() {
+            "success"
         } else if report.measurements.start_flow.is_some() {
             "start_flow"
         } else if report.measurements.no_teleport {
@@ -6844,6 +6869,7 @@ fn write_artifacts(
         crash = crash::crash_json(report.measurements.crash.as_ref()),
         trucks = trucks::trucks_json(report.measurements.trucks.as_ref()),
         convoy_kill = convoy_kill::convoy_kill_json(report.measurements.convoy_kill.as_ref()),
+        success = success::success_json(report.measurements.success.as_ref()),
         threshold = MAX_WINGMAN_DISTANCE_M,
         wingmen = wingmen,
         frames = report.frames,

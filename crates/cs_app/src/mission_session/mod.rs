@@ -393,8 +393,8 @@ pub use smoke::{
     MIN_TERRAIN_LUMINANCE_SPREAD, MIN_VIEW_SEPARATION_M, MIN_ZOOM_DISTANCE_M,
     MISSION_SMOKE_FRAME_HZ, MissionSmokeHandle, MissionSmokeMode, MissionSmokePlugin,
     MissionSmokeReport, PauseMapMetrics, RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE,
-    SUN_SCREEN_FRACTION, SeaMetrics, SmokeMeasurements, StartFlowMetrics, TargetingMetrics,
-    TerrainMetrics, TrucksMetrics, WINGMAN_SAMPLE_SECONDS, WingmanSample,
+    SUN_SCREEN_FRACTION, SeaMetrics, SmokeMeasurements, StartFlowMetrics, SuccessMetrics,
+    TargetingMetrics, TerrainMetrics, TrucksMetrics, WINGMAN_SAMPLE_SECONDS, WingmanSample,
     evaluate as evaluate_mission_smoke, finish as finish_mission_smoke, flare_aim,
     near_terrain_luminance, objective_line_of, region_difference, sky_below_horizon,
 };

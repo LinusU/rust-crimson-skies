@@ -83,6 +83,11 @@ pub struct MissionRequest {
     /// destroyed every truck and judges framebuffer screenshots of the intact
     /// and the destroyed convoy (Rally #2047).
     pub smoke_convoy_kill: bool,
+    /// `--smoke-success`: the smoke places the player inside `OBJECTIVE3`'s
+    /// radius of `workersvoyagezep`, presses the guns key until the
+    /// zeppelin's engine parts are out of play and records which objective
+    /// blocks the host reported completed (Rally #2081 `M01-SMOKE-SUCCESS-A`).
+    pub smoke_success: bool,
     /// `--from-start-flow`: the mission was handed over by the start flow
     /// (`cs --cs-path <dir>`), so leaving it for the cabin (the debrief's
     /// Return to Cabin, the pause map's Quit) re-opens the front end instead
@@ -209,6 +214,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut smoke_crash = false;
     let mut smoke_trucks = false;
     let mut smoke_convoy_kill = false;
+    let mut smoke_success = false;
     let mut smoke_start_flow = false;
     let mut front_end = false;
     let mut from_start_flow = false;
@@ -239,6 +245,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--smoke-crash" => smoke_crash = true,
             "--smoke-trucks" => smoke_trucks = true,
             "--smoke-convoy-kill" => smoke_convoy_kill = true,
+            "--smoke-success" => smoke_success = true,
             "--smoke-start-flow" => smoke_start_flow = true,
             "--front-end" => front_end = true,
             "--from-start-flow" => from_start_flow = true,
@@ -497,7 +504,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_engagement
             || smoke_failure
             || smoke_crash
-            || smoke_convoy_kill)
+            || smoke_convoy_kill
+            || smoke_success)
     {
         return CliRequest::Invalid {
             reason: "--smoke-trucks is a mode of --cs-path <dir> --mission <id> \
@@ -512,12 +520,30 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_no_teleport
             || smoke_engagement
             || smoke_failure
-            || smoke_crash)
+            || smoke_crash
+            || smoke_success)
     {
         return CliRequest::Invalid {
             reason: "--smoke-convoy-kill is a mode of --cs-path <dir> --mission <id> \
  --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement, \
  --smoke-failure, --smoke-crash or --smoke-trucks"
+                .to_string(),
+        };
+    }
+    if smoke_success
+        && (mission.is_none()
+            || smoke_seconds.is_none()
+            || smoke_no_teleport
+            || smoke_engagement
+            || smoke_failure
+            || smoke_crash
+            || smoke_trucks
+            || smoke_convoy_kill)
+    {
+        return CliRequest::Invalid {
+            reason: "--smoke-success is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement, \
+ --smoke-failure, --smoke-crash, --smoke-trucks or --smoke-convoy-kill"
                 .to_string(),
         };
     }
@@ -529,7 +555,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_failure
             || smoke_crash
             || smoke_trucks
-            || smoke_convoy_kill)
+            || smoke_convoy_kill
+            || smoke_success)
     {
         return CliRequest::Invalid {
             reason: "--smoke-start-flow is a mode of --cs-path <dir> --mission <id> \
@@ -564,6 +591,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_crash
             || smoke_trucks
             || smoke_convoy_kill
+            || smoke_success
             || smoke_start_flow)
     {
         return CliRequest::Invalid {
@@ -674,6 +702,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             smoke_crash,
             smoke_trucks,
             smoke_convoy_kill,
+            smoke_success,
             from_start_flow,
             joystick,
             smoke_start_flow,
@@ -743,6 +772,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         && !smoke_crash
         && !smoke_trucks
         && !smoke_convoy_kill
+        && !smoke_success
         && !smoke_start_flow
     {
         if capture_dir.is_some() && smoke_seconds.is_none() {
@@ -935,7 +965,7 @@ WINDOWED PLAYTEST (development, not original)
         Fly with the developer key layout (W/S Q/E A/D, Left Shift / F
         throttle, R reset, F10 quit) instead of the original game's default
         controls.
-    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure | --smoke-crash | --smoke-trucks | --smoke-convoy-kill] [--capture-dir <dir>]
+    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure | --smoke-crash | --smoke-trucks | --smoke-convoy-kill | --smoke-success] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,
         places the player near each spawned actor, saves framebuffer PNGs and
@@ -965,6 +995,10 @@ WINDOWED PLAYTEST (development, not original)
         (a test placement), presses the guns key until the damage authority
         has destroyed every truck and judges the observation rows and
         framebuffer screenshots of the intact and the destroyed convoy
+        --smoke-success places the player inside OBJECTIVE3's radius of
+        workersvoyagezep (a test placement), presses the guns key until the
+        zeppelin's engine parts are out of play and judges which objective
+        blocks the mission host reported completed
 
     --mission <id> [--joystick <vid:pid|name>] [--force-feedback-gain <percent>]
         A connected HID joystick flies too (SIDEWINDER-FFB2): stick X roll,
