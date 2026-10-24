@@ -96,7 +96,7 @@ fn settling_control_program(outcome: Outcome) -> MissionProgram {
 
 /// A synthetic stage whose control program settles `outcome` on its first
 /// tick, so the composed entry's funnel has something real to end the run on.
-fn settling_stage(scratch: &Path, outcome: Outcome) -> MissionStage {
+pub(super) fn settling_stage(scratch: &Path, outcome: Outcome) -> MissionStage {
     let mut stage = synthetic_stage(scratch);
     stage.host.control = settling_control_program(outcome);
     stage

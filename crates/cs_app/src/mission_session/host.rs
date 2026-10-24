@@ -1917,12 +1917,21 @@ pub fn mission_host_tick(world: &mut World) {
     let tick = host.last_tick().unwrap_or(tick);
     if let Some(terminal) = host.terminal() {
         // A failed run in the window shows the journal's debrief and stays
-        // open; every other run, and every headless one, ends on its exit.
-        let shown = terminal.outcome == TerminalOutcome::Failure
-            && terminal
-                .debrief
-                .as_ref()
-                .is_some_and(|debrief| super::debrief_screen::show_debrief(world, debrief));
+        // open, and so does a won one the start flow handed over (its Return
+        // to Cabin is the way back); every other run, and every headless one,
+        // ends on its exit.
+        let debrief_outcome = match terminal.outcome {
+            TerminalOutcome::Failure => Some(false),
+            TerminalOutcome::Success if world.contains_resource::<super::ReturnToFrontEnd>() => {
+                Some(true)
+            }
+            _ => None,
+        };
+        let shown = debrief_outcome.is_some_and(|succeeded| {
+            terminal.debrief.as_ref().is_some_and(|debrief| {
+                super::debrief_screen::show_outcome_debrief(world, debrief, succeeded)
+            })
+        });
         if !shown && !world.contains_resource::<MissionExitHeld>() {
             world.write_message(terminal.exit.app_exit());
         }

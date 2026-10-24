@@ -23,11 +23,13 @@
 //!
 //! # What is drawn from what the data states, and what is not
 //!
-//! * **Mission Failed only.** The owner's frames show the failure variant.
-//!   The Mission Succeeded variant (`IDS_SB_SUCCESS` is `Mission Completed`)
-//!   is not photographed, so the screen is built for a failure and a settled
-//!   success keeps the run's exit unchanged. Recorded in
-//!   [`DebriefScene::unknowns`].
+//! * **Mission Failed is the photographed variant.** The owner's frames show
+//!   the failure. The Mission Succeeded variant (`IDS_SB_SUCCESS` is `Mission
+//!   Completed`) is not photographed: it is the same layout section with the
+//!   success caption, and what else differs is recorded in
+//!   [`DebriefScene::unknowns`] (task #1972). In a run the start flow handed
+//!   over, a settled success shows it and `Return to Cabin` leaves for the
+//!   cabin; any other run's success keeps the run's exit unchanged.
 //! * **Run Time** is drawn `m:ss`, the way the owner's frame draws it. The
 //!   string image's own format (`IDS_SB_TIME_VAL`, `%1!02d!:%2!02d!`) would pad
 //!   the minutes (`01:37`), which the frame does not show; which of the two the
@@ -93,6 +95,9 @@ pub const SECTION: &str = "ScrapBook";
 
 /// The caption of a failed run (`Mission Failed`).
 pub const FAILURE_TITLE_STRING: &str = "IDS_SB_FAILURE";
+
+/// The caption of a won run (`Mission Completed`).
+pub const SUCCESS_TITLE_STRING: &str = "IDS_SB_SUCCESS";
 
 /// The format of the title line (`%1!s! - %2!s!`: player, mission).
 pub const NAME_AND_AREA_STRING: &str = "IDS_SB_NAMEANDAREA";
@@ -334,6 +339,8 @@ pub struct DebriefFacts {
     pub mission_title: Option<String>,
     /// The settled run's fields.
     pub debrief: MissionDebrief,
+    /// Whether the run was won (the caption) rather than failed.
+    pub succeeded: bool,
 }
 
 /// What the screen draws.
@@ -358,7 +365,7 @@ const FOLLOW_UP: &str = "a follow-up task asking the owner for original frames o
      Succeeded debrief and the Best to Date / Most Recent tab states";
 
 impl DebriefScene {
-    /// Builds the failure scene.
+    /// Builds the scene of a settled run, failed or won (`facts.succeeded`).
     ///
     /// `strings` maps an `IDS_*` name to its text.
     ///
@@ -393,23 +400,28 @@ impl DebriefScene {
             })
         };
 
-        let mut unknowns = vec![
-            SceneUnknown {
-                row: "SB_T_COMPLETETITLE".to_owned(),
-                reason: "the Mission Succeeded variant (`IDS_SB_SUCCESS`) has not been \
-                         photographed from the original, so the screen is built for a failure \
-                         only and a settled success keeps the run's exit"
-                    .to_owned(),
-                resolving_task: FOLLOW_UP.to_owned(),
-            },
-            SceneUnknown {
-                row: "SB_B_BEST / SB_B_MOST".to_owned(),
-                reason: "which tab is selected, the strip frame the selected tab uses and what \
+        let mut unknowns = vec![SceneUnknown {
+            row: "SB_T_COMPLETETITLE".to_owned(),
+            reason: if facts.succeeded {
+                "the Mission Succeeded variant has not been photographed from the original: \
+                 the caption is the string image's `IDS_SB_SUCCESS`, and whether the stat \
+                 rows, the card or the buttons differ from the failure's is not known, so \
+                 the failure's are drawn"
+            } else {
+                "the Mission Succeeded variant (`IDS_SB_SUCCESS`) has not been photographed \
+                 from the original; it is drawn as the failure's screen with the success \
+                 caption, only in a run the start flow handed over"
+            }
+            .to_owned(),
+            resolving_task: FOLLOW_UP.to_owned(),
+        }];
+        unknowns.push(SceneUnknown {
+            row: "SB_B_BEST / SB_B_MOST".to_owned(),
+            reason: "which tab is selected, the strip frame the selected tab uses and what \
                          each tab shows are not visible in the owner's frames"
-                    .to_owned(),
-                resolving_task: FOLLOW_UP.to_owned(),
-            },
-        ];
+                .to_owned(),
+            resolving_task: FOLLOW_UP.to_owned(),
+        });
 
         let mut panes = Vec::new();
         for row in &section.panes {
@@ -607,7 +619,14 @@ impl DebriefScene {
             let color = color_of(field(row, 6)).unwrap_or(0xFF00_0000);
             let (text, unknown) = match row.id.as_str() {
                 "SB_T_NAMEANDAREA" => (name_and_area.clone(), false),
-                "SB_T_COMPLETETITLE" => (string(FAILURE_TITLE_STRING)?, false),
+                "SB_T_COMPLETETITLE" => (
+                    string(if facts.succeeded {
+                        SUCCESS_TITLE_STRING
+                    } else {
+                        FAILURE_TITLE_STRING
+                    })?,
+                    false,
+                ),
                 "SB_T_TIME" => (debrief.run_time(), false),
                 "SB_T_HIT" => (percent.clone(), false),
                 "SB_T_CASH" => (cash.clone(), !cash_known),
@@ -855,6 +874,7 @@ impl DebriefSource {
         // go through.
         let mut names: Vec<String> = [
             FAILURE_TITLE_STRING,
+            SUCCESS_TITLE_STRING,
             NAME_AND_AREA_STRING,
             PERCENTAGE_STRING,
             CASH_STRING,
@@ -937,12 +957,25 @@ impl DebriefSource {
         }
     }
 
-    /// Builds the screen of one settled run.
+    /// Builds the screen of one failed run.
     ///
     /// # Errors
     ///
     /// [`DebriefSceneError`] from [`DebriefScene::build`].
     pub fn screen_for(&self, debrief: &MissionDebrief) -> Result<DebriefScreen, DebriefSceneError> {
+        self.screen_for_outcome(debrief, false)
+    }
+
+    /// Builds the screen of one settled run, won when `succeeded`.
+    ///
+    /// # Errors
+    ///
+    /// [`DebriefSceneError`] from [`DebriefScene::build`].
+    pub fn screen_for_outcome(
+        &self,
+        debrief: &MissionDebrief,
+        succeeded: bool,
+    ) -> Result<DebriefScreen, DebriefSceneError> {
         let scene = DebriefScene::build(
             &self.layout,
             &|art: &str| self.extents.get(&art.to_ascii_lowercase()).copied(),
@@ -951,6 +984,7 @@ impl DebriefSource {
                 player_name: self.player_name.clone(),
                 mission_title: self.mission_title.clone(),
                 debrief: debrief.clone(),
+                succeeded,
             },
         )?;
         Ok(DebriefScreen::new(scene))
@@ -1013,15 +1047,25 @@ pub fn install_debrief_screen(app: &mut App, source: DebriefSource, artwork: Deb
 }
 
 /// Takes the settled failure's debrief into the window: builds the screen and
-/// holds the mission behind it.
+/// holds the mission behind it. [`show_outcome_debrief`] is the same for a won
+/// run.
 ///
 /// Returns whether the screen took the run over. `false` — no source
 /// installed (a headless run) — leaves the run's exit to the caller.
 pub fn show_debrief(world: &mut bevy::prelude::World, debrief: &MissionDebrief) -> bool {
+    show_outcome_debrief(world, debrief, false)
+}
+
+/// [`show_debrief`] for a run that was won when `succeeded`.
+pub fn show_outcome_debrief(
+    world: &mut bevy::prelude::World,
+    debrief: &MissionDebrief,
+    succeeded: bool,
+) -> bool {
     let Some(source) = world.get_resource::<DebriefSource>() else {
         return false;
     };
-    match source.screen_for(debrief) {
+    match source.screen_for_outcome(debrief, succeeded) {
         Ok(screen) => {
             let screen = if world.contains_resource::<super::ReturnToFrontEnd>() {
                 screen.with_cabin()

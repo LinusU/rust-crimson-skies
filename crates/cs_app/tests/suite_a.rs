@@ -81,6 +81,7 @@ mod campaign {
     mod parity5_ordinance_routing;
     mod parity5_start_flow_03;
     mod parity5_start_flow_04;
+    mod parity5_start_flow_succeeded;
     mod parity_m01_atmo_c;
     mod parity_m01_clouds;
     mod parity_m01_island_shading;

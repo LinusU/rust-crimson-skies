@@ -222,7 +222,7 @@ pub use debrief_screen::{
     Arg, DebriefArtwork, DebriefButton, DebriefFacts, DebriefPane, DebriefReadError,
     DebriefResponse, DebriefRole, DebriefScene, DebriefSceneError, DebriefScreen,
     DebriefScreenPlugin, DebriefSource, apply_response, format_message, install_debrief_screen,
-    press_debrief_hotspot, show_debrief,
+    press_debrief_hotspot, show_debrief, show_outcome_debrief,
 };
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,

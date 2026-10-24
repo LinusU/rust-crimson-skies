@@ -59,6 +59,7 @@ pub(super) fn authored_source() -> DebriefSource {
     .collect();
     let strings: BTreeMap<String, String> = [
         ("IDS_SB_FAILURE", "Mission Failed"),
+        ("IDS_SB_SUCCESS", "Mission Completed"),
         ("IDS_SB_NAMEANDAREA", "%1!s! - %2!s!"),
         ("IDS_SB_PERCENTAGE_VAL", "%1!d!%%"),
         ("IDS_SB_CASH_VAL", "$%1!d!"),
