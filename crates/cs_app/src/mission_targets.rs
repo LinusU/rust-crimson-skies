@@ -60,9 +60,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::mission_world_actors::{AllegianceBinding, resolve_world_node_allegiance};
+use bevy::math::{DAffine3, DMat3, DQuat, DVec3};
 use cs_assets::install::Discovery;
 use cs_content::coordinates::SourceAdapter;
-use cs_content::scene::{BindingMap, SceneGraph, SceneNode};
+use cs_content::scene::{BindingMap, CanonicalTransform, SceneGraph, SceneNode};
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_content::world::world_scene_graph_from_gamez;
 use cs_formats::gamez::{GameZNodes, read_gamez_nodes};
@@ -281,6 +282,117 @@ pub struct BoundTarget {
     /// the node's subtree (M01-TARGET-ROSTER, #1592): the measured team int
     /// and the source that settled it, or why none can be claimed.
     pub allegiance: AllegianceBinding,
+    /// The node's composed frame and the frames of its ancestors, kept so a
+    /// target nested under a world actor can be re-seated on the actor's own
+    /// pose ([`TargetFrame::under_anchor`]). `None` until the binding has
+    /// read the node.
+    pub frame: Option<TargetFrame>,
+}
+
+/// The composed frame of one bound target and of each ancestor above it.
+///
+/// A node nested under a world actor's node (`hydrogentank1` under
+/// `cargozep1`) is stored with its composed transform *inside the static
+/// container*, where the actor's node sits at the container's own placement.
+/// The actor itself is placed by the mission program, so the child's world
+/// pose is the actor's pose carried through the child's pose relative to the
+/// actor's node, exactly as the drawn subtree is
+/// (`build_world_node_visual`: `inverse(root world) ∘ node world`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetFrame {
+    /// The node's composed world transform in the static container.
+    pub world: CanonicalTransform,
+    /// The node's stored bounding box `[min, max]`, in its own space.
+    pub stored_box: Option<[[f64; 3]; 2]>,
+    /// The composed world transform of each ancestor, nearest first.
+    pub ancestors: Vec<(String, CanonicalTransform)>,
+}
+
+/// A target's pose once re-seated under a world actor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnchoredTarget {
+    /// The node origin in the world.
+    pub position_m: [f64; 3],
+    /// The centre of the node's stored box in the world (the node origin when
+    /// it stores none).
+    pub target_point_m: [f64; 3],
+    /// Half the extents of the world-axis bound of the stored box (zero when
+    /// the node stores none).
+    pub target_half_extents_m: [f64; 3],
+}
+
+impl TargetFrame {
+    /// The target's pose with the ancestor named `anchor` standing at `pose`
+    /// (position and `[x, y, z, w]` orientation) instead of at its static
+    /// container placement. `None` when the node has no such ancestor or the
+    /// ancestor's transform does not invert.
+    #[must_use]
+    pub fn under_anchor(
+        &self,
+        anchor: &str,
+        position_m: [f64; 3],
+        orientation: [f64; 4],
+    ) -> Option<AnchoredTarget> {
+        let (_, anchor_world) = self.ancestors.iter().find(|(name, _)| name == anchor)?;
+        let columns = |t: &CanonicalTransform| {
+            let l = t.linear();
+            DAffine3 {
+                matrix3: DMat3::from_cols(
+                    DVec3::new(l[0][0], l[1][0], l[2][0]),
+                    DVec3::new(l[0][1], l[1][1], l[2][1]),
+                    DVec3::new(l[0][2], l[1][2], l[2][2]),
+                ),
+                translation: DVec3::from_array(t.translation()),
+            }
+        };
+        let anchor_affine = columns(anchor_world);
+        if !anchor_affine.matrix3.determinant().is_normal() {
+            return None;
+        }
+        let rotation = DQuat::from_xyzw(
+            orientation[0],
+            orientation[1],
+            orientation[2],
+            orientation[3],
+        );
+        if !rotation.is_finite() || rotation.length_squared() == 0.0 {
+            return None;
+        }
+        let pose = DAffine3::from_rotation_translation(
+            rotation.normalize(),
+            DVec3::from_array(position_m),
+        );
+        let reseat = pose * anchor_affine.inverse();
+        let place = |point: [f64; 3]| reseat.transform_point3(DVec3::from_array(point));
+        let position = place(self.world.translation());
+        let Some([min, max]) = self.stored_box else {
+            let position = position.to_array();
+            return Some(AnchoredTarget {
+                position_m: position,
+                target_point_m: position,
+                target_half_extents_m: [0.0; 3],
+            });
+        };
+        let mut low = DVec3::splat(f64::INFINITY);
+        let mut high = DVec3::splat(f64::NEG_INFINITY);
+        for corner in 0..8 {
+            let local: [f64; 3] = std::array::from_fn(|axis| {
+                if corner >> axis & 1 == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            });
+            let world = place(self.world.apply(local));
+            low = low.min(world);
+            high = high.max(world);
+        }
+        Some(AnchoredTarget {
+            position_m: position.to_array(),
+            target_point_m: ((low + high) / 2.0).to_array(),
+            target_half_extents_m: ((high - low) / 2.0).to_array(),
+        })
+    }
 }
 
 impl BoundTarget {
@@ -771,6 +883,17 @@ fn bind_mission_targets_from(
             let (point, half) = target_bounds(node, raw);
             target.target_point_m = point;
             target.target_half_extents_m = half;
+            let mut ancestors = Vec::new();
+            let mut parent = node.parent();
+            while let Some(above) = parent.and_then(|id| graph.node(id)) {
+                ancestors.push((above.name().to_owned(), *above.world_transform()));
+                parent = above.parent();
+            }
+            target.frame = Some(TargetFrame {
+                world: *node.world_transform(),
+                stored_box: stored_box(raw),
+                ancestors,
+            });
         }
     }
     drop_container_boxes(&mut targets);
@@ -879,6 +1002,16 @@ pub fn drop_container_boxes(targets: &mut [BoundTarget]) {
     }
 }
 
+/// The node's stored bounding box `[min, max]`: the first non-empty of the record's
+/// three boxes (see [`target_bounds`]).
+fn stored_box(raw: &cs_formats::gamez::RawNode) -> Option<[[f64; 3]; 2]> {
+    let info = &raw.info;
+    [info.unk116, info.unk140, info.unk164]
+        .into_iter()
+        .find(|bounds| bounds.iter().flatten().any(|value| *value != 0.0))
+        .map(|[min, max]| [min.map(f64::from), max.map(f64::from)])
+}
+
 /// The target record's point for one node, and half the extents of its box.
 ///
 /// The point is the composed transform applied to the centre of the node's
@@ -893,11 +1026,7 @@ pub fn drop_container_boxes(targets: &mut [BoundTarget]) {
 /// "the non-empty one" on every measured class
 /// (`docs/findings/2026-10-08-m01-lc-world-residual-roles.md`).
 fn target_bounds(node: &SceneNode, raw: &cs_formats::gamez::RawNode) -> ([f64; 3], [f64; 3]) {
-    let info = &raw.info;
-    let found = [info.unk116, info.unk140, info.unk164]
-        .into_iter()
-        .find(|bounds| bounds.iter().flatten().any(|value| *value != 0.0));
-    let Some([min, max]) = found else {
+    let Some([min, max]) = stored_box(raw) else {
         return (node.world_transform().translation(), [0.0; 3]);
     };
     let transform = node.world_transform();
@@ -905,11 +1034,11 @@ fn target_bounds(node: &SceneNode, raw: &cs_formats::gamez::RawNode) -> ([f64; 3
     let mut high = [f64::NEG_INFINITY; 3];
     for corner in 0..8 {
         let local: [f64; 3] = std::array::from_fn(|axis| {
-            f64::from(if corner >> axis & 1 == 0 {
+            if corner >> axis & 1 == 0 {
                 min[axis]
             } else {
                 max[axis]
-            })
+            }
         });
         let world = transform.apply(local);
         for axis in 0..3 {
@@ -1072,6 +1201,7 @@ fn merge_target(
         description: labels.0,
         help_label: labels.1,
         allegiance: AllegianceBinding::Open(NOT_RESOLVED.to_owned()),
+        frame: None,
     });
 }
 

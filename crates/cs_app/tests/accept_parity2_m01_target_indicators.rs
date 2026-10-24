@@ -560,6 +560,7 @@ fn accept_parity2_m01_target_indicators_pose_sync_updates_records() {
         help_label: None,
         roster: None,
         allegiance_open: None,
+        anchor: None,
     });
 
     sync_mission_target_poses(&mut world);

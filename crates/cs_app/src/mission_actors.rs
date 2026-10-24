@@ -357,6 +357,51 @@ pub struct MissionGroundTarget {
     pub roster: Option<WorldActorRoster>,
     /// Why no roster record exists, verbatim, when [`Self::roster`] is `None`.
     pub allegiance_open: Option<String>,
+    /// The world actor's node this target hangs under, when its pose was
+    /// taken from that actor's ([`reseat_under_zeppelin`]); the position and
+    /// box above are then the actor's, not the static container's.
+    pub anchor: Option<String>,
+}
+
+/// Re-seats a target that is a node of a spawned zeppelin onto the zeppelin's
+/// pose (M01-WORLD-ACTOR-CHILD-TARGETS, #2096).
+///
+/// `hydrogentank1..4` are stored as descendants of `cargozep1` (`NAME1`
+/// path `cargozep1/underneath/hydrogentank*`), with a composed transform in
+/// the static container that is only the offset below the zeppelin. The
+/// nearest ancestor that is a spawned zeppelin's node supplies the pose: the
+/// target's world pose is the actor's pose carried through the target's pose
+/// relative to that node, the composition the drawn subtree already uses. The
+/// pose is read at spawn; no zeppelin moves after it (nothing writes a
+/// spawned zeppelin's transform), so the target is not re-seated on a tick.
+/// A target with no such ancestor is returned unchanged with no anchor.
+#[must_use]
+pub fn reseat_under_zeppelin(
+    target: &crate::mission_targets::BoundTarget,
+    anchors: &[(String, [f64; 3], [f64; 4])],
+) -> (crate::mission_targets::BoundTarget, Option<String>) {
+    let Some(frame) = &target.frame else {
+        return (target.clone(), None);
+    };
+    for (name, _) in &frame.ancestors {
+        let Some((_, position, orientation)) = anchors.iter().find(|(node, ..)| node == name)
+        else {
+            continue;
+        };
+        let Some(placed) = frame.under_anchor(name, *position, *orientation) else {
+            return (target.clone(), None);
+        };
+        let mut moved = target.clone();
+        moved.position_m = placed.position_m;
+        moved.target_point_m = placed.target_point_m;
+        // A container-enclosure fallback zeroed the extents on purpose
+        // (`drop_container_boxes`); keep that.
+        if moved.target_half_extents_m.iter().any(|half| *half != 0.0) {
+            moved.target_half_extents_m = placed.target_half_extents_m;
+        }
+        return (moved, Some(name.clone()));
+    }
+    (target.clone(), None)
 }
 
 /// Resource: what the ground-target binding spawned — the entities, their
@@ -1176,6 +1221,9 @@ fn spawn_mission_actors_under(
         });
     }
 
+    // Where each spawned zeppelin's node stands, by node name, for the ground
+    // targets that are nodes of it.
+    let mut zeppelin_anchors: Vec<(String, [f64; 3], [f64; 4])> = Vec::new();
     for (world_actor, subject) in &zeppelins {
         let actor = match allocator.allocate() {
             Ok(actor) => actor,
@@ -1216,6 +1264,16 @@ fn spawn_mission_actors_under(
                 player_allegiance: declared_player_allegiance(faction, player_team_of_player),
             });
         let (position_m, orientation) = (pose.position_m, pose.orientation.0);
+        zeppelin_anchors.push((
+            subject
+                .key()
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+            position_m,
+            orientation,
+        ));
         let entity = world
             .spawn((
                 Transform::from_translation(Vec3::new(
@@ -1344,7 +1402,9 @@ fn spawn_mission_actors_under(
         session: Some(session),
         ..MissionGroundTargetReport::default()
     };
-    for target in &binding.targets.targets {
+    for bound in &binding.targets.targets {
+        let (reseated, anchor) = reseat_under_zeppelin(bound, &zeppelin_anchors);
+        let target = &reseated;
         let node = match crate::mission_targets::target_damage_node(target) {
             Ok(node) => node,
             Err(reason) => {
@@ -1460,6 +1520,7 @@ fn spawn_mission_actors_under(
                     help_label: target.help_label.clone(),
                     roster,
                     allegiance_open,
+                    anchor,
                 },
             ))
             .id();

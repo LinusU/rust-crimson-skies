@@ -68,6 +68,7 @@ fn stage_with_target(scratch: &Scratch) -> MissionStage {
                 team: 2,
                 source: AllegianceSource::NoBinding,
             },
+            frame: None,
         }],
         declared: vec![0],
         refusals: Vec::new(),

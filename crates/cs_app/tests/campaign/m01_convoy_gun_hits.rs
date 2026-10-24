@@ -379,6 +379,7 @@ fn box_target(node: &str, index: u32, point: [f64; 3], half: [f64; 3]) -> BoundT
             team: 1,
             source: AllegianceSource::NoBinding,
         },
+        frame: None,
     }
 }
 

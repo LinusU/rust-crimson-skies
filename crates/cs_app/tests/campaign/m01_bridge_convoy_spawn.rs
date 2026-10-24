@@ -363,6 +363,7 @@ fn accept_m01_bridge_convoy_spawn_rows_and_damage_node_are_production() {
         description: None,
         help_label: None,
         allegiance: cs_app::mission_world_actors::AllegianceBinding::Open("unresolved".to_owned()),
+        frame: None,
     };
     assert!(target.has_destroy_layout());
     let node = target_damage_node(&target).expect("the designed node builds");

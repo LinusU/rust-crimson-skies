@@ -101,6 +101,7 @@ fn ground_target(
         help_label: None,
         roster: None,
         allegiance_open: None,
+        anchor: None,
     }
 }
 

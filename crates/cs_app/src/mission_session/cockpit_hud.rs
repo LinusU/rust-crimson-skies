@@ -712,6 +712,7 @@ mod tests {
             help_label: Some("MSG_OBJ_EXAMINE".to_owned()),
             roster: None,
             allegiance_open: None,
+            anchor: None,
         }
     }
 

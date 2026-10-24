@@ -61,6 +61,7 @@ fn target_with(allegiance: AllegianceBinding, objective: bool) -> BoundTarget {
         description: None,
         help_label: None,
         allegiance,
+        frame: None,
     }
 }
 
