@@ -1341,6 +1341,9 @@ impl FlightCheckPhase {
             if button.role == ButtonRole::ReturnToBriefing && self.briefing.is_some() {
                 continue;
             }
+            if matches!(button.role, ButtonRole::ChangeAmmo(_)) && self.ordinance.is_some() {
+                continue;
+            }
             if let Some(reason) = button.role.unavailable() {
                 lines.push(format!(
                     "mission flight check: {}: {reason}",

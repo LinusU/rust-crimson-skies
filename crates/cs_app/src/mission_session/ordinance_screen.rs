@@ -16,7 +16,7 @@ use bevy::prelude::{
     Local, Node, PositionType, Query, Res, ResMut, Text, TextColor, TextFont, UiRect, Val, Window,
     With, default,
 };
-use bevy::text::{FontSize, Justify, TextLayout};
+use bevy::text::{FontSize, Justify, LineBreak, TextLayout};
 use cs_content::ui_layout::{AspectFit, Rect};
 
 use super::flight_check::{
@@ -42,6 +42,9 @@ const HIGHLIGHT: u32 = 0xFF37_277A;
 const ITEM_TEXT: u32 = 0xFFFF_FFFF;
 /// The `[FONT]` size a row without a tag is drawn at.
 const DEFAULT_SIZE: f32 = 15.0;
+/// The size of a box's held row and a list's rows: they stand on rows 15
+/// logical pixels tall (`STDITEMH`) and must not wrap.
+const ITEM_SIZE: f32 = 12.0;
 
 // Roots of one global index are stacked in no stated order, so every layer
 // that must be above another has an index of its own.
@@ -138,11 +141,14 @@ pub(super) fn sync_ordinance_screen(
                 ..default()
             },
             TextColor(argb(color)),
-            TextLayout::justify(match justify {
-                1 => Justify::Center,
-                2 => Justify::Right,
-                _ => Justify::Left,
-            }),
+            TextLayout::new(
+                match justify {
+                    1 => Justify::Center,
+                    2 => Justify::Right,
+                    _ => Justify::Left,
+                },
+                LineBreak::NoWrap,
+            ),
             Logical(logical(rect)),
             LogicalFont(size),
             GlobalZIndex(layer),
@@ -220,7 +226,7 @@ pub(super) fn sync_ordinance_screen(
                 &mut commands,
                 inset(closed),
                 held,
-                DEFAULT_SIZE + 2.0,
+                ITEM_SIZE,
                 ITEM_TEXT,
                 0,
                 BOX_FACE,
@@ -242,7 +248,7 @@ pub(super) fn sync_ordinance_screen(
                 &mut commands,
                 inset(rect),
                 row,
-                DEFAULT_SIZE + 2.0,
+                ITEM_SIZE,
                 ITEM_TEXT,
                 0,
                 LIST_FACE,
