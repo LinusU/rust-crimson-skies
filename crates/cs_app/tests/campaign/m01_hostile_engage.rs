@@ -110,7 +110,7 @@ fn accept_m01_outcome_a_an_idle_player_never_wakes_the_kestrels() {
             .world()
             .resource::<Messages<TerrainContactJudged>>()
             .iter_current_update_messages()
-            .map(|judged| judged.damage)
+            .map(|judged| judged.hull_damage)
             .sum::<f64>();
     }
 
