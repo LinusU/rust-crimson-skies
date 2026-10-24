@@ -389,7 +389,7 @@ fn accept_vs_m01_runtime_window_a_synthetic_world_composes_attaches_and_tears_do
     let position = world
         .get::<Position>(player)
         .expect("the body has a position");
-    // One frame of flight at the declared start speed is under a metre, so
+    // One frame of flight from the release state is under a metre, so
     // the body has been at the measured pose this frame; the exact pose is
     // the recipe asserted above.
     for axis in 0..3 {
@@ -432,7 +432,7 @@ fn accept_vs_m01_runtime_window_a_synthetic_world_composes_attaches_and_tears_do
         .expect("the body has a velocity");
     assert!(
         velocity.0.length() > 0.0,
-        "the player body must launch with the declared start speed"
+        "the player body must have started moving (the release state is at rest, gravity and the law move it)"
     );
 
     teardown(&mut app);

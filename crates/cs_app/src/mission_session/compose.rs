@@ -137,7 +137,6 @@ use crate::mission_start::StartPose;
 use crate::mission_world_actors::object3d_orientation;
 use crate::objectives::LoweredObjectives;
 use crate::physics::{BodyMode, BodySpec, spawn_body};
-use crate::playtest::retail::RETAIL_START_SPEED_M_S;
 use crate::playtest::scene::{
     AIRCRAFT_HALF_EXTENTS_M, PlaytestAircraft, PlaytestOriginalFlight, SceneError,
 };
@@ -542,9 +541,20 @@ pub struct MissionPlayerStart {
     /// The measured start orientation: the heading composed through the
     /// production [`object3d_orientation`] (`M = Ry·Rx·Rz`, #770 §12.2).
     pub orientation: Quaternion,
-    /// The spawn velocity, m/s: the body's nose (`BODY_FORWARD`) at the
-    /// declared development start speed.
+    /// The spawn velocity, m/s: the zero vector, the release state of the
+    /// original's hand-over (`0x47f1f0` with `veh+0x91d` clear loads the
+    /// zero vector at `0x75d1b8`, `docs/findings/2026-10-23-m01-handover-
+    /// dynamics-step.md` section 3, `static`). The owner's run agrees: the
+    /// body moves 3.3 m in its first second (#1746). Which of release or
+    /// placement (20 m/s along the nose) M01 ends in is still the open
+    /// `launch-flag-clear-site`; 55 m/s is neither.
     pub velocity_m_s: [f32; 3],
+    /// The *actual* throttle at the hand-over (`veh+0x128`): 0, equal to the
+    /// release state's command (same sources as [`Self::velocity_m_s`]). The
+    /// law slews it toward the command at 0.5 per second, which is the
+    /// spool-up. The command itself stays the declared playtest throttle:
+    /// what raised the original's command is the open `hand-over-command`.
+    pub start_throttle: f64,
     /// Half extents of the body's collider.
     ///
     /// **A declared development stand-in** (the playtest's own box), not a
@@ -1566,14 +1576,14 @@ fn add_composition(
     //    Startup spawns the body, and `R` restarts it from the same
     //    recipe.
     let orientation = composed_orientation(stage.start.heading)?;
-    let nose = quat_from(orientation) * Vec3::new(0.0, 0.0, -RETAIL_START_SPEED_M_S as f32);
     app.insert_resource(MissionPlayerStart {
         flight: stage.flight.model.clone(),
         fuel: stage.flight.fuel,
         crash_health_damage_range: stage.flight.crash_health_damage_range,
         position_m: stage.start.position,
         orientation,
-        velocity_m_s: nose.to_array(),
+        velocity_m_s: [0.0; 3],
+        start_throttle: 0.0,
         half_extents_m: AIRCRAFT_HALF_EXTENTS_M,
         provenance: stage.flight.provenance,
     });
@@ -1874,10 +1884,9 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
 ///
 /// The pose is the stage's measured start pose: position in metres, the
 /// heading composed through the production `object3d_orientation`, and the
-/// spawn velocity on the law's own nose axis (`BODY_FORWARD`, `-Z`) at the
-/// declared development start speed — the original's player spawn speed
-/// was not recovered (#796, unresolved until an original run, #358), so
-/// that speed is a documented choice, not a measurement. Which body axis
+/// spawn velocity zero with the actual throttle at 0 — the release state
+/// of the original's hand-over ([`MissionPlayerStart::velocity_m_s`]),
+/// from which the law spools up. Which body axis
 /// the original airframe node's nose occupies was not measured either; the
 /// heading is applied with the measured `Ry` compose and the residue is
 /// recorded in `docs/findings/2026-10-10-vs-m01-rt-window-composition.md`.
@@ -1911,7 +1920,7 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
             velocity_mps: start.velocity_m_s.map(f64::from),
             orientation: start.orientation,
             angular_momentum_world: [0.0; 3],
-            throttle: f64::from(crate::playtest::command::CRUISE_THROTTLE),
+            throttle: start.start_throttle,
             fuel: start.fuel,
             level_off: false,
         },
