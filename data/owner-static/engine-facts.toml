@@ -6285,7 +6285,7 @@ name = "table.fill_loop"
 va = 0x004ee41f
 bytes = "ffd38944240cdb44240c83c60481fe40d19f00d80d58837200d95efc7c"
 fact = "the fill loop: rand(), int->float, * scale, store, until 0x9fd140 (200 entries)"
-=======
+
 # Material cycle playback (task #1981, finding
 # docs/findings/2026-10-24-m01-sea-material-cycle-static.md). The per-draw
 # material update 0x55b1a0 advances a cycled material's frame position
@@ -6320,4 +6320,3 @@ va = 0x63b158
 kind = "f32"
 value = 0.125
 meaning = "0.125f: the frame delta [0x9ad744] is clamped to at most this (compare at 0x59c12f, store at 0x59c141); the lower clamp (0x63b15c) is 0.0"
->>>>>>> ba2c18c24 (Commit the material-cycle engine facts with tests that re-read the image)
