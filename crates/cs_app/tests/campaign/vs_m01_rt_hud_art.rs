@@ -356,3 +356,29 @@ fn accept_m01_hud_1797_glyph_cells_stand_in_front_of_the_dial_face() {
         );
     }
 }
+
+/// **The damage-zone pieces stand in front of the silhouette face** (#2031):
+/// authored coplanar with it, they drew as a rim sliver only.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_hud_2031_zone_pieces_stand_in_front_of_the_silhouette_face() {
+    let root = game_dir();
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
+        .expect("the launch closure plans");
+    let stage = stage_for(&root, &plan).expect("the stage reads through the production readers");
+    let mut app = build_headless(&stage).expect("the stage composes headlessly");
+    app.update();
+    let world = app.world_mut();
+    let mut pieces = world.query::<(&cs_app::mission_session::HudZonePiece, &Transform)>();
+    let zs: Vec<f32> = pieces
+        .iter(world)
+        .map(|(_, transform)| transform.translation.z)
+        .collect();
+    assert!(!zs.is_empty(), "no zone pieces were composed");
+    for z in zs {
+        assert!(
+            z > 0.025,
+            "a zone piece at z = {z} is coplanar with the face"
+        );
+    }
+}

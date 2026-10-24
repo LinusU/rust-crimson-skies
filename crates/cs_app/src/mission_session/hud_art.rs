@@ -1016,15 +1016,24 @@ fn tag_zone_pieces(
         } else {
             ZonePieceRole::Hilite
         };
-        world.entity_mut(*child).insert(HudZonePiece {
+        let mut child = world.entity_mut(*child);
+        child.insert(HudZonePiece {
             region,
             role,
             authored: piece.material.clone(),
         });
+        // The zone quads are authored flat at z = 0, coplanar with the
+        // silhouette face (`g843`), so the face hid the wing-shaped fan and
+        // only the rim sliver showed (#2031). Lifting each piece clear of the
+        // face is designed, as for the glyph cells; the original's draw
+        // order is unmeasured.
+        if let Some(mut transform) = child.get_mut::<Transform>() {
+            transform.translation.z += GLYPH_LIFT;
+        }
     }
 }
 
-/// How far each glyph quad stands in front of its dial face, in the gauge's
+/// How far each glyph or damage-zone quad stands in front of its dial face, in the gauge's
 /// own units: the face mesh reaches z = 0.024 (measured from the stored mesh).
 const GLYPH_LIFT: f32 = 0.05;
 
