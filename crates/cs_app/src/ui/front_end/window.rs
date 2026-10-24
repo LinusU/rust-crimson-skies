@@ -1260,6 +1260,13 @@ fn frame_shell(world: &mut World) {
                 StartStep::NotImplemented(entry) => {
                     eprintln!("cs: {} is not implemented", entry.what);
                 }
+                StartStep::Memento => {
+                    state.redraw = true;
+                    let now = shell.section_name().unwrap_or_default();
+                    if state.run.visited.last().map(String::as_str) != Some(now) {
+                        state.run.visited.push(now.to_owned());
+                    }
+                }
                 StartStep::Launch { .. } | StartStep::Quit => exit = true,
                 StartStep::Refused(refusal) => eprintln!("cs: {refusal}"),
                 StartStep::Stay => {}
@@ -1283,6 +1290,11 @@ fn frame_shell(world: &mut World) {
             }
             ShellOutcome::Nothing | ShellOutcome::Toggled { .. } => {}
         }
+    }
+    if let Some(flow) = flow.as_ref()
+        && flow.sync_memento(shell)
+    {
+        state.redraw = true;
     }
     if exit {
         // A Launch step exits through the same AppExit a Quit does; the
@@ -2058,6 +2070,9 @@ pub enum SmokeScene {
     /// Audio, the check box, a slider drag, the drop-down, Accept, a second
     /// visit that Cancels ([`audio_script`]).
     Audio,
+    /// The cabin's Change Memento screen (#1957): Change Memento, the arrows,
+    /// Cancel, then again and Accept ([`memento_script`]).
+    Memento,
 }
 
 /// The environment variable that selects [`SmokeScene::Cabin`] for
@@ -2081,6 +2096,7 @@ impl SmokeScene {
             "cabin" => Self::Cabin,
             "flow" => Self::Flow,
             "audio" => Self::Audio,
+            "memento" => Self::Memento,
             _ => Self::MainMenu,
         }
     }
@@ -2375,6 +2391,39 @@ fn cabin_script() -> Vec<(u32, Step)> {
     steps
 }
 
+/// The deterministic pass over the Change Memento screen (#1957): the cabin,
+/// Change Memento (the pilot's memento), the right arrow (the next picture),
+/// the left arrow twice (back, and wrapping to the last offered), Cancel (the
+/// cabin), Change Memento again (the stored memento, unchanged) and Accept
+/// after an arrow (the cabin). Needs `--smoke-seconds 12` or more.
+#[inline(always)]
+fn memento_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    let click = |steps: &mut Vec<(u32, Step)>, from: f64, button: &'static str| {
+        steps.push((at(from), Step::HoverButton(button)));
+        steps.push((at(from + 0.2), Step::Mouse(true)));
+        steps.push((at(from + 0.3), Step::Mouse(false)));
+    };
+    let mut steps = vec![(at(0.6), Step::Shot("cabin"))];
+    click(&mut steps, 1.0, "PC_B_CHANGEMOMENTO");
+    steps.push((at(2.0), Step::Shot("memento")));
+    click(&mut steps, 2.2, "MS_B_ARROWR");
+    steps.push((at(3.0), Step::Shot("memento-next")));
+    click(&mut steps, 3.2, "MS_B_ARROWL");
+    click(&mut steps, 3.8, "MS_B_ARROWL");
+    steps.push((at(4.6), Step::Shot("memento-wrapped")));
+    click(&mut steps, 4.8, "MS_B_CANCEL");
+    steps.push((at(5.8), Step::Shot("memento-cancelled")));
+    click(&mut steps, 6.0, "PC_B_CHANGEMOMENTO");
+    steps.push((at(7.0), Step::Shot("memento-reopened")));
+    click(&mut steps, 7.2, "MS_B_ARROWR");
+    click(&mut steps, 7.8, "MS_B_ACCEPT");
+    steps.push((at(9.0), Step::Shot("memento-accepted")));
+    click(&mut steps, 9.2, "PC_B_CHANGEMOMENTO");
+    steps.push((at(10.2), Step::Shot("memento-stored")));
+    steps
+}
+
 /// The deterministic pass over the whole start flow (#1842): the main menu,
 /// Campaign, a typed new pilot and Continue (the intro movie starts), three
 /// frames of the movie, Esc to skip it, the cabin, a press on Previous
@@ -2492,6 +2541,7 @@ impl ShellSmokePlugin {
                 SmokeScene::StartFlow => start_flow_script(),
                 SmokeScene::StartFlowResumed => start_flow_resumed_script(),
                 SmokeScene::Audio => audio_script(),
+                SmokeScene::Memento => memento_script(),
             },
             handle: ShellSmokeHandle::default(),
         }
@@ -2949,6 +2999,30 @@ fn evaluate(
         }
         return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
+    if smoke.scene == SmokeScene::Memento {
+        let section = "MomentoSelection";
+        let cabin = "PassengerCabin";
+        if run.visited != [cabin, section, cabin, section, cabin, section] {
+            failures.push(format!(
+                "the memento pass visited {:?}; expected the cabin, then the screen opened three times and left twice",
+                run.visited
+            ));
+        }
+        for label in [
+            "memento",
+            "memento-next",
+            "memento-wrapped",
+            "memento-cancelled",
+            "memento-reopened",
+            "memento-accepted",
+            "memento-stored",
+        ] {
+            if !shots.iter().any(|shot| shot.label == label) {
+                failures.push(format!("the {label} framebuffer never arrived"));
+            }
+        }
+        return smoke_report(smoke, run, shots, failures, Vec::new(), None);
+    }
     if smoke.scene == SmokeScene::Cabin {
         if run.visited != ["PassengerCabin"] {
             failures.push(format!(
@@ -3273,7 +3347,7 @@ pub fn shell_app(
     if request.smoke.is_some() && scene == SmokeScene::Flow {
         return shell_app_with(request, Some(StartFlow::new()), scene);
     }
-    if request.smoke.is_some() && scene == SmokeScene::Cabin {
+    if request.smoke.is_some() && matches!(scene, SmokeScene::Cabin | SmokeScene::Memento) {
         let flow = StartFlow::after_mission(super::start_flow::MissionEnd::ReturnedToCabin)
             .map_err(|refusal| FrontEndError::Exit(refusal.to_string()))?;
         return shell_app_with(request, Some(flow), scene);
@@ -3329,6 +3403,22 @@ pub(super) fn shell_app_with(
     // (FE-MENU-3). A page the layout cannot supply, or a population that
     // cannot open, is reported and the section still draws its panes and
     // buttons.
+    let mut flow = flow;
+    if let Some(flow) = flow.as_mut() {
+        // The Change Memento screen's pictures: decoded up front like the
+        // rest of the art, their extents kept for placing the one shown.
+        let mut pictures = BTreeMap::new();
+        for entry in &super::memento::MEMENTOS {
+            let name = super::memento::picture_art(entry.name);
+            if let Some(extent) = screens.art_extent(&name) {
+                pictures.insert(name.clone(), extent);
+            }
+            if let Some(artwork) = screens.graphic_artwork(&name) {
+                art.entry(name.to_ascii_lowercase()).or_insert(artwork);
+            }
+        }
+        flow.set_memento_pictures(pictures);
+    }
     let pilots = pilot_setup(request, &layout);
     let audio_page = audio_page_setup(request, &screens, &layout);
     let previous = previous_missions_setup(request, &screens, &layout);
