@@ -23,9 +23,7 @@ an alpha, tint or dimming overlay in our pause screen?
   `frame_*_pause_map.png` (2560x1440, 4:3 fit at scale 2.4, left 320) against
   the texture at the same chart pixels gives a mean RGB of (69.6, 138.4, 134.7)
   in the frame and (64.6, 141.0, 137.7) in the texture: equal within the
-  filtering of the up-scale. The drawn portrait region averages (71, 65, 52),
-  the texture's opaque part is darker than its 8 816 translucent border texels
-  suggest. Nothing between the decode and the framebuffer lightens or greys the
+  filtering of the up-scale. The portrait region was not compared texel by texel. Nothing between the decode and the framebuffer lightens or greys the
   colours.
 
 ## Reading
