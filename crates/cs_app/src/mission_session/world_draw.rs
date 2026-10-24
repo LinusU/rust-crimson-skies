@@ -65,6 +65,7 @@ use crate::playtest_retail::{
 };
 use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
 use crate::render::horizon::HorizonSpec;
+use crate::render::material_cycle::MaterialCycles;
 use crate::render::matrix::HORIZON_ANCHOR;
 use crate::world::WorldMeshes;
 use crate::world::contacts::{WorldColliderInstance, WorldObjectBinding, WorldVisual};
@@ -553,7 +554,22 @@ fn stored_shading_materials(app: &mut App, parts: &mut [PlaytestPart]) {
             continue;
         }
         shaded.unlit = true;
-        part.material = materials.add(shaded);
+        let copy = materials.add(shaded);
+        follow_material_cycle(app, &part.material, &copy);
+        part.material = copy;
+    }
+}
+
+/// Makes `copy` play the texture cycle of the material it was copied from, when
+/// that material is cycled (the `wtr0xxxx` water, task #1981): a copy made for
+/// shading would otherwise stay on the first frame.
+fn follow_material_cycle(
+    app: &mut App,
+    original: &Handle<StandardMaterial>,
+    copy: &Handle<StandardMaterial>,
+) {
+    if let Some(mut cycles) = app.world_mut().get_resource_mut::<MaterialCycles>() {
+        cycles.follow(original, copy.clone());
     }
 }
 
@@ -576,8 +592,8 @@ fn sky_materials(app: &mut App, stored: &GameZMaterials, parts: &mut Vec<Playtes
     for part in parts.iter_mut() {
         display_value_corner_colours(app, part);
     }
-    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
     for part in parts {
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
         let Some(mut sky) = materials.get(&part.material).cloned() else {
             continue;
         };
@@ -586,7 +602,9 @@ fn sky_materials(app: &mut App, stored: &GameZMaterials, parts: &mut Vec<Playtes
         if part.image.is_none() {
             sky.base_color = Color::WHITE;
         }
-        part.material = materials.add(sky);
+        let copy = materials.add(sky);
+        follow_material_cycle(app, &part.material, &copy);
+        part.material = copy;
     }
 }
 

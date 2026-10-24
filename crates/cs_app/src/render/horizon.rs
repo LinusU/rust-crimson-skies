@@ -811,6 +811,9 @@ impl Plugin for HorizonPlugin {
         // The wiring sites add this plugin *after* `PlaytestVisualsPlugin`,
         // so these resources replace the flat clear colour and the untinted
         // ambient that plugin installs.
+        if !app.is_plugin_added::<super::MaterialCyclePlugin>() {
+            app.add_plugins(super::MaterialCyclePlugin);
+        }
         app.insert_resource(self.spec.clone())
             .insert_resource(ClearColor(Color::srgb(
                 self.spec.sky_horizon()[0],
@@ -837,6 +840,7 @@ fn spawn_horizon(
     spec: Res<HorizonSpec>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    cycles: Option<ResMut<super::material_cycle::MaterialCycles>>,
 ) {
     let dome_material = materials.add(StandardMaterial {
         base_color: Color::WHITE,
@@ -855,6 +859,7 @@ fn spawn_horizon(
         .water_art
         .as_ref()
         .and_then(|art| materials.get(&art.material).cloned());
+    let sea_is_art = art_material.is_some();
     let sea_material = materials.add(match art_material {
         Some(material) => material,
         None => StandardMaterial {
@@ -868,6 +873,11 @@ fn spawn_horizon(
             ..StandardMaterial::default()
         },
     });
+    // The sea is a copy of the water tiles' material: when that material is
+    // cycled (`wtr00000..15`), the copy plays the same cycle.
+    if sea_is_art && let (Some(art), Some(mut cycles)) = (spec.water_art.as_ref(), cycles) {
+        cycles.follow(&art.material, sea_material.clone());
+    }
     commands.spawn((
         HorizonDome,
         Mesh3d(meshes.add(spec.dome_mesh())),

@@ -85,6 +85,7 @@ use cs_formats::texture::DecodedImage;
 use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
 
 use crate::playtest_retail::PlaytestContainer;
+use crate::render::material_cycle::MaterialCycles;
 use crate::render::rgb565::{CoverageSource, ExpansionPolicy, coverage_byte, expand_texel};
 use crate::world::WorldMesh;
 
@@ -701,6 +702,7 @@ impl<'a> TextureBinder<'a> {
                             .world_mut()
                             .resource_mut::<Assets<StandardMaterial>>()
                             .add(textured_material(handle, masked));
+                        self.start_cycle(app, materials, index, &material);
                         let subject = self.subject(container);
                         if !subject.images.iter().any(|image| image.key == bound.key) {
                             subject.images.push(bound);
@@ -721,6 +723,38 @@ impl<'a> TextureBinder<'a> {
         };
         self.bindings.insert(cache_key, binding.clone());
         binding
+    }
+
+    /// Starts the material's texture cycle when it has one: every frame must
+    /// resolve to a decoded image, otherwise the material stays on its first
+    /// frame (never a partial cycle). The stored rate word is frames per
+    /// second (task #1981).
+    fn start_cycle(
+        &mut self,
+        app: &mut App,
+        materials: &GameZMaterials,
+        index: u32,
+        material: &Handle<StandardMaterial>,
+    ) {
+        let Some(cycle) = materials.material(index).and_then(|m| m.cycle.as_ref()) else {
+            return;
+        };
+        if cycle.field12 <= 0.0 || cycle.textures.len() < 2 {
+            return;
+        }
+        let mut frames = Vec::with_capacity(cycle.textures.len());
+        for frame in &cycle.textures {
+            let Some(name) = materials.texture(*frame) else {
+                return;
+            };
+            let Ok((id, decoded)) = self.archive.fetch(&name.name) else {
+                return;
+            };
+            frames.push(self.image_for(app, &id, &decoded).0);
+        }
+        app.world_mut()
+            .get_resource_or_insert_with(MaterialCycles::default)
+            .add(material.clone(), frames, cycle.field12, cycle.field00 != 0);
     }
 
     fn image_for(

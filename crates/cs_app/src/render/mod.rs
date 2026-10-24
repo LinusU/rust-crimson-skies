@@ -178,6 +178,10 @@ pub use horizon::HorizonPlugin;
 /// The lens flare's pure placement and fade rule (PARITY4-LENS-FLARE-B, #1859).
 pub mod lens_flare;
 pub mod material;
+/// The playback of cycled material textures (task #1981): the sea's
+/// `wtr00000..15` frames at the stored rate, in frames per second.
+pub mod material_cycle;
+pub use material_cycle::MaterialCyclePlugin;
 pub mod matrix;
 pub mod paint;
 pub mod plan;
