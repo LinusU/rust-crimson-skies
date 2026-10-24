@@ -147,6 +147,7 @@ pub fn presentation(screen: Screen) -> Presentation {
         | Screen::Credits
         | Screen::Cabin
         | Screen::Scrapbook
+        | Screen::Construction
         | Screen::ProfileSelect
         | Screen::IaSelect => Presentation::Shell,
         Screen::Briefing
@@ -161,10 +162,6 @@ pub fn presentation(screen: Screen) -> Presentation {
         Screen::Pause | Screen::PauseSettings => Presentation::Pending {
             what: "the Esc pause map",
             task: Some(1740),
-        },
-        Screen::Construction => Presentation::Pending {
-            what: "Plane Construction",
-            task: None,
         },
         Screen::InstallSelect | Screen::ContentDiagnosis | Screen::ImportDialog => {
             Presentation::Pending {
@@ -190,6 +187,9 @@ const EXTRA_SECTIONS: &[(&str, Screen)] = &[
     ("Campaign", Screen::ProfileSelect),
     ("Credits", Screen::Credits),
     ("InstantAction", Screen::IaSelect),
+    // The cabin's Plane Construction button starts `PlaneName`, the name
+    // dialog (#1958); `PlaneConstruction` is the screen its OK starts.
+    ("PlaneName", Screen::Construction),
     ("MultiPlayerMain", Screen::Lobby),
 ];
 
@@ -232,22 +232,30 @@ pub struct NotImplemented {
     pub what: &'static str,
 }
 
-/// The cabin button that opens a screen this project has not built.
-/// Each opens a marked "not implemented" screen (rule 5: a missing screen
-/// blocks release, it never passes); a follow-up task builds each. (Previous
-/// Missions was built by #1956: [`super::previous_missions`]; Change Memento
-/// by #1957: [`super::memento`].)
-pub const NOT_IMPLEMENTED: &[NotImplemented] = &[NotImplemented {
-    section: "PlaneName",
-    button: "PC_B_PLANEX",
-    what: "Plane Construction",
+/// The cabin buttons that open a screen this project has not built. Each
+/// would open a marked "not implemented" screen (rule 5: a missing screen
+/// blocks release, it never passes); none is left. (Previous Missions was
+/// built by #1956: [`super::previous_missions`]; Change Memento by #1957:
+/// [`super::memento`]; the Plane Name dialog by #1958: [`super::plane_name`].)
+pub const NOT_IMPLEMENTED: &[NotImplemented] = &[
 }];
 
-/// The layout section that presents `screen` through the shell.
+/// What the Plane Name dialog's OK opens: `planeconstruction.script`, the
+/// construction screen proper. Its presenter is not built (the dialog before
+/// it is, #1958), so OK with a name puts the marked notice up over the
+/// dialog (rule 5: a missing screen blocks release, it never passes).
+pub const CONSTRUCTION_NOT_BUILT: NotImplemented = NotImplemented {
+    section: "PlaneConstruction",
+    button: "PN_B_OK",
+    what: "Plane Construction",
+};
+
+/// The layout section that presents `screen` through the shell. The extra
+/// pairs come first: Plane Construction is shown as its name dialog.
 fn section_of_screen(screen: Screen) -> Option<&'static str> {
-    SCREEN_SECTIONS
+    EXTRA_SECTIONS
         .iter()
-        .chain(EXTRA_SECTIONS)
+        .chain(SCREEN_SECTIONS)
         .find(|(_, paired)| *paired == screen)
         .map(|(name, _)| *name)
 }

@@ -88,13 +88,16 @@ use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
 use super::pilot_page::{CONTINUE_BUTTON, DELETE_BUTTON, PILOT_SECTION, PilotOutcome, PilotPage};
+use super::plane_name::{NAME_SECTION, NameOutcome, PlaneNamePage};
 use super::previous_missions::{PreviousMissionsPage, TOC_SECTION, TocOutcome};
 use super::retail::{FrontEndScreens, RetailError};
 use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
 use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuMix, MenuSamples, MenuSoundTable};
-use super::start_flow::{FIRST_MISSION, NotImplemented, StartFlow, StartStep};
+use super::start_flow::{
+    CONSTRUCTION_NOT_BUILT, FIRST_MISSION, NotImplemented, StartFlow, StartStep,
+};
 use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
 use crate::cinematics::movie_player::{AudioOutput, MoviePlayerPlugin};
@@ -210,6 +213,21 @@ pub struct ShellResource {
     audio_page: Option<AudioPageState>,
     /// The cabin's Previous Missions page (#1956), when the run has one.
     previous: Option<PreviousState>,
+    /// The cabin's Plane Name page (#1958), when the run has one.
+    plane: Option<PlaneState>,
+}
+
+/// The Plane Name page's live state.
+struct PlaneState {
+    page: PlaneNamePage,
+    /// What the page's buttons did, in order.
+    outcomes: Vec<NameOutcome>,
+    /// Typed keys the page has not read yet.
+    keys: MessageCursor<KeyboardInput>,
+    /// The overlay's entities while the page is on screen.
+    scene: Vec<Entity>,
+    /// The surface the overlay was laid out for.
+    drawn_surface: (u32, u32),
 }
 
 /// The Previous Missions page's live state.
@@ -298,6 +316,20 @@ impl ShellResource {
     #[must_use]
     pub fn previous_missions(&self) -> Option<&PreviousMissionsPage> {
         self.previous.as_ref().map(|state| &state.page)
+    }
+
+    /// The Plane Name page, when the run has one.
+    #[must_use]
+    pub fn plane_name(&self) -> Option<&PlaneNamePage> {
+        self.plane.as_ref().map(|state| &state.page)
+    }
+
+    /// What the Plane Name page's buttons did, in order.
+    #[must_use]
+    pub fn plane_outcomes(&self) -> &[NameOutcome] {
+        self.plane
+            .as_ref()
+            .map_or(&[], |state| state.outcomes.as_slice())
     }
 
     /// What the Previous Missions page's buttons did, in order.
@@ -487,6 +519,7 @@ pub struct FrontEndShellPlugin {
     pilots: Mutex<Option<PilotSetup>>,
     audio_page: Mutex<Option<AudioPage>>,
     previous: Mutex<Option<PreviousMissionsPage>>,
+    plane: Mutex<Option<PlaneNamePage>>,
     audio: Mutex<Option<MenuAudio>>,
     audio_note: Mutex<Option<String>>,
     intro: Mutex<Option<IntroMovie>>,
@@ -515,6 +548,7 @@ impl FrontEndShellPlugin {
             pilots: Mutex::new(None),
             audio_page: Mutex::new(None),
             previous: Mutex::new(None),
+            plane: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -542,6 +576,13 @@ impl FrontEndShellPlugin {
             .audio_page
             .lock()
             .expect("the plugin is not shared yet") = Some(page);
+        self
+    }
+
+    /// Gives the `PlaneName` section its page (#1958).
+    #[must_use]
+    pub fn with_plane_name(self, page: PlaneNamePage) -> Self {
+        *self.plane.lock().expect("the plugin is not shared yet") = Some(page);
         self
     }
 
@@ -591,6 +632,7 @@ impl FrontEndShellPlugin {
             pilots: Mutex::new(None),
             audio_page: Mutex::new(None),
             previous: Mutex::new(None),
+            plane: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -703,6 +745,18 @@ impl Plugin for FrontEndShellPlugin {
                     scene: Vec::new(),
                     drawn_surface: (0, 0),
                 }),
+            plane: self
+                .plane
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .map(|page| PlaneState {
+                    page,
+                    outcomes: Vec::new(),
+                    keys: MessageCursor::default(),
+                    scene: Vec::new(),
+                    drawn_surface: (0, 0),
+                }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
             && !app.is_plugin_added::<MoviePlayerPlugin>()
@@ -798,6 +852,26 @@ pub fn headless_app_audio_page(
     if let Some(audio) = audio {
         plugin = plugin.with_audio(Ok(audio));
     }
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
+/// As [`headless_app_flow`], with the Plane Name page — the #1958 route
+/// tests.
+pub fn headless_app_plane_name(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    page: PlaneNamePage,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell).with_plane_name(page);
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -930,6 +1004,34 @@ fn frame_shell(world: &mut World) {
             .shell
             .section_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(TOC_SECTION));
+    let on_name = state.plane.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(NAME_SECTION));
+    let notice_up = state
+        .flow
+        .as_ref()
+        .is_some_and(|flow| flow.notice().is_some());
+    if let Some(plane) = &mut state.plane {
+        // As the pilot page: typed text reaches the edit box only while the
+        // page is on screen and no notice is over it.
+        let typed: Vec<KeyboardInput> = plane
+            .keys
+            .read(world.resource::<Messages<KeyboardInput>>())
+            .filter(|event| event.state == ButtonState::Pressed)
+            .cloned()
+            .collect();
+        if on_name && !notice_up {
+            for event in typed {
+                if event.logical_key == Key::Backspace {
+                    plane.page.backspace();
+                } else if let Some(text) = &event.text {
+                    plane.page.type_text(text);
+                }
+            }
+        }
+    }
     if let Some(pilots) = &mut state.pilots {
         // Typed text reaches the page only while it is on screen; the
         // reader advances either way so keys typed elsewhere never replay.
@@ -1031,6 +1133,7 @@ fn frame_shell(world: &mut World) {
         pilots.page.hover_at(point);
     }
     let previous = &mut state.previous;
+    let plane = &mut state.plane;
     if on_toc && let Some(previous) = previous.as_mut() {
         previous.page.hover_at(point);
     }
@@ -1141,6 +1244,20 @@ fn frame_shell(world: &mut World) {
                 state.run.focus_moves += 1;
                 ShellOutcome::Nothing
             }
+            ShellEvent::ActivateDown if on_name && name_enter_is_ok(shell) => {
+                if let Some(plane) = plane.as_mut() {
+                    let done = plane.page.press_enter();
+                    pilot_step = name_step(plane, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::Escape if on_name => {
+                if let Some(plane) = plane.as_mut() {
+                    let done = plane.page.escape();
+                    pilot_step = name_step(plane, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
             ShellEvent::ActivateDown if on_page => {
                 if let Some(pilots) = pilots.as_mut() {
                     pilot_step = Some(pilot_continue(pilots, flow, shell));
@@ -1188,6 +1305,12 @@ fn frame_shell(world: &mut World) {
             },
         };
         if let ShellOutcome::Toggled { id, checked } = &outcome {
+            if on_name
+                && id.eq_ignore_ascii_case(super::plane_name::DEFAULT_BUTTON)
+                && let Some(plane) = plane.as_mut()
+            {
+                plane.page.set_default_loadout(*checked);
+            }
             if on_audio
                 && id.eq_ignore_ascii_case(MUSIC_BUTTON)
                 && let Some(audio) = audio_page.as_mut()
@@ -1196,6 +1319,14 @@ fn frame_shell(world: &mut World) {
                 audio.page.set_focus(Some(AudioControl::Music));
             }
             continue;
+        }
+        if pilot_step.is_none()
+            && on_name
+            && let ShellOutcome::Unhandled { id, .. } = &outcome
+            && let Some(plane) = plane.as_mut()
+        {
+            let done = plane.page.press(id);
+            pilot_step = name_step(plane, done, flow, shell);
         }
         if pilot_step.is_none()
             && on_toc
@@ -1405,6 +1536,7 @@ fn frame_shell(world: &mut World) {
     }
     sync_pilot_scene(world, &mut state);
     sync_previous_scene(world, &mut state);
+    sync_plane_scene(world, &mut state);
     sync_audio_scene(world, &mut state);
     sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
@@ -1525,6 +1657,98 @@ fn pilot_continue(
         let _ = shell.open(section);
     }
     step
+}
+
+/// Whether Enter presses OK: no button holds the focus, or OK does.
+fn name_enter_is_ok(shell: &MenuShell) -> bool {
+    shell
+        .focus()
+        .and_then(|index| {
+            shell
+                .section()
+                .and_then(|section| section.buttons.get(index))
+        })
+        .is_none_or(|button| button.id.eq_ignore_ascii_case(super::plane_name::OK_BUTTON))
+}
+
+/// What the flow does with a Plane Name page outcome (#1958): Cancel is the
+/// table's `Cancel` row back to the cabin, OK with a name the way on to the
+/// construction screen — which is not built, so the marked notice is up
+/// over the dialog — and an empty name stays.
+fn name_step(
+    plane: &mut PlaneState,
+    done: NameOutcome,
+    flow: &mut Option<StartFlow>,
+    shell: &mut MenuShell,
+) -> Option<StartStep> {
+    if done == NameOutcome::Nothing {
+        return None;
+    }
+    plane.outcomes.push(done.clone());
+    match done {
+        NameOutcome::Nothing => None,
+        NameOutcome::NameRequired => Some(StartStep::Stay),
+        NameOutcome::Cancel => match flow.as_mut() {
+            Some(flow) => {
+                let step = flow.press_machine(super::Action::Cancel);
+                if matches!(step, StartStep::Moved { .. })
+                    && let Some(section) = flow.section()
+                {
+                    let _ = shell.open(section);
+                }
+                Some(step)
+            }
+            None => {
+                let _ = shell.escape();
+                Some(StartStep::Stay)
+            }
+        },
+        NameOutcome::Construct { .. } => flow
+            .as_mut()
+            .map(|flow| flow.show_not_implemented(CONSTRUCTION_NOT_BUILT)),
+    }
+}
+
+/// Keeps the Plane Name page's overlay in step with its model: drawn while the
+/// `PlaneName` section is shown, redrawn when the model or the surface
+/// changed, gone otherwise.
+fn sync_plane_scene(world: &mut World, state: &mut ShellResource) {
+    if !state.visuals {
+        return;
+    }
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(NAME_SECTION));
+    let surface = state.surface;
+    let buttons: Vec<(String, super::ShellRect)> = state
+        .shell
+        .section()
+        .map(|section| {
+            section
+                .buttons
+                .iter()
+                .map(|button| (button.id.to_ascii_uppercase(), button.rect))
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(plane) = state.plane.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in plane.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = plane.page.take_dirty();
+    if plane.scene.is_empty() || dirty || plane.drawn_surface != surface {
+        for entity in plane.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        plane.scene = super::plane_name_view::spawn_page(world, &plane.page, &buttons, surface);
+        plane.drawn_surface = surface;
+    }
 }
 
 /// Keeps the not-implemented notice drawn while the flow has one up.
@@ -3422,6 +3646,7 @@ pub(super) fn shell_app_with(
     let pilots = pilot_setup(request, &layout);
     let audio_page = audio_page_setup(request, &screens, &layout);
     let previous = previous_missions_setup(request, &screens, &layout);
+    let plane = plane_name_setup(request, &screens, &layout);
     if previous.is_some()
         && let Some(artwork) = screens.graphic_artwork(super::previous_missions::ICON_ART)
     {
@@ -3494,6 +3719,9 @@ pub(super) fn shell_app_with(
     }
     if let Some(page) = previous {
         plugin = plugin.with_previous_missions(page);
+    }
+    if let Some(page) = plane {
+        plugin = plugin.with_plane_name(page);
     }
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
@@ -3605,6 +3833,37 @@ fn previous_missions_setup(
         Ok(page) => Some(page),
         Err(error) => {
             eprintln!("cs: no previous-missions page: {error}");
+            None
+        }
+    }
+}
+
+/// The Plane Name page for a run (#1958): its rows from the layout, its
+/// captions and the empty-name message from the installation's own string
+/// table. A page the installation cannot supply is reported and the section
+/// still draws its panes and buttons.
+fn plane_name_setup(
+    request: &FrontEndRequest,
+    screens: &FrontEndScreens,
+    layout: &super::OriginalLayout,
+) -> Option<PlaneNamePage> {
+    let strings = match crate::mission_session::FlightCheckStrings::read(&request.cs_path, screens)
+    {
+        Ok(strings) => strings,
+        Err(error) => {
+            eprintln!("cs: no plane-name page: {error}");
+            return None;
+        }
+    };
+    match PlaneNamePage::from_layout(
+        layout,
+        &|name: &str| strings.resolve_tagged(name),
+        &|id: u32| strings.resolve_id_tagged(id),
+        &|art: &str| screens.art_extent(art),
+    ) {
+        Ok(page) => Some(page),
+        Err(error) => {
+            eprintln!("cs: no plane-name page: {error}");
             None
         }
     }

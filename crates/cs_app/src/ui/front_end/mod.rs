@@ -204,8 +204,8 @@ pub use window::{
     MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, SMOKE_SCENE_ENV,
     ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport,
     SmokeScene, headless_app, headless_app_audio, headless_app_audio_page, headless_app_flow,
-    headless_app_intro, headless_app_pilots, headless_app_previous_missions, run_front_end,
-    shell_app,
+    headless_app_intro, headless_app_pilots, headless_app_plane_name,
+    headless_app_previous_missions, run_front_end, shell_app,
 };
 
 /// A front-end screen.
