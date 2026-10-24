@@ -172,13 +172,13 @@ mod tests {
 
     #[test]
     fn rate_is_frames_per_second() {
-        // Rate 10, one second in 0.1 s frames: ten frames pass.
+        // Rate 10, one second in exact 0.125 s frames: ten frames pass.
         let mut position = 0.0;
-        for _ in 0..10 {
-            position = cycle_advance(position, 10.0, 0.1, 16, true);
+        for _ in 0..8 {
+            position = cycle_advance(position, 10.0, 0.125, 16, true);
         }
-        assert!((position - 10.0).abs() < 1e-3);
-        assert_eq!(cycle_frame(position, 16), 9);
+        assert_eq!(position, 10.0);
+        assert_eq!(cycle_frame(position, 16), 10);
     }
 
     #[test]
