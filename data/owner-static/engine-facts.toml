@@ -6320,3 +6320,65 @@ va = 0x63b158
 kind = "f32"
 value = 0.125
 meaning = "0.125f: the frame delta [0x9ad744] is clamped to at most this (compare at 0x59c12f, store at 0x59c141); the lower clamp (0x63b15c) is 0.0"
+
+
+# The rocket burst's splash on a victim (ROCKET-SPLASH-01, #1927, finding
+# docs/findings/2026-10-24-rocket-splash-damage.md). The apply loop is
+# 0x5acac0 (hit list from the 0x5aca30 sphere query), the per-victim
+# damage routine 0x5abcf0. Provenance `static`; nothing is `verified_original`.
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.falloff"
+va = 0x005acb37
+bytes = "d94500d87340d82ddc326000"
+fact = "fld [entry]; fdiv [weapon+0x40]; fsubr 1.0f (0x6032dc): the falloff is 1 - d_sq / IMPACT_PROXIMITY_sq, d_sq the squared surface distance the query stored"
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.armor_scale"
+va = 0x005acb56
+bytes = "d88e78060000"
+fact = "fmul [rocket+0x678]: the armor amount weapon+0x4c * falloff is multiplied by the rocket's blast scale (1.0 unless a RANGE_MINIMUM window scaled it)"
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.health_scale"
+va = 0x005acb60
+bytes = "d88e78060000"
+fact = "fmul [rocket+0x678]: the health amount weapon+0x50 * falloff is multiplied by the same blast scale"
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.victim_armor_pool"
+va = 0x005abd51
+bytes = "d98170060000"
+fact = "0x5abcf0 for a class-1 victim: fld [victim_data+0x670] then fsub [amount pair+0]: the armor amount comes straight off the victim's armor pool, clamped at 0 (0x5abd59..0x5abd6e), no unit conversion"
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.victim_health_pool"
+va = 0x005abdab
+bytes = "d98174060000"
+fact = "fld [victim_data+0x674] then fsub [amount pair+4]: the health amount comes straight off the victim's health pool, clamped at 0, in the weapon record's own unit"
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.armor_damage_field"
+va = 0x005adb69
+bytes = "8d434c"
+fact = "the record parser stores ARMOR_DAMAGE at weapon+0x4c (lea eax,[ebx+0x4c])"
+
+[[rocket_splash_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "splash.health_damage_field"
+va = 0x005adb78
+bytes = "8d7b50"
+fact = "the record parser stores HEALTH_DAMAGE at weapon+0x50 (lea edi,[ebx+0x50]); a record with no HEALTH_DAMAGE reads DAMAGE into the same slot"
