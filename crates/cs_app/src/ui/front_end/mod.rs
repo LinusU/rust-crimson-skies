@@ -112,6 +112,7 @@ mod original;
 mod pane_transform;
 mod paths;
 mod pilot_page;
+pub mod pilot_plane;
 mod pilot_view;
 pub mod plane_name;
 mod plane_name_view;

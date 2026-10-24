@@ -481,6 +481,7 @@ pub struct HubPage {
     cash: Option<HubLabel>,
     tabs: Vec<TabCaption>,
     pending_weight: Option<String>,
+    airframe_names: Vec<super::pilot_plane::AirframeNames>,
     prompt_template: Option<String>,
     prompt: Option<String>,
     selected: Panel,
@@ -619,6 +620,7 @@ impl HubPage {
             labels,
             cash,
             tabs,
+            airframe_names: super::pilot_plane::airframe_names(id),
             pending_weight: id(WEIGHT_PENDING_STRING).map(|raw| split_tag(&raw).1.to_owned()),
             prompt_template: id(CANCEL_PROMPT_STRING).map(|raw| split_tag(&raw).1.to_owned()),
             prompt: None,
@@ -1092,6 +1094,13 @@ impl HubPage {
     /// lower-cased name.
     pub fn set_blueprint_extents(&mut self, extents: BTreeMap<String, (u32, u32)>) {
         self.stats.extents = extents;
+    }
+
+    /// The airframes' names, by airframe number (strings `3000 + n` and
+    /// `3020 + n`).
+    #[must_use]
+    pub fn airframe_names(&self) -> &[super::pilot_plane::AirframeNames] {
+        &self.airframe_names
     }
 
     /// The cancel prompt's text, while it is up.
