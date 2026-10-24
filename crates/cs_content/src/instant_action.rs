@@ -330,6 +330,50 @@ impl SlotOrdnance {
 
 // ------------------------------------------------------------------ roster ---
 
+/// A value of the original's `GameIntensity` console variable.
+///
+/// **Measured** (static, `docs/findings/2026-10-25-f49-d-03-fu-intensity.md`):
+/// the Instant Action spawn routine holds the variable at `0`, `1` or `2` while
+/// it creates an actor. What the variable does downstream (a step of -2, 0 or
+/// +2 on the AI skill level, some paired fields scaled by 1 + step * 0.125) is
+/// read, not run, and is not modelled here; this type only carries the value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GameIntensity(u8);
+
+impl GameIntensity {
+    /// The largest value the spawn routine writes.
+    pub const MAX: u8 = 2;
+
+    /// The value, or `None` above [`Self::MAX`] (the spawn routine writes only
+    /// `0..=2`, so nothing else is measured).
+    #[must_use]
+    pub const fn new(value: u8) -> Option<Self> {
+        if value <= Self::MAX {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    /// The raw value.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+/// The `GameIntensity` an actor is created under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ActorIntensity {
+    /// The spawn routine overwrites the variable with this value around the
+    /// actor's spawn call (the ace from `ace_skill`, an enemy group as `1`).
+    Set(GameIntensity),
+    /// The spawn routine writes nothing around the actor's spawn call, so it
+    /// is created under whatever the player's option holds at that time (the
+    /// wingmen). The scenario carries no value for it.
+    PlayerOption,
+}
+
 /// One authored actor of a scenario: who flies what, on which side.
 ///
 /// Every content reference is a `Resolved` field, so an unmeasured plane or
@@ -346,6 +390,7 @@ pub struct ScenarioActorSpec {
     pilot: Option<ContentId>,
     survivability: Resolved<DeclaredSurvivability>,
     skill: Option<DeclaredSkillTier>,
+    intensity: Option<ActorIntensity>,
     authored_count: Option<u32>,
     label: Option<String>,
     role: Option<String>,
@@ -439,6 +484,7 @@ impl ScenarioActorSpec {
             pilot,
             survivability,
             skill: None,
+            intensity: None,
             authored_count: None,
             label: None,
             role: None,
@@ -453,6 +499,13 @@ impl ScenarioActorSpec {
     #[must_use]
     pub const fn with_skill(mut self, skill: DeclaredSkillTier) -> Self {
         self.skill = Some(skill);
+        self
+    }
+
+    /// Attaches the `GameIntensity` the original creates this actor under.
+    #[must_use]
+    pub const fn with_intensity(mut self, intensity: ActorIntensity) -> Self {
+        self.intensity = Some(intensity);
         self
     }
 
@@ -543,6 +596,13 @@ impl ScenarioActorSpec {
     #[must_use]
     pub const fn skill(&self) -> Option<DeclaredSkillTier> {
         self.skill
+    }
+
+    /// The `GameIntensity` the original creates this actor under, when the
+    /// scenario carries it.
+    #[must_use]
+    pub const fn intensity(&self) -> Option<ActorIntensity> {
+        self.intensity
     }
 
     /// The aircraft count the descriptor authors for this actor's group.
@@ -1034,6 +1094,15 @@ pub enum Declared<T> {
         /// Why the value is unmeasured.
         reason: String,
     },
+    /// The original binds no single value to the scenario: each actor carries
+    /// its own ([`ScenarioActorSpec::intensity`] for the difficulty). Only the
+    /// difficulty uses this state.
+    PerActor {
+        /// The claim the per-actor values are recorded under.
+        claim_id: ClaimId,
+        /// What the per-actor values are.
+        reason: String,
+    },
 }
 
 impl<T> Declared<T> {
@@ -1057,7 +1126,7 @@ impl<T> Declared<T> {
     pub const fn declared(&self) -> Option<&T> {
         match self {
             Self::Declared(value) => Some(value),
-            Self::Unmeasured { .. } => None,
+            Self::Unmeasured { .. } | Self::PerActor { .. } => None,
         }
     }
 
@@ -1080,11 +1149,13 @@ pub fn require_declared<'a, T>(
 ) -> Result<&'a T, ScenarioSchemaError> {
     match value {
         Declared::Declared(value) => Ok(value),
-        Declared::Unmeasured { claim_id, reason } => Err(ScenarioSchemaError::UnresolvedValue {
-            field,
-            claim_id: claim_id.clone(),
-            reason: reason.clone(),
-        }),
+        Declared::Unmeasured { claim_id, reason } | Declared::PerActor { claim_id, reason } => {
+            Err(ScenarioSchemaError::UnresolvedValue {
+                field,
+                claim_id: claim_id.clone(),
+                reason: reason.clone(),
+            })
+        }
     }
 }
 
@@ -1144,6 +1215,18 @@ impl ScenarioParameters {
     #[must_use]
     pub fn with_unmeasured_difficulty(mut self, claim_id: ClaimId, reason: &str) -> Self {
         self.difficulty = Declared::Unmeasured {
+            claim_id,
+            reason: reason.to_owned(),
+        };
+        self
+    }
+
+    /// Records that the preset's original difficulty is carried per actor: the
+    /// scenario has no difficulty of its own, each actor holds its
+    /// [`ActorIntensity`].
+    #[must_use]
+    pub fn with_per_actor_difficulty(mut self, claim_id: ClaimId, reason: &str) -> Self {
+        self.difficulty = Declared::PerActor {
             claim_id,
             reason: reason.to_owned(),
         };
@@ -2458,6 +2541,19 @@ impl InstantActionCatalog {
                 claim_id.clone(),
                 reason,
             )),
+            Declared::PerActor { claim_id, reason } => {
+                for actor in parameters.roster().actors() {
+                    if actor.intensity().is_none() {
+                        found.push(ScenarioProblem::unknown(
+                            ScenarioProblemCode::UnsupportedDifficulty,
+                            "difficulty",
+                            claim_id.clone(),
+                            reason,
+                        ));
+                        break;
+                    }
+                }
+            }
             Declared::Declared(difficulty) => {
                 if !self.options.difficulty_tiers().contains(&difficulty.tier()) {
                     found.push(ScenarioProblem::new(
@@ -2471,12 +2567,14 @@ impl InstantActionCatalog {
             }
         }
         match parameters.rules() {
-            Declared::Unmeasured { claim_id, reason } => found.push(ScenarioProblem::unknown(
-                ScenarioProblemCode::UnsupportedVictoryCondition,
-                "rules",
-                claim_id.clone(),
-                reason,
-            )),
+            Declared::Unmeasured { claim_id, reason } | Declared::PerActor { claim_id, reason } => {
+                found.push(ScenarioProblem::unknown(
+                    ScenarioProblemCode::UnsupportedVictoryCondition,
+                    "rules",
+                    claim_id.clone(),
+                    reason,
+                ))
+            }
             Declared::Declared(rules) => {
                 if !self
                     .options
