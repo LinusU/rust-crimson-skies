@@ -65,6 +65,7 @@ mod campaign {
     mod m01_wingman_formation;
     mod parity2_dmg_fx_b;
     mod parity5_briefing_map;
+    mod parity5_ordinance_routing;
     mod parity5_start_flow_03;
     mod parity5_start_flow_04;
     mod parity_m01_atmo_c;
