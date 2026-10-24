@@ -25,7 +25,7 @@ use cs_app::ui::front_end::plane_name::{
     CANCEL_BUTTON, DEFAULT_BUTTON, NAME_REQUIRED_STRING, OK_BUTTON,
 };
 use cs_app::ui::front_end::{
-    CONSTRUCTION_NOT_BUILT, MenuShell, MissionEnd, NAME_SECTION, NOT_IMPLEMENTED, NameOutcome,
+    HUB_UNAVAILABLE, MenuShell, MissionEnd, NAME_SECTION, NOT_IMPLEMENTED, NameOutcome,
     OriginalLayout, PlaneNamePage, SECTION_SURFACE, Screen, ShellResource, StartFlow,
     headless_app_plane_name,
 };
@@ -388,11 +388,11 @@ fn accept_parity5_cabin_plane_construction_g_ok_with_a_name_reaches_the_construc
         })
     );
     {
-        // The construction screen proper is not built: the marked notice is
-        // up over the dialog and recorded, which blocks a cabin release.
+        // This app has no hub page (#2042 builds it): the marked notice is up
+        // over the dialog and recorded, which blocks a cabin release.
         let flow = state(&app).flow().expect("a flow");
-        assert_eq!(flow.notice(), Some(&CONSTRUCTION_NOT_BUILT));
-        assert_eq!(flow.not_implemented_seen(), [CONSTRUCTION_NOT_BUILT]);
+        assert_eq!(flow.notice(), Some(&HUB_UNAVAILABLE));
+        assert_eq!(flow.not_implemented_seen(), [HUB_UNAVAILABLE]);
         assert_eq!(flow.screen(), Screen::Construction);
     }
     // Typing is ignored under the notice; a click closes it, and the dialog
