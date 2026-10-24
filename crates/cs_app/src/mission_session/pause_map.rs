@@ -33,8 +33,8 @@
 //! The live parts (PARITY3-PAUSE-MAP-SCREEN.02-B, #1874) come from
 //! [`PauseMapLive`], which [`PauseMapPlugin`] fills from the mission host's
 //! objective session and the player body: each pin shows the record's bitmap
-//! until its objective is revealed and then its numbered flag
-//! ([`pin_flag_bitmap`]), the note lists the revealed objectives with a check
+//! until its objective is completed and then its numbered flag
+//! ([`pin_flag_bitmap`]), the note lists every objective with a check
 //! mark on completed ones, and the player icon sits at the world position
 //! through the candidate [`world_to_chart_pixel`].
 //!
@@ -742,8 +742,6 @@ pub struct PauseObjectiveRow {
     pub ordinal: u32,
     /// The resolved objective text (the message key when it does not resolve).
     pub text: String,
-    /// The session has woken it (or it is the one the HUD shows next).
-    pub revealed: bool,
     /// The session marks it completed.
     pub completed: bool,
 }
@@ -774,15 +772,11 @@ pub struct PauseMapLive {
 
 impl PauseObjectiveRow {
     /// The note's rows of the objective session `hud` projects: every
-    /// identity with a role and a message element, in (role, ordinal) order.
-    /// A row is *revealed* when the session has woken it, or when it is the
-    /// objective the HUD shows while every one still sleeps
-    /// ([`ObjectiveHud::displayed`]): the original's rule is native and
-    /// unread, this is the reading the findings record
-    /// (`2026-10-22-pause-map-live-objectives.md`).
+    /// identity with a role and a message element, in (role, ordinal) order,
+    /// woken or not. The owner's Esc capture lists all four of M01's with the
+    /// player still at the coast (`2026-10-24-pause-map-note-and-flags.md`).
     #[must_use]
     pub fn rows_of(hud: &ObjectiveHud, messages: Option<&MessageCatalog>) -> Vec<Self> {
-        let shown = hud.displayed().map(|row| row.objective);
         let mut rows: Vec<_> = hud
             .rows()
             .iter()
@@ -794,7 +788,6 @@ impl PauseObjectiveRow {
                 Some(Self {
                     ordinal: row.ordinal,
                     text: ObjectiveHud::row_text(row, messages)?,
-                    revealed: row.revealed || shown == Some(row.objective),
                     completed: row.completed,
                 })
             })
@@ -815,16 +808,16 @@ pub fn numbered_flag(number: u32) -> Option<String> {
 
 /// The "?" -> number rule of one pin: **the single named reading**. The
 /// script names one bitmap per pin (`authored`: the "?" flag for three of
-/// M01's four, the "4" flag for the fourth). While the pin's objective is
-/// not revealed the pin keeps that authored bitmap; once the session reveals
-/// it, the pin shows the numbered flag of its `IDENTITY` ordinal. Whether the
-/// original switches on a woken objective, on the HUD's choice or on
-/// something else is native and not in the data; provenance `static`,
+/// M01's four, the "4" flag for the fourth). The pin keeps that authored
+/// bitmap until the session marks its objective completed, then shows the
+/// numbered flag of its `IDENTITY` ordinal. The owner's capture shows "?" on
+/// pins 1-3 with objective 1 the live one, which refutes "?" until woken;
+/// that completion is the switch is not in the capture; provenance `static`,
 /// unverified.
 #[must_use]
 pub fn pin_flag_bitmap(authored: &str, row: Option<&PauseObjectiveRow>) -> String {
     match row {
-        Some(row) if row.revealed => {
+        Some(row) if row.completed => {
             numbered_flag(row.ordinal).unwrap_or_else(|| authored.to_owned())
         }
         _ => authored.to_owned(),
@@ -1264,8 +1257,7 @@ fn spawn_live(
         }
     }
 
-    let revealed: Vec<_> = live.rows.iter().filter(|row| row.revealed).collect();
-    if !revealed.is_empty() {
+    if !live.rows.is_empty() {
         let note = &scene.note;
         let check = handle_of(&note.check_mark);
         commands
@@ -1288,7 +1280,7 @@ fn spawn_live(
                 super::original_keys::ControlsHelpPanel,
             ))
             .with_children(|list| {
-                for row in revealed {
+                for row in &live.rows {
                     list.spawn((
                         Node {
                             width: Val::Percent(100.0),

@@ -577,11 +577,10 @@ fn accept_parity3_pause_map_02b_numbering_rules_are_the_named_functions() {
     assert_eq!(numbered_flag(6).as_deref(), Some("pin6_1"));
     assert_eq!(numbered_flag(8).as_deref(), Some("pin8"));
     assert_eq!(numbered_flag(9), None);
-    let row = |revealed| PauseObjectiveRow {
+    let row = |completed| PauseObjectiveRow {
         ordinal: 2,
         text: String::new(),
-        revealed,
-        completed: false,
+        completed,
     };
     assert_eq!(pin_flag_bitmap("pin6", Some(&row(false))), "pin6");
     assert_eq!(pin_flag_bitmap("pin6", None), "pin6");
@@ -614,7 +613,7 @@ fn accept_parity3_pause_map_02b_numbering_rules_are_the_named_functions() {
 }
 
 #[test]
-fn accept_parity3_pause_map_02b_a_revealed_objective_changes_its_pin_from_question_mark_to_number()
+fn accept_parity3_pause_map_02b_a_completed_objective_changes_its_pin_from_question_mark_to_number()
 {
     let source = synthetic_source();
     let (question, one, two, four) = (
@@ -628,26 +627,25 @@ fn accept_parity3_pause_map_02b_a_revealed_objective_changes_its_pin_from_questi
     set_live(&mut app, rows_of(&engine));
     tap_escape(&mut app);
     run(&mut app, 3);
-    // Everything sleeps: the first pending objective is the one the HUD shows,
-    // so it is revealed; objectives 2 and 3 are "?"; objective 4's authored
-    // flag is already its number.
+    // The owner's capture: objective 1 is the live one and its pin is still
+    // "?", as are 2 and 3; objective 4's authored flag is already its number.
     assert_eq!(
         pins(&mut app),
-        [Some(one), Some(question), Some(question), Some(four)]
+        [Some(question), Some(question), Some(question), Some(four)]
     );
 
-    // The session wakes objective 2: its pin becomes the "2" flag, live. The
-    // HUD now shows objective 2, and objective 1 has never been woken.
+    // Waking objective 2 changes no pin.
     engine.wake(&[1]);
     set_live(&mut app, rows_of(&engine));
     run(&mut app, 3);
     assert_eq!(
         pins(&mut app),
-        [Some(question), Some(two), Some(question), Some(four)]
+        [Some(question), Some(question), Some(question), Some(four)]
     );
 
-    // Completing objective 1 reveals it as well.
+    // Completing objectives 1 and 2 turns their pins into their numbers.
     engine.complete(0);
+    engine.complete(1);
     set_live(&mut app, rows_of(&engine));
     run(&mut app, 3);
     assert_eq!(
@@ -657,7 +655,7 @@ fn accept_parity3_pause_map_02b_a_revealed_objective_changes_its_pin_from_questi
 }
 
 #[test]
-fn accept_parity3_pause_map_02b_the_note_lists_revealed_objectives_with_check_marks() {
+fn accept_parity3_pause_map_02b_the_note_lists_every_objective_with_check_marks() {
     let source = synthetic_source();
     let check = colour_of(&source, "obj_check1");
     let mut engine = engine();
@@ -665,20 +663,20 @@ fn accept_parity3_pause_map_02b_the_note_lists_revealed_objectives_with_check_ma
     set_live(&mut app, rows_of(&engine));
     tap_escape(&mut app);
     run(&mut app, 3);
-    assert_eq!(list_texts(&mut app), ["MSG_OBJ1"], "no hidden objective");
+    // The owner's capture lists all four with the player still at the coast.
+    let all = ["MSG_OBJ1", "MSG_OBJ2", "MSG_OBJ3", "MSG_OBJ4"];
+    assert_eq!(list_texts(&mut app), all);
     assert_eq!(checks(&mut app, check), 0);
 
-    // Objective 2 wakes: the HUD moves to it and objective 1 (never woken) is
-    // not listed.
     engine.wake(&[1]);
     set_live(&mut app, rows_of(&engine));
     run(&mut app, 3);
-    assert_eq!(list_texts(&mut app), ["MSG_OBJ2"]);
+    assert_eq!(list_texts(&mut app), all);
 
     engine.complete(0);
     set_live(&mut app, rows_of(&engine));
     run(&mut app, 3);
-    assert_eq!(list_texts(&mut app), ["MSG_OBJ1", "MSG_OBJ2"]);
+    assert_eq!(list_texts(&mut app), all);
     assert_eq!(
         checks(&mut app, check),
         1,
