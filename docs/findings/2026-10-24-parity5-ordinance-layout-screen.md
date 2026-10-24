@@ -50,3 +50,16 @@ installation's table (the retail test asserts it).
   (`E 2011`), **the diagram choice** (`E 2010`), **what `XQ` means** beyond
   zero or not, and **the drop-down art**.
 * **No presenter**: the window does not yet show this screen.
+
+## The window presenter (task #2068, `sonnet-2`)
+
+`ordinance_layout_view.rs` draws the screen in the shell window; `window.rs`
+carries it (`with_ordinance_layout`, `headless_app_ordinance_layout`,
+`ShellResource::ordinance_layout` / `ordinance_outcomes`): hover rolls a row,
+a press opens, chooses or closes a list, Esc closes an open list, and the
+accept and cancel buttons record `OrdinancePress::{Accept, Cancel}`. Boxes,
+frames and the row highlight are stand-in colours; text is the default face at
+the `[FONT]` size. Not drawn, still unknown: the description texts, the plane
+diagrams and the drop-down art. The tests feed a fixed **synthetic**
+`OrdinanceFeed`; the real feed and the move out of the screen are #2066 and
+#2070. No smoke scene was added (the screen has no retail feed to show yet).

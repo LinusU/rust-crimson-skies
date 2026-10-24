@@ -420,7 +420,9 @@ impl OrdinanceLayoutScreen {
         std::mem::take(&mut self.dirty)
     }
 
-    fn rows(&self, list: OrdinanceList) -> &[String] {
+    /// The rows of a list, as the feed gave them.
+    #[must_use]
+    pub fn row_texts(&self, list: OrdinanceList) -> &[String] {
         match list {
             OrdinanceList::Ammo => &self.feed.ammo_rows,
             OrdinanceList::Rocket => &self.feed.rocket_rows,
@@ -447,13 +449,19 @@ impl OrdinanceLayoutScreen {
     }
 
     fn row_at(&self, list: OrdinanceList, slot: usize, x: i32, y: i32) -> Option<usize> {
-        (0..self.rows(list).len().min(self.displayed(list, slot))).find(|index| {
-            self.item_rect(list, slot, *index)
-                .is_some_and(|r| r.contains(x, y))
-        })
+        (0..self
+            .row_texts(list)
+            .len()
+            .min(self.displayed_rows(list, slot)))
+            .find(|index| {
+                self.item_rect(list, slot, *index)
+                    .is_some_and(|r| r.contains(x, y))
+            })
     }
 
-    fn displayed(&self, list: OrdinanceList, slot: usize) -> usize {
+    /// How many rows a box's list shows when open.
+    #[must_use]
+    pub fn displayed_rows(&self, list: OrdinanceList, slot: usize) -> usize {
         self.box_of(list, slot).map_or(0, |b| b.displayed as usize)
     }
 
@@ -583,7 +591,7 @@ impl OrdinanceLayoutScreen {
             OrdinanceList::Ammo => usize::try_from(*self.ammo_choice.get(slot)?).ok()?,
             OrdinanceList::Rocket => self.rocket_choice(slot)?,
         };
-        self.rows(list).get(row).map(String::as_str)
+        self.row_texts(list).get(row).map(String::as_str)
     }
 }
 

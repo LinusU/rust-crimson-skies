@@ -88,6 +88,9 @@ use super::construction_hangar::{HANGAR_SECTION, HangarOutcome, YES_ANSWER};
 use super::construction_hub::{HUB_SECTION, HubOutcome, HubPage, READY_NOT_BUILT};
 use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
+use super::ordinance_layout::{
+    OrdinanceLayoutScreen, OrdinancePress, SECTION as ORDINANCE_SECTION,
+};
 use super::original::script_member;
 use super::pilot_page::{CONTINUE_BUTTON, DELETE_BUTTON, PILOT_SECTION, PilotOutcome, PilotPage};
 use super::plane_name::{NAME_SECTION, NameOutcome, PlaneNamePage};
@@ -217,6 +220,20 @@ pub struct ShellResource {
     plane: Option<PlaneState>,
     /// The Plane Construction hub (#2042), when the run has one.
     hub: Option<HubState>,
+    /// The Instant Action `OrdinanceLayout` screen (#2068), when the run has
+    /// one.
+    ordinance: Option<OrdinanceState>,
+}
+
+/// The `OrdinanceLayout` screen's live state.
+struct OrdinanceState {
+    screen: OrdinanceLayoutScreen,
+    /// What its presses did, in order.
+    outcomes: Vec<OrdinancePress>,
+    /// The overlay's entities while the screen is on screen.
+    scene: Vec<Entity>,
+    /// The surface the overlay was laid out for.
+    drawn_surface: (u32, u32),
 }
 
 /// The Plane Construction hub's live state.
@@ -472,6 +489,20 @@ impl ShellResource {
         }
     }
 
+    /// The `OrdinanceLayout` screen, when the run has one.
+    #[must_use]
+    pub fn ordinance_layout(&self) -> Option<&OrdinanceLayoutScreen> {
+        self.ordinance.as_ref().map(|state| &state.screen)
+    }
+
+    /// What the `OrdinanceLayout` screen's presses did, in order.
+    #[must_use]
+    pub fn ordinance_outcomes(&self) -> &[OrdinancePress] {
+        self.ordinance
+            .as_ref()
+            .map_or(&[], |state| state.outcomes.as_slice())
+    }
+
     /// The Plane Construction hub, when the run has one.
     #[must_use]
     pub fn construction_hub(&self) -> Option<&HubPage> {
@@ -683,6 +714,7 @@ pub struct FrontEndShellPlugin {
     previous: Mutex<Option<PreviousMissionsPage>>,
     plane: Mutex<Option<PlaneNamePage>>,
     hub: Mutex<Option<HubPage>>,
+    ordinance: Mutex<Option<OrdinanceLayoutScreen>>,
     audio: Mutex<Option<MenuAudio>>,
     audio_note: Mutex<Option<String>>,
     intro: Mutex<Option<IntroMovie>>,
@@ -713,6 +745,7 @@ impl FrontEndShellPlugin {
             previous: Mutex::new(None),
             plane: Mutex::new(None),
             hub: Mutex::new(None),
+            ordinance: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -754,6 +787,13 @@ impl FrontEndShellPlugin {
     #[must_use]
     pub fn with_construction_hub(self, page: HubPage) -> Self {
         *self.hub.lock().expect("the plugin is not shared yet") = Some(page);
+        self
+    }
+
+    /// Gives the `OrdinanceLayout` section its screen (#2068).
+    #[must_use]
+    pub fn with_ordinance_layout(self, screen: OrdinanceLayoutScreen) -> Self {
+        *self.ordinance.lock().expect("the plugin is not shared yet") = Some(screen);
         self
     }
 
@@ -805,6 +845,7 @@ impl FrontEndShellPlugin {
             previous: Mutex::new(None),
             plane: Mutex::new(None),
             hub: Mutex::new(None),
+            ordinance: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -947,6 +988,17 @@ impl Plugin for FrontEndShellPlugin {
                     hangar_scene: Vec::new(),
                     hangar_surface: (0, 0),
                     note: None,
+                }),
+            ordinance: self
+                .ordinance
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .map(|screen| OrdinanceState {
+                    screen,
+                    outcomes: Vec::new(),
+                    scene: Vec::new(),
+                    drawn_surface: (0, 0),
                 }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
@@ -1093,6 +1145,25 @@ pub fn headless_app_construction(
     app
 }
 
+/// As [`headless_app_flow`], with the `OrdinanceLayout` screen (#2068).
+pub fn headless_app_ordinance_layout(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    screen: OrdinanceLayoutScreen,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell).with_ordinance_layout(screen);
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
 /// As [`headless_app_flow`], with the Previous Missions page — the #1956
 /// route tests.
 pub fn headless_app_previous_missions(
@@ -1208,6 +1279,11 @@ fn frame_shell(world: &mut World) {
             .shell
             .section_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(AUDIO_SECTION));
+    let on_ordinance = state.ordinance.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(ORDINANCE_SECTION));
     let on_page = state.pilots.is_some()
         && state
             .shell
@@ -1402,6 +1478,10 @@ fn frame_shell(world: &mut World) {
     let previous = &mut state.previous;
     let plane = &mut state.plane;
     let hub = &mut state.hub;
+    let ordinance = &mut state.ordinance;
+    if on_ordinance && let Some(ordinance) = ordinance.as_mut() {
+        ordinance.screen.hover_at(point);
+    }
     if on_hub && let Some(hub) = hub.as_mut() {
         hub.page.hover_at(point);
     }
@@ -1489,8 +1569,25 @@ fn frame_shell(world: &mut World) {
                 } else {
                     false
                 };
+                let ordinance_hit = on_ordinance
+                    && match (ordinance.as_mut(), point) {
+                        (Some(ordinance), Some((x, y))) => {
+                            // A press with a list open belongs to the list,
+                            // whether or not it hit a row.
+                            let was_open = ordinance.screen.open_list().is_some();
+                            let done = ordinance.screen.press_at(x, y);
+                            let took = was_open || done != OrdinancePress::Nothing;
+                            if done != OrdinancePress::Nothing {
+                                ordinance.outcomes.push(done);
+                            }
+                            took
+                        }
+                        _ => false,
+                    };
                 if audio_hit {
                     // The Audio page's slider or drop-down took the press.
+                } else if ordinance_hit {
+                    // An OrdinanceLayout box or list took the press.
                 } else if hangar_hit {
                     // The hangar's list, or its OK box, took the press.
                 } else if hub_hit {
@@ -1664,6 +1761,14 @@ fn frame_shell(world: &mut World) {
                 shell.activate_up()
             }
             ShellEvent::Escape
+                if on_ordinance
+                    && ordinance
+                        .as_mut()
+                        .is_some_and(|ordinance| ordinance.screen.close_list()) =>
+            {
+                ShellOutcome::Nothing
+            }
+            ShellEvent::Escape
                 if on_hub && hub.as_mut().is_some_and(|hub| hub.page.close_list()) =>
             {
                 ShellOutcome::Nothing
@@ -1716,6 +1821,29 @@ fn frame_shell(world: &mut World) {
         {
             let done = plane.page.press(id);
             pilot_step = name_step(plane, hub, done, flow, shell);
+        }
+        if on_ordinance
+            && let ShellOutcome::Unhandled { id, .. } = &outcome
+            && let Some(ordinance) = ordinance.as_mut()
+        {
+            // Accept and Cancel; the move they name is routed by the flow's
+            // owner, not here (#2070).
+            let done = ordinance.screen.press_button(id);
+            if done != OrdinancePress::Nothing {
+                ordinance.outcomes.push(done);
+            }
+        }
+        if on_ordinance
+            && let ShellOutcome::Entered { .. } = &outcome
+            && let Some(id) = shell.last_applied().map(str::to_owned)
+            && let Some(ordinance) = ordinance.as_mut()
+        {
+            // The layout names `FlightCheck` as the buttons' target: the shell
+            // has made that move, and the press is still recorded.
+            let done = ordinance.screen.press_button(&id);
+            if done != OrdinancePress::Nothing {
+                ordinance.outcomes.push(done);
+            }
         }
         if pilot_step.is_none()
             && on_hangar
@@ -1973,6 +2101,7 @@ fn frame_shell(world: &mut World) {
     sync_plane_scene(world, &mut state);
     sync_hub_scene(world, &mut state);
     sync_hangar_scene(world, &mut state);
+    sync_ordinance_scene(world, &mut state);
     sync_audio_scene(world, &mut state);
     sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
@@ -2606,6 +2735,38 @@ fn sync_audio_page(state: &mut ShellResource) {
             menu.set_mix(mix);
         }
         audio.applied = Some(mix);
+    }
+}
+
+/// Keeps the `OrdinanceLayout` screen's overlay in step with its model: drawn
+/// while the section is shown, redrawn when the model or the surface changed,
+/// gone otherwise.
+fn sync_ordinance_scene(world: &mut World, state: &mut ShellResource) {
+    if !state.visuals {
+        return;
+    }
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(ORDINANCE_SECTION));
+    let surface = state.surface;
+    let Some(ordinance) = state.ordinance.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in ordinance.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = ordinance.screen.take_dirty();
+    if ordinance.scene.is_empty() || dirty || ordinance.drawn_surface != surface {
+        for entity in ordinance.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        ordinance.scene =
+            super::ordinance_layout_view::spawn_screen(world, &ordinance.screen, surface);
+        ordinance.drawn_surface = surface;
     }
 }
 

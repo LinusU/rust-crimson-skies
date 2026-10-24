@@ -154,3 +154,4 @@ mod parity5_cabin_plane_construction_hub;
 mod parity5_cabin_plane_construction_purchase;
 mod parity5_cabin_plane_construction_stats;
 mod parity5_ordinance_layout;
+mod parity5_ordinance_view;

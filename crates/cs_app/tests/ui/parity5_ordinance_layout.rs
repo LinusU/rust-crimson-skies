@@ -14,7 +14,7 @@ use cs_app::ui::front_end::ordinance_layout::{
     OrdinanceLayoutScreen, OrdinanceList, OrdinancePress, OrdinanceSide, ROCKET_BOXES,
 };
 
-const ROWS: &str = "\
+pub(super) const ROWS: &str = "\
 [GLOBALVARS]
 G1=STDTEXTH,15
 G2=STDITEMH,15
@@ -64,16 +64,16 @@ OL_D_ROCKETS6   =D,<FC_SLIDER>,<FC_UP>,<FC_DOWN>,<GN_DROPUP>,<GN_DROPDOWN>,<V4>,
 OL_D_ROCKETS7   =D,<FC_SLIDER>,<FC_UP>,<FC_DOWN>,<GN_DROPUP>,<GN_DROPDOWN>,<V4>,404,105,<DROPWIDTH>,<STDITEMH>,<ROCKETS>
 ";
 
-fn names(name: &str) -> Option<String> {
+pub(super) fn names(name: &str) -> Option<String> {
     Some(format!("[AB12]{name}"))
 }
 
-fn screen(text: &str, entered: i32) -> Result<OrdinanceLayoutScreen, SlotError> {
+pub(super) fn screen(text: &str, entered: i32) -> Result<OrdinanceLayoutScreen, SlotError> {
     let layout = OriginalLayout::parse(text).expect("the fixture parses");
     OrdinanceLayoutScreen::from_layout(&layout, OrdinanceSide::Pilot, entered, &names)
 }
 
-fn feed() -> OrdinanceFeed {
+pub(super) fn feed() -> OrdinanceFeed {
     let gun = |kind, name: &str, choice| GunPosition {
         kind,
         name: name.to_owned(),
