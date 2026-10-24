@@ -207,6 +207,7 @@ fn feed() -> HubFeed {
         airframe_short: Some("Hoplite".to_owned()),
         dirty: false,
         saved_planes: Some(1),
+        plane: None,
     }
 }
 
@@ -522,6 +523,7 @@ fn accept_parity5_cabin_plane_construction_hub_e_tabs_select_and_ready_and_sell_
     assert_eq!(page.press(SELL_BUTTON), HubOutcome::Nothing);
     page.set_feed(HubFeed {
         saved_planes: Some(SELL_MIN_PLANES),
+        plane: None,
         ..feed()
     });
     assert!(page.sell_enabled());

@@ -152,3 +152,4 @@ mod parity5_cabin_plane_construction_guns_hardpoints;
 mod parity5_cabin_plane_construction_hangar;
 mod parity5_cabin_plane_construction_hub;
 mod parity5_ordinance_layout;
+mod parity5_cabin_plane_construction_stats;
