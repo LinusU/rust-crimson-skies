@@ -23,7 +23,7 @@ use super::parity5_cabin_plane_construction_hub::{
     section, state, tap, type_text,
 };
 
-const GLOBALS: &str = "\
+pub(super) const GLOBALS: &str = "\
 [GLOBALVARS]
 G5=FC_UP,FC_B_ScrollUp.png
 G6=FC_DOWN,FC_B_ScrollDown.png
@@ -35,7 +35,7 @@ G28=GN_DROPDOWN,GN_B_ListboxarrowSMALLdown.png
 ";
 
 /// The real `[@Hangar@]` rows.
-const HANGAR_ROWS: &str = "\
+pub(super) const HANGAR_ROWS: &str = "\
 [@Hangar@]
 V1=GX,553
 V2=V2,0xFF354560
@@ -68,7 +68,7 @@ fn layout() -> OriginalLayout {
     OriginalLayout::parse(&layout_text()).expect("the fixture parses")
 }
 
-fn hangar_names(name: &str) -> Option<String> {
+pub(super) fn hangar_names(name: &str) -> Option<String> {
     match name {
         "IDS_HA_TITLE" => Some("[AB14I]Hangar".to_owned()),
         "IDS_HA_SELLEXPORT" => Some("[TREB9B]Sell or export".to_owned()),
