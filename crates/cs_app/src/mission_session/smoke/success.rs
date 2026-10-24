@@ -411,14 +411,15 @@ pub fn smoke_success(
     if metrics.beat == Beat::Landing && metrics.landing_at.is_none() {
         metrics.landing_at = world.node.as_deref().and_then(|row| row.0);
     }
-    if metrics.beat == Beat::Kestrels && metrics.kestrel_actors.is_empty() {
-        if let Some(report) = world.spawned.as_deref() {
-            for name in KESTRELS {
-                if let Some(aircraft) = report.aircraft.iter().find(|a| a.record == name) {
-                    metrics
-                        .kestrel_actors
-                        .push((name.to_owned(), aircraft.actor));
-                }
+    if metrics.beat == Beat::Kestrels
+        && metrics.kestrel_actors.is_empty()
+        && let Some(report) = world.spawned.as_deref()
+    {
+        for name in KESTRELS {
+            if let Some(aircraft) = report.aircraft.iter().find(|a| a.record == name) {
+                metrics
+                    .kestrel_actors
+                    .push((name.to_owned(), aircraft.actor));
             }
         }
     }
