@@ -136,6 +136,7 @@ use crate::world_actors::WorldActorBinding;
 
 mod briefing;
 mod camera_modes;
+mod convoy_kill;
 mod crash;
 mod debrief;
 mod start_flow;
@@ -151,6 +152,7 @@ pub use camera_modes::{
     CameraModeMetrics, CameraModeSample, MIN_CAMERA_FRAME_LUMINANCE_LEVELS, MIN_LOOK_ANGLE_RAD,
     MIN_VIEW_SEPARATION_M, MIN_ZOOM_DISTANCE_M,
 };
+pub use convoy_kill::ConvoyKillMetrics;
 pub use crash::CrashMetrics;
 pub use start_flow::StartFlowMetrics;
 pub use trucks::TrucksMetrics;
@@ -1075,6 +1077,11 @@ pub enum MissionSmokeMode {
     /// hull drop and framebuffer screenshots of the trucks are judged
     /// (#1926). No turret is woken by the smoke.
     Trucks,
+    /// `--smoke-convoy-kill`: the player is placed in front of the bridge
+    /// convoy, presses the guns key until the damage authority has destroyed
+    /// every truck, and framebuffer screenshots of the intact and the
+    /// destroyed convoy are judged (#2047). No damage is written by the smoke.
+    ConvoyKill,
 }
 
 /// Everything the engagement mode measured about the idle player's hull.
@@ -1349,6 +1356,8 @@ pub struct SmokeMeasurements {
     pub start_flow: Option<start_flow::StartFlowMetrics>,
     /// The woken-trucks stage ([`MissionSmokeMode::Trucks`] only).
     pub trucks: Option<trucks::TrucksMetrics>,
+    /// The convoy-kill stage ([`MissionSmokeMode::ConvoyKill`] only).
+    pub convoy_kill: Option<convoy_kill::ConvoyKillMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1384,6 +1393,9 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     }
     if m.trucks.is_some() {
         return trucks::evaluate(m);
+    }
+    if m.convoy_kill.is_some() {
+        return convoy_kill::evaluate(m);
     }
     if m.start_flow.is_some() {
         return start_flow::evaluate(m);
@@ -3022,6 +3034,7 @@ fn add_script_systems(app: &mut App) {
             debrief::smoke_debrief,
             crash::smoke_crash,
             trucks::smoke_trucks,
+            convoy_kill::smoke_convoy_kill,
             smoke_cockpit,
             camera_modes::smoke_camera_modes,
             smoke_lens_flare,
@@ -3030,6 +3043,12 @@ fn add_script_systems(app: &mut App) {
             smoke_flashes,
         )
             .chain(),
+    );
+    // Beside the chain (it is at Bevy's tuple limit): the convoy-kill stage's
+    // observation read runs just before the stage that consumes it.
+    app.add_systems(
+        Last,
+        convoy_kill::sample_convoy_observation.before(convoy_kill::smoke_convoy_kill),
     );
 }
 
@@ -3829,6 +3848,9 @@ fn smoke_sample(
         if config.mode == MissionSmokeMode::Trucks {
             data.measurements.trucks = Some(trucks::TrucksMetrics::default());
         }
+        if config.mode == MissionSmokeMode::ConvoyKill {
+            data.measurements.convoy_kill = Some(convoy_kill::ConvoyKillMetrics::default());
+        }
         if config.mode == MissionSmokeMode::Engagement {
             data.measurements.engagement = Some(EngagementMetrics {
                 watch_frames: config.request.seconds.saturating_mul(60),
@@ -4247,6 +4269,9 @@ fn smoke_script(
         // `trucks::smoke_trucks` walks the route, holds the player in range
         // and photographs the trucks, then hands over to `Final`.
         _ if config.mode == MissionSmokeMode::Trucks => {}
+        // `convoy_kill::smoke_convoy_kill` places the player, fires the guns
+        // and photographs the convoy, then hands over to `Final`.
+        _ if config.mode == MissionSmokeMode::ConvoyKill => {}
         _ if config.mode == MissionSmokeMode::Engagement => {
             if data.phase != Phase::Final && data.phase != Phase::Ended {
                 let metrics = data.measurements.engagement.clone().unwrap_or_default();
@@ -6691,7 +6716,7 @@ fn write_artifacts(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
          \"engagement\":{engagement},\
-         \"debrief\":{debrief},\"crash\":{crash},\"trucks\":{trucks},\
+         \"debrief\":{debrief},\"crash\":{crash},\"trucks\":{trucks},\"convoy_kill\":{convoy_kill},\
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
@@ -6740,6 +6765,8 @@ fn write_artifacts(
             "crash"
         } else if report.measurements.trucks.is_some() {
             "trucks"
+        } else if report.measurements.convoy_kill.is_some() {
+            "convoy_kill"
         } else if report.measurements.start_flow.is_some() {
             "start_flow"
         } else if report.measurements.no_teleport {
@@ -6752,6 +6779,7 @@ fn write_artifacts(
         debrief = debrief::debrief_json(report.measurements.debrief.as_ref()),
         crash = crash::crash_json(report.measurements.crash.as_ref()),
         trucks = trucks::trucks_json(report.measurements.trucks.as_ref()),
+        convoy_kill = convoy_kill::convoy_kill_json(report.measurements.convoy_kill.as_ref()),
         threshold = MAX_WINGMAN_DISTANCE_M,
         wingmen = wingmen,
         frames = report.frames,

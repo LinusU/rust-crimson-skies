@@ -78,6 +78,11 @@ pub struct MissionRequest {
     /// the player in their range and judges the turret fire, the hull drop and
     /// framebuffer screenshots of the trucks (Rally #1926).
     pub smoke_trucks: bool,
+    /// `--smoke-convoy-kill`: the smoke places the player in front of the
+    /// bridge convoy, presses the guns key until the damage authority has
+    /// destroyed every truck and judges framebuffer screenshots of the intact
+    /// and the destroyed convoy (Rally #2047).
+    pub smoke_convoy_kill: bool,
     /// `--from-start-flow`: the mission was handed over by the start flow
     /// (`cs --cs-path <dir>`), so leaving it for the cabin (the debrief's
     /// Return to Cabin, the pause map's Quit) re-opens the front end instead
@@ -203,6 +208,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut smoke_failure = false;
     let mut smoke_crash = false;
     let mut smoke_trucks = false;
+    let mut smoke_convoy_kill = false;
     let mut smoke_start_flow = false;
     let mut front_end = false;
     let mut from_start_flow = false;
@@ -232,6 +238,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--smoke-failure" => smoke_failure = true,
             "--smoke-crash" => smoke_crash = true,
             "--smoke-trucks" => smoke_trucks = true,
+            "--smoke-convoy-kill" => smoke_convoy_kill = true,
             "--smoke-start-flow" => smoke_start_flow = true,
             "--front-end" => front_end = true,
             "--from-start-flow" => from_start_flow = true,
@@ -489,12 +496,28 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_no_teleport
             || smoke_engagement
             || smoke_failure
-            || smoke_crash)
+            || smoke_crash
+            || smoke_convoy_kill)
     {
         return CliRequest::Invalid {
             reason: "--smoke-trucks is a mode of --cs-path <dir> --mission <id> \
  --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement, \
  --smoke-failure or --smoke-crash"
+                .to_string(),
+        };
+    }
+    if smoke_convoy_kill
+        && (mission.is_none()
+            || smoke_seconds.is_none()
+            || smoke_no_teleport
+            || smoke_engagement
+            || smoke_failure
+            || smoke_crash)
+    {
+        return CliRequest::Invalid {
+            reason: "--smoke-convoy-kill is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement, \
+ --smoke-failure, --smoke-crash or --smoke-trucks"
                 .to_string(),
         };
     }
@@ -505,7 +528,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_engagement
             || smoke_failure
             || smoke_crash
-            || smoke_trucks)
+            || smoke_trucks
+            || smoke_convoy_kill)
     {
         return CliRequest::Invalid {
             reason: "--smoke-start-flow is a mode of --cs-path <dir> --mission <id> \
@@ -539,6 +563,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_failure
             || smoke_crash
             || smoke_trucks
+            || smoke_convoy_kill
             || smoke_start_flow)
     {
         return CliRequest::Invalid {
@@ -648,6 +673,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             smoke_failure,
             smoke_crash,
             smoke_trucks,
+            smoke_convoy_kill,
             from_start_flow,
             joystick,
             smoke_start_flow,
@@ -716,6 +742,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         && !smoke_failure
         && !smoke_crash
         && !smoke_trucks
+        && !smoke_convoy_kill
         && !smoke_start_flow
     {
         if capture_dir.is_some() && smoke_seconds.is_none() {
@@ -908,7 +935,7 @@ WINDOWED PLAYTEST (development, not original)
         Fly with the developer key layout (W/S Q/E A/D, Left Shift / F
         throttle, R reset, F10 quit) instead of the original game's default
         controls.
-    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure | --smoke-crash | --smoke-trucks] [--capture-dir <dir>]
+    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure | --smoke-crash | --smoke-trucks | --smoke-convoy-kill] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,
         places the player near each spawned actor, saves framebuffer PNGs and
@@ -934,6 +961,10 @@ WINDOWED PLAYTEST (development, not original)
         (test placements) until the mission's own script wakes the convoy
         trucks, holds the player in their range and judges the turret fire
         orders, the hull drop and framebuffer screenshots of the trucks
+        --smoke-convoy-kill places the player in front of the bridge convoy
+        (a test placement), presses the guns key until the damage authority
+        has destroyed every truck and judges the observation rows and
+        framebuffer screenshots of the intact and the destroyed convoy
 
     --mission <id> [--joystick <vid:pid|name>] [--force-feedback-gain <percent>]
         A connected HID joystick flies too (SIDEWINDER-FFB2): stick X roll,

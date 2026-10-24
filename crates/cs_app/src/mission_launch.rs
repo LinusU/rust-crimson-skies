@@ -615,6 +615,8 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
             crate::mission_session::MissionSmokeMode::Crash
         } else if request.smoke_trucks {
             crate::mission_session::MissionSmokeMode::Trucks
+        } else if request.smoke_convoy_kill {
+            crate::mission_session::MissionSmokeMode::ConvoyKill
         } else if request.smoke_start_flow {
             crate::mission_session::MissionSmokeMode::StartFlow
         } else {

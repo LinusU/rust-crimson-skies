@@ -15,6 +15,7 @@
 
 mod eh_frame_gate;
 mod campaign {
+    mod accept_convoy_kill_smoke;
     mod accept_crash_c_crash_flow;
     mod accept_crash_e_smoke;
     mod accept_m01_b_wake;
