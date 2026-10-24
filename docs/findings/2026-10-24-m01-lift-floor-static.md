@@ -19,7 +19,7 @@ law to give lift below `LIFT_MIN_SPEED_MPS` would contradict the image, so nothi
   `speed <= 2.4384`, jumps to `0x48c857`. (The non-player branch before it compares the distance to the player with
   `1e6` (`0x607a18`) and takes the `+0x384` path instead; not the player's.)
 * `0x48c857` is the low-speed path: it calls the aero routine `0x48fc40(veh, g = 0, 1, 0.7, 0.7, &force, &lift)`. The
-  `0.7, 0.7` are the lift normal our `lift_aero` already falls back to, and `g = 0` is `g_command = 0`.
+  `0.7, 0.7` are the lift normal our law already falls back to, and `g = 0` is `g_command = 0`.
 * `0x48fc40` (atmosphere `0x41aca0`, thrust `0x41acf0`, drag `0x41ada0`) then subtracts the gravity term at
   `0x48ff85..0x48ff9d`: `force.y -= [model+0xc4] / [0x6080d4] * veh+0x674`. So below the floor the body has thrust,
   drag and gravity and **no lift**, exactly as `cs_sim` computes.
