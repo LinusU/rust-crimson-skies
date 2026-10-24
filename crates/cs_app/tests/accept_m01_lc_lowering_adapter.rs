@@ -40,6 +40,10 @@ use cs_script::bindings::Lowering;
 use cs_script::ir::{Action, Condition, DirectiveOperation, Outcome, Value};
 use cs_types::content::{ContentId, ContentKind};
 
+/// The archive these tests measured: `ZBD/C1C/M01/zrdr.zbd`. The corrected
+/// campaign layout (#1565) positions it as `ch2-m01`, work order M06 "The Red
+/// Menace"; work order M01 "The Lost Treasure" is `ZBD/C3/M01`. The constant
+/// keeps its name for the many `M01` messages below.
 const M01: &str = "zbd/c1c/m01";
 
 fn game_dir() -> PathBuf {
@@ -130,7 +134,7 @@ fn row_of(
 /// validating — so `objective_condition` and `call_arguments` report `met`
 /// because the attempt did the work, not because the vocabulary was known.
 ///
-/// The mission id is the campaign layout's derivation (`mission/ch1-m01`), and
+/// The mission id is the campaign layout's derivation (`mission/ch2-m01`, work order M06's archive), and
 /// every `RawObjective` carries the content id of its own block's authored
 /// number while its `SymbolId` is the zero-based record index — the index
 /// `ObjectiveAwake` and `TICK_DEPENDS_ON_OBJ` share.
@@ -148,7 +152,7 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
 
     assert_eq!(
         attempt.mission.as_deref(),
-        Ok("mission/ch1-m01"),
+        Ok("mission/ch2-m01"),
         "the campaign-layout derivation entered the `RawProgram`"
     );
     assert_eq!(
@@ -195,7 +199,7 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
 
     let raw = lowered.raw_program().expect("the program assembled");
     assert_eq!(raw.objectives.len(), 58);
-    assert_eq!(raw.mission.to_string(), "mission/ch1-m01");
+    assert_eq!(raw.mission.to_string(), "mission/ch2-m01");
     let calls: usize = raw.objectives.iter().map(|o| o.calls.len()).sum();
     assert_eq!(calls, 353, "one `RawCall` per directive site");
     for (index, objective) in raw.objectives.iter().enumerate() {
@@ -207,7 +211,7 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
             objective
                 .content
                 .to_string()
-                .starts_with("objective/ch1-m01.objective"),
+                .starts_with("objective/ch2-m01.objective"),
             "the content id carries the block's own number: {}",
             objective.content
         );
