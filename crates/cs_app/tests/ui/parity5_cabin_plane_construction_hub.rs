@@ -42,7 +42,7 @@ use cs_sim::campaign::{CampaignGraph, CampaignState};
 /// The real section's rows (the `V#` variables, panes, buttons, edit box and
 /// texts as the installation writes them) with invented art, and a cabin and
 /// a name dialog to come from.
-const LAYOUT: &str = "\
+pub(super) const LAYOUT: &str = "\
 [@PassengerCabin@]
 PC_BACKGROUND=P,bg.png,0,0,4,1,0,2,0
 PC_B_NEWMISSION=B,btn.png,0,0,0,0,,0x1000,0
@@ -126,7 +126,7 @@ PU_P_BACKGROUND=P,bg.png,0,0,1,1,0,0,0
 ";
 
 /// The plate is 300x200 on the 800x600 surface.
-fn extents(art: &str) -> Option<(u32, u32)> {
+pub(super) fn extents(art: &str) -> Option<(u32, u32)> {
     match art.to_ascii_lowercase().as_str() {
         "bg.png" | "px_background.jpg" => Some((800, 600)),
         "plate.png" => Some((300, 200)),
@@ -144,7 +144,7 @@ fn extents(art: &str) -> Option<(u32, u32)> {
     }
 }
 
-fn names(name: &str) -> Option<String> {
+pub(super) fn names(name: &str) -> Option<String> {
     Some(
         match name {
             "IDS_OK" => "[TREB9B]OK",
@@ -169,7 +169,7 @@ fn names(name: &str) -> Option<String> {
     )
 }
 
-fn ids(id: u32) -> Option<String> {
+pub(super) fn ids(id: u32) -> Option<String> {
     match id {
         203 => Some("[TREB9B]Please enter a name.".to_owned()),
         CANCEL_PROMPT_STRING => {
@@ -188,11 +188,11 @@ fn hub_page() -> HubPage {
     HubPage::from_layout(&layout(), &names, &ids).expect("the fixture has the rows")
 }
 
-fn name_page() -> PlaneNamePage {
+pub(super) fn name_page() -> PlaneNamePage {
     PlaneNamePage::from_layout(&layout(), &names, &ids, &extents).expect("the fixture has the rows")
 }
 
-fn shell() -> MenuShell {
+pub(super) fn shell() -> MenuShell {
     MenuShell::build(&layout(), &extents, &|_: &str| None)
 }
 
@@ -350,15 +350,15 @@ fn accept_parity5_cabin_plane_construction_hub_c_the_texts_follow_the_feed_and_t
 }
 
 /// The synthetic campaign the production construction screen draws from.
-struct Draft {
-    graph: CampaignGraph,
-    rules: ConstructionRules,
-    policy: ConstructionPolicy,
-    book: PriceBook,
-    state: CampaignState,
+pub(super) struct Draft {
+    pub(super) graph: CampaignGraph,
+    pub(super) rules: ConstructionRules,
+    pub(super) policy: ConstructionPolicy,
+    pub(super) book: PriceBook,
+    pub(super) state: CampaignState,
 }
 
-fn draft() -> Draft {
+pub(super) fn draft() -> Draft {
     use cs_content::campaign::{
         CampaignDefinition, CampaignDraft, CampaignEdge, CampaignNode, CampaignNodeId,
         EdgeCondition, NodeKind, RewardSpec, RosterEntry,
@@ -605,14 +605,14 @@ fn accept_parity5_cabin_plane_construction_hub_g_the_shell_presents_no_pane_the_
 // -------------------------------------------------- the headless presenter ---
 
 #[derive(Resource, Default)]
-struct TestInput {
-    cursor: Option<Vec2>,
-    keys: Vec<(KeyCode, bool)>,
-    mouse: Vec<bool>,
-    typed: Vec<KeyboardInput>,
+pub(super) struct TestInput {
+    pub(super) cursor: Option<Vec2>,
+    pub(super) keys: Vec<(KeyCode, bool)>,
+    pub(super) mouse: Vec<bool>,
+    pub(super) typed: Vec<KeyboardInput>,
 }
 
-fn inject(
+pub(super) fn inject(
     keys: ResMut<ButtonInput<KeyCode>>,
     mouse: ResMut<ButtonInput<MouseButton>>,
     mut cursor: MessageWriter<CursorMoved>,
@@ -650,12 +650,12 @@ fn inject(
     }
 }
 
-fn drive(app: &mut App, batch: impl FnOnce(&mut TestInput)) {
+pub(super) fn drive(app: &mut App, batch: impl FnOnce(&mut TestInput)) {
     batch(&mut app.world_mut().resource_mut::<TestInput>());
     app.update();
 }
 
-fn type_text(app: &mut App, text: &str) {
+pub(super) fn type_text(app: &mut App, text: &str) {
     for character in text.chars() {
         let typed = character.to_string();
         drive(app, |queue| {
@@ -676,7 +676,7 @@ fn tap(app: &mut App, key: KeyCode) {
     drive(app, |queue| queue.keys.push((key, false)));
 }
 
-fn press_button(app: &mut App, id: &str) {
+pub(super) fn press_button(app: &mut App, id: &str) {
     let (x, y) = {
         let state = app.world().resource::<ShellResource>();
         let view = state.shell.view(SECTION_SURFACE).expect("a view");
@@ -697,17 +697,17 @@ fn press_button(app: &mut App, id: &str) {
     drive(app, |queue| queue.mouse.push(false));
 }
 
-fn state(app: &App) -> &ShellResource {
+pub(super) fn state(app: &App) -> &ShellResource {
     app.world().resource::<ShellResource>()
 }
 
-fn hub(app: &App) -> &HubPage {
+pub(super) fn hub(app: &App) -> &HubPage {
     state(app)
         .construction_hub()
         .expect("the app has the hub page")
 }
 
-fn section(app: &App) -> String {
+pub(super) fn section(app: &App) -> String {
     state(app)
         .shell
         .section_name()

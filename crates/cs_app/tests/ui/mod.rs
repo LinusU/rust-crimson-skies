@@ -146,4 +146,5 @@ pub fn id(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).expect("test id")
 }
 mod parity5_cabin_plane_construction;
+mod parity5_cabin_plane_construction_airframe_engine;
 mod parity5_cabin_plane_construction_hub;
