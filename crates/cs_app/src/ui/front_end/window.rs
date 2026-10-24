@@ -1516,6 +1516,16 @@ fn frame_shell(world: &mut World) {
                     pane.rect,
                     state.surface,
                 );
+                if let Some(placement) = pane_placement(pane, &view.fit, state.surface, drawn.z)
+                    && let Ok(mut entity) = world.get_entity_mut(drawn.entity)
+                {
+                    if let Some(mut sprite) = entity.get_mut::<Sprite>() {
+                        sprite.custom_size = Some(placement.size);
+                    }
+                    if let Some(mut transform) = entity.get_mut::<Transform>() {
+                        *transform = placement.transform;
+                    }
+                }
             }
         }
         for drawn in &state.scene.buttons {
@@ -2128,15 +2138,19 @@ fn spawn_section(
         };
         let scale = art.scales.get(&name).copied().unwrap_or((1.0, 1.0));
         let z = 1.0 + order as f32 * 0.01;
+        let placement = pane_placement(pane, &view.fit, surface, z);
         let entity = world
             .spawn((
                 Sprite {
                     image: image.clone(),
                     rect: Some(texel_rect(pane.texel_offset, pane.logical, scale)),
-                    custom_size: Some(rect_size(pane.rect)),
+                    custom_size: Some(placement.map_or(rect_size(pane.rect), |p| p.size)),
                     ..default()
                 },
-                Transform::from_translation(centre(pane.rect, surface, z)),
+                placement.map_or_else(
+                    || Transform::from_translation(centre(pane.rect, surface, z)),
+                    |p| p.transform,
+                ),
             ))
             .id();
         scene.panes.push(DrawnSprite {
@@ -2216,6 +2230,48 @@ fn centre(rect: cs_content::ui_layout::Rect, surface: (u32, u32), z: f32) -> bev
         surface.1 as f32 * 0.5 - (rect.y as f32 + rect.height as f32 * 0.5),
         z,
     )
+}
+
+/// Where a pane with a script transform lands: its sprite's size and
+/// transform (the sprite turns about its centre).
+#[derive(Clone, Copy)]
+struct PanePlacement {
+    size: Vec2,
+    transform: Transform,
+}
+
+/// Places a transformed pane (`None` for a plain one, or when the engine's
+/// x/y rotation, which is not decoded, is set). The pane's `logical` box is
+/// the picture at the `render` position; the corners come from
+/// [`PaneTransform::corners`], the box centre is the parallelogram's, and the
+/// sprite is turned by the z rotation (counter-clockwise on screen, y up here).
+#[inline(always)]
+fn pane_placement(
+    pane: &super::shell::ShellPaneView,
+    fit: &cs_content::ui_layout::AspectFit,
+    surface: (u32, u32),
+    z: f32,
+) -> Option<PanePlacement> {
+    let transform = pane.transform?;
+    let size = (pane.logical.width, pane.logical.height);
+    let corners = transform.corners(size, (pane.logical.x as f32, pane.logical.y as f32))?;
+    let image = fit.image_rect();
+    let scale = image.width as f32 / SECTION_SURFACE.0 as f32;
+    let (sx, sy) = transform.scale_factors();
+    let centre_x = (corners[0].0 + corners[3].0) * 0.5;
+    let centre_y = (corners[0].1 + corners[3].1) * 0.5;
+    Some(PanePlacement {
+        size: Vec2::new(size.0 as f32 * sx * scale, size.1 as f32 * sy * scale),
+        transform: Transform {
+            translation: bevy::math::Vec3::new(
+                image.x as f32 + centre_x * scale - surface.0 as f32 * 0.5,
+                surface.1 as f32 * 0.5 - (image.y as f32 + centre_y * scale),
+                z,
+            ),
+            rotation: bevy::math::Quat::from_rotation_z(transform.rotate_z_radians()),
+            ..default()
+        },
+    })
 }
 
 /// Refreshes one sprite's frame crop, size and placement from the view.

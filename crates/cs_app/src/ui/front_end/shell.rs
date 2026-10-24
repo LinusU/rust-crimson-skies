@@ -72,6 +72,7 @@ use std::fmt;
 use cs_content::ui_layout::{AspectFit, Rect};
 
 use super::original::{ArtExtents, OriginalLayout, Row, ScreenScripts};
+use super::pane_transform::PaneTransform;
 use super::{BUTTON_STATE_FRAMES, ScreenHandlers};
 
 /// The logical surface every `LAYOUT.CSV` section is authored for: the
@@ -230,6 +231,11 @@ pub struct ShellPane {
     /// `AlphaType` is `2` (colour-key): the keyed texel is unread, so the
     /// pane draws with its stored alpha and this flags the record.
     pub color_keyed: bool,
+    /// The `scale`/`rotate`/`origin` the screen's script gave the pane, drawn
+    /// as [`PaneTransform`] places it ([`super::cabin`]'s memento picture):
+    /// `rect.x`/`rect.y` is then the `render` position and `rect`'s extent
+    /// the picture's own. `None` draws the pane as the layout wrote it.
+    pub transform: Option<PaneTransform>,
 }
 
 /// One `M` row to play: the screen's movie object, drawn under the panes.
@@ -485,6 +491,9 @@ pub struct ShellPaneView {
     /// Where inside the art's frame-0 the visible region starts, in texels:
     /// whatever an off-surface edge clipped.
     pub texel_offset: (u32, u32),
+    /// The pane's [`ShellPane::transform`]; `logical` then stays the
+    /// picture's own box at the render position.
+    pub transform: Option<PaneTransform>,
 }
 
 /// The presented frame: the current section fitted to a surface.
@@ -912,7 +921,27 @@ impl MenuShell {
         let fit = AspectFit::new(SECTION_SURFACE, surface)?;
         let mut panes = Vec::new();
         for (index, pane) in section.panes.iter().enumerate() {
-            let Some((visible, texel_offset)) = pane.rect.clip(SECTION_SURFACE) else {
+            // A transformed pane's rect is the picture at the render
+            // position, not where it lands: the presenter places it, so the
+            // surface does not clip it here.
+            let clipped = match (
+                pane.transform,
+                u32::try_from(pane.rect.x),
+                u32::try_from(pane.rect.y),
+            ) {
+                (Some(_), Ok(x), Ok(y)) => Some((
+                    Rect {
+                        x,
+                        y,
+                        width: pane.rect.width,
+                        height: pane.rect.height,
+                    },
+                    (0, 0),
+                )),
+                (Some(_), _, _) => None,
+                (None, _, _) => pane.rect.clip(SECTION_SURFACE),
+            };
+            let Some((visible, texel_offset)) = clipped else {
                 continue;
             };
             panes.push(ShellPaneView {
@@ -925,6 +954,7 @@ impl MenuShell {
                     texel_offset.0,
                     texel_offset.1 + pane.frame * pane.rect.height,
                 ),
+                transform: pane.transform,
             });
         }
         let buttons = section
@@ -1248,6 +1278,7 @@ fn present_pane(
         frame: 0,
         is_region: row.fields.get(5).is_some_and(|field| field.trim() == "1"),
         color_keyed: row.fields.get(6).is_some_and(|field| field.trim() == "2"),
+        transform: None,
     })
 }
 

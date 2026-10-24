@@ -125,8 +125,9 @@ pub use briefing::{
     DrawnElement, ElementKind, PANEL_ELEMENT, SceneUnknown, Timeline, TimelineError, Track,
 };
 pub use cabin::{
-    CABIN_SECTION, CabinApplied, CabinError, CabinHub, HANGAR_COUNT, PIN_PANES, PLANE_PANE,
-    SAVE_BUTTON,
+    CABIN_SECTION, CabinApplied, CabinError, CabinHub, FRAME_PANE, HANGAR_COUNT,
+    MEMENTO_PANE as CABIN_MEMENTO_PANE, PIN_PANES, PLANE_PANE, SAVE_BUTTON,
+    show_memento as show_cabin_memento,
 };
 pub use capture::{
     Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,

@@ -46,6 +46,7 @@ use std::path::PathBuf;
 
 use bevy::app::AppExit;
 
+use super::cabin::show_memento as show_cabin_memento;
 use super::memento::{
     ACCEPT_BUTTON, ARROW_LEFT_BUTTON, ARROW_RIGHT_BUTTON, DEFAULT_MEMENTO, Direction,
     MEMENTO_SECTION, MementoScreen, MementoUnlocks, index_of, show_picture,
@@ -541,10 +542,13 @@ impl StartFlow {
     /// section. `true` when the pane changed and the section must be drawn
     /// again.
     pub fn sync_memento(&self, shell: &mut MenuShell) -> bool {
-        match &self.memento_screen {
+        let screen = match &self.memento_screen {
             Some(screen) => show_picture(shell, screen.name(), &self.memento_pictures),
             None => false,
-        }
+        };
+        // The cabin's own photo frame always shows the stored choice.
+        let cabin = show_cabin_memento(shell, self.memento(), &self.memento_pictures);
+        screen || cabin
     }
 
     /// Closes the not-implemented screen, back on the screen under it.

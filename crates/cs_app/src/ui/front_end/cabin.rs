@@ -17,12 +17,16 @@
 //! * `focus(@ctl@)`: the script focuses the control host, not a button, so no
 //!   button is focused on entry (the owner's frame draws Change Memento in its
 //!   resting gold, not the focus glow) and the first `Down` focuses the first;
-//! * the memento picture, `callback($$E$$, 2150, 0, -1, …)`: **not drawn**.
-//!   Which picture it is is now known — the pilot's memento, the one the
-//!   Change Memento screen ([`super::memento`], #1957) shows and stores — but
-//!   how `KX.GK/HK/IK/JK` (20, 20, 1, 3) size and place it in the frame is
-//!   not measured (`docs/findings/2026-10-24-cabin-change-memento.md`), and a
-//!   guessed size would be invented content.
+//! * the memento picture, `callback($$E$$, 2150, 0, -1, …)`: the pilot's
+//!   memento, the one the Change Memento screen ([`super::memento`], #1957)
+//!   shows and stores, drawn by [`show_memento`] on `PC_MEMENTO` behind
+//!   `PC_FRAME` with the pane transform `KX.GK/HK/IK/JK` (20, 20, 1, 3) gives
+//!   it ([`super::pane_transform::CABIN_MEMENTO`], #2039): 20 % of the
+//!   picture, turned 3 degrees counter-clockwise about its top left at the
+//!   row's 169,325. The decoded box lands 11 px left of and 5 px above where
+//!   the project's own cabin shot measured the frame's key patch
+//!   (`docs/findings/2026-10-24-cabin-memento-pane-transform.md`); the decode
+//!   is drawn as it is, not nudged to the patch.
 //!
 //! What the original's `N` (callback 2010) and pin count (callback 7) are for
 //! a pilot is engine state this project has not read. [`CabinHub::NEW_PILOT`]
@@ -31,7 +35,11 @@
 //! 14-22 for the other ten; one pin: one pin on the map), not an original
 //! table. Nothing here is `verified_original`.
 
-use super::shell::{MenuShell, ShellRect};
+use std::collections::BTreeMap;
+
+use super::memento::picture_art;
+use super::pane_transform::{CABIN_MEMENTO, CABIN_MEMENTO_POSITION};
+use super::shell::{MenuShell, ShellPane, ShellRect};
 
 /// The layout section this composes.
 pub const CABIN_SECTION: &str = "PassengerCabin";
@@ -39,6 +47,10 @@ pub const CABIN_SECTION: &str = "PassengerCabin";
 pub const SAVE_BUTTON: &str = "PC_B_SAVE";
 /// The hangar window pane.
 pub const PLANE_PANE: &str = "PC_PLANE";
+/// The cabin photo frame's pane: the layout row `PC_FRAME` (Z 5).
+pub const FRAME_PANE: &str = "PC_FRAME";
+/// The pane the script builds the memento picture on (Z 2, behind the frame).
+pub const MEMENTO_PANE: &str = "PC_MEMENTO";
 /// The map-pin panes, `PC_PIN0` .. `PC_PIN4`.
 pub const PIN_PANES: [&str; 5] = ["PC_PIN0", "PC_PIN1", "PC_PIN2", "PC_PIN3", "PC_PIN4"];
 /// Hangar jpgs the installation holds: `pc_p_hangar0.jpg` .. `pc_p_hangar10.jpg`.
@@ -164,4 +176,64 @@ impl CabinHub {
             pins: kept,
         })
     }
+}
+
+/// Draws the pilot's memento `name` on the cabin's `PC_MEMENTO` pane: the
+/// picture at `CABIN_MEMENTO`'s scale and turn, its top left at the row's
+/// position, in the pane list just before `PC_FRAME` (Z 2 under Z 5; the
+/// layout row names no art, so the shell skipped it). `extents` holds the
+/// pictures' sizes by lower-case layout art name. Returns whether the pane
+/// changed; `false` too when the section, the frame or the picture's extent
+/// is missing.
+pub fn show_memento(
+    shell: &mut MenuShell,
+    name: &str,
+    extents: &BTreeMap<String, (u32, u32)>,
+) -> bool {
+    let art = picture_art(name);
+    let Some(&(width, height)) = extents.get(&art.to_ascii_lowercase()) else {
+        return false;
+    };
+    let Some(section) = shell.section_mut(CABIN_SECTION) else {
+        return false;
+    };
+    if let Some(pane) = section
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id.eq_ignore_ascii_case(MEMENTO_PANE))
+    {
+        if pane.art == art {
+            return false;
+        }
+        pane.art = art;
+        pane.rect.width = width;
+        pane.rect.height = height;
+        return true;
+    }
+    let Some(frame) = section
+        .panes
+        .iter()
+        .position(|pane| pane.id.eq_ignore_ascii_case(FRAME_PANE))
+    else {
+        return false;
+    };
+    section.panes.insert(
+        frame,
+        ShellPane {
+            id: MEMENTO_PANE.to_owned(),
+            art,
+            rect: ShellRect {
+                x: CABIN_MEMENTO_POSITION.0,
+                y: CABIN_MEMENTO_POSITION.1,
+                width,
+                height,
+            },
+            frames: 1,
+            frame: 0,
+            is_region: false,
+            color_keyed: false,
+            transform: Some(CABIN_MEMENTO),
+        },
+    );
+    true
 }

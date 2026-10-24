@@ -294,6 +294,7 @@ pub fn show_picture(
             frame: 0,
             is_region: false,
             color_keyed: false,
+            transform: None,
         },
     );
     true
