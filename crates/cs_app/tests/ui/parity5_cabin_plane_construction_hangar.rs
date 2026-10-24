@@ -64,7 +64,7 @@ fn layout_text() -> String {
     format!("{GLOBALS}{hub}\n{HANGAR_ROWS}")
 }
 
-fn layout() -> OriginalLayout {
+pub(super) fn layout() -> OriginalLayout {
     OriginalLayout::parse(&layout_text()).expect("the fixture parses")
 }
 
@@ -76,7 +76,7 @@ pub(super) fn hangar_names(name: &str) -> Option<String> {
     }
 }
 
-fn hangar_ids(id: u32) -> Option<String> {
+pub(super) fn hangar_ids(id: u32) -> Option<String> {
     let text = match id {
         207 => "[COUR9]%1!s! (%2!s!)".to_owned(),
         700 => "[COUR9]Sell this %1!s! for $%2!d!?".to_owned(),
