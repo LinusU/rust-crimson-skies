@@ -110,9 +110,12 @@ pub const WINGMAN_PLANE_UNMEASURED_REASON: &str = "the ia.zrd descriptor declare
 pub const TITLE_UNMEASURED_REASON: &str = "the original's Instant Action preset titles are not \
      measured (F49-D.01 records the identities, not the display names)";
 /// Why a preset's difficulty is unmeasured.
-pub const DIFFICULTY_UNMEASURED_REASON: &str = "the original records no difficulty per scenario \
-     (F32-D ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO is false; the IA screen carries a \
-     difficulty label, IDS_IA_DIFFICULTY, whose binding to a scenario is unmeasured)";
+pub const DIFFICULTY_UNMEASURED_REASON: &str = "the original binds no single difficulty to a \
+     scenario: no ia.zrd key names one (F32-D census), the executable never reads the group `enemy_skill` key, \
+     and its spawn routine 0x45a390 overwrites the GameIntensity console variable around each \
+     spawn call 0x47c210 (the ace from `ace_skill` as 0/1/2, every enemy group as 1, the \
+     player and wingmen untraced), so a preset-level difficulty has nothing to lower \
+     (docs/findings/2026-10-24-f49-d-03-fu-rules-difficulty.md)";
 
 /// Why the rules of a preset with mission type `mission_type` are unmeasured.
 ///
