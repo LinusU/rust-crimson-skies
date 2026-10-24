@@ -28,8 +28,16 @@ The task is blocked on the owner for what the original's idle player actually me
    Nothing in that chain is time-driven from the start.
 3. **Run, no input.** `accept_m01_outcome_a_an_idle_player_never_wakes_the_kestrels`
    (retail, headless, 120 simulated seconds at 120 Hz): `WakeEnemiesLedger::applied()`
-   is 0, no Kestrel ever carries a `MissionAircraftAi`, the player's hull is
-   untouched. The windowed `--smoke-engagement --smoke-seconds 120` run says the same
+   is 0 and no Kestrel ever carries a `MissionAircraftAi`. These are the test's
+   claim. The hull is *not* untouched: the unflown player drifts into the sea tiles
+   from about t=50 s, and the fatal contact rule judges those contacts (#1854), then
+   the `WorldColliderInstance { role: Solid }` mesh (#1983). Measured by #2003's
+   author on the tree at the #1983 rebase point: before #1983 the contacts spent 600
+   of the 1200 designed hull; after it the pool reaches 0 (the idle player crashes).
+   The test therefore no longer pins an untouched hull; it asserts that the hull lost
+   is exactly the sum of the `TerrainContactJudged::hull_damage` messages (no hostile
+   round contributed). See `docs/findings/2026-10-23-crash-e-01-world-collider-is-terrain.md`
+   and `docs/findings/2026-10-23-m01-collision-comparison.md`. The windowed `--smoke-engagement --smoke-seconds 120` run says the same
    (below).
 
 ## What was built
