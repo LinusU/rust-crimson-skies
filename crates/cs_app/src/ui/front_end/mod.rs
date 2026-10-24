@@ -99,6 +99,8 @@ mod original;
 mod paths;
 mod pilot_page;
 mod pilot_view;
+pub mod plane_name;
+mod plane_name_view;
 pub mod previous_missions;
 mod previous_missions_view;
 mod retail;
@@ -169,6 +171,7 @@ pub use pilot_page::{
     ListBox, MAX_PILOTS, PILOT_SECTION, PilotEntry, PilotNotice, PilotOutcome, PilotPage,
     PilotPageError, ROW_TEXT, SELECTED_FILL,
 };
+pub use plane_name::{NAME_SECTION, NameError, NameOutcome, PlaneNamePage};
 pub use previous_missions::{
     MissionProgress, PreviousMissionsPage, TOC_SECTION, TocError, TocOutcome,
 };

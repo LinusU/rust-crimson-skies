@@ -547,7 +547,7 @@ impl MenuShell {
             let key = art.to_ascii_lowercase();
             *measured.entry(key).or_insert_with(|| extents.extent(art))
         };
-        let sections = layout
+        let mut sections: BTreeMap<String, ShellSection> = layout
             .sections()
             .iter()
             .map(|section| {
@@ -560,6 +560,13 @@ impl MenuShell {
                 )
             })
             .collect();
+        // `PLANENAME.SCRIPT` centres its plate and sets every other control
+        // relative to it (#1958).
+        if let Some(dialog) =
+            sections.get_mut(&super::plane_name::NAME_SECTION.to_ascii_uppercase())
+        {
+            let _ = super::plane_name::centre_dialog(dialog);
+        }
         let cursor = CURSOR_CANDIDATES
             .iter()
             .find_map(|name| measure(name).map(|extent| ((*name).to_owned(), extent)));

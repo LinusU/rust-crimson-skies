@@ -27,13 +27,13 @@ use super::shell::{SECTION_SURFACE, ShellRect};
 
 /// Layer of the page's overlay: over the section's panes (1.x), under its
 /// buttons (10.x).
-const Z: f32 = 5.0;
+pub(super) const Z: f32 = 5.0;
 /// The face's size when the `[FONT]` tag names none.
-const DEFAULT_SIZE: f32 = 9.0;
+pub(super) const DEFAULT_SIZE: f32 = 9.0;
 /// The buttons' captions sit over the buttons (10.x).
-const CAPTION_Z: f32 = 11.0;
+pub(super) const CAPTION_Z: f32 = 11.0;
 
-fn argb(value: u32) -> Color {
+pub(super) fn argb(value: u32) -> Color {
     Color::srgba_u8(
         (value >> 16) as u8,
         (value >> 8) as u8,
@@ -55,16 +55,16 @@ fn centre(rect: Rect, surface: (u32, u32), z: f32) -> Vec3 {
     )
 }
 
-struct Canvas<'a> {
-    world: &'a mut World,
-    fit: AspectFit,
-    surface: (u32, u32),
-    scale: f32,
-    out: Vec<Entity>,
+pub(super) struct Canvas<'a> {
+    pub(super) world: &'a mut World,
+    pub(super) fit: AspectFit,
+    pub(super) surface: (u32, u32),
+    pub(super) scale: f32,
+    pub(super) out: Vec<Entity>,
 }
 
 impl Canvas<'_> {
-    fn block(&mut self, rect: ShellRect, color: Color, z: f32) {
+    pub(super) fn block(&mut self, rect: ShellRect, color: Color, z: f32) {
         let Some(rect) = mapped(&self.fit, rect) else {
             return;
         };
@@ -82,7 +82,7 @@ impl Canvas<'_> {
         self.out.push(entity);
     }
 
-    fn frame(&mut self, rect: ShellRect, color: Color, z: f32) {
+    pub(super) fn frame(&mut self, rect: ShellRect, color: Color, z: f32) {
         let edge = |x, y, width, height| ShellRect {
             x,
             y,
@@ -144,7 +144,7 @@ impl Canvas<'_> {
 
     /// Text in a logical box: `justify` 0 left, 1 centre, 2 right; a box
     /// width of 0 means auto-size.
-    fn text(
+    pub(super) fn text(
         &mut self,
         rect: ShellRect,
         label: &str,
