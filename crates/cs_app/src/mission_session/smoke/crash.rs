@@ -208,7 +208,7 @@ pub struct CrashWorld<'w, 's> {
     message: Query<'w, 's, (&'static Text, &'static InheritedVisibility), With<CrashMessage>>,
     sparks: Query<'w, 's, (), With<ContactSpark>>,
     puffs: Query<'w, 's, (), With<WingFirePuff>>,
-    spatial: SpatialQuery<'w, 's>,
+    spatial: Option<SpatialQuery<'w, 's>>,
     kinds: Query<
         'w,
         's,
@@ -227,7 +227,7 @@ pub struct CrashDial<'w, 's> {
     weapons: Option<Res<'w, super::super::MissionWeapons>>,
     ledger: Option<Res<'w, PhysicsTickLedger>>,
     art: Option<Res<'w, MissionHudArt>>,
-    materials: Res<'w, Assets<StandardMaterial>>,
+    materials: Option<Res<'w, Assets<StandardMaterial>>>,
     pieces: Query<
         'w,
         's,
@@ -255,14 +255,16 @@ fn dial_reading(dial: &CrashDial) -> (usize, usize, usize) {
     let Some(art) = dial.art.as_deref() else {
         return (0, 0, 0);
     };
+    let Some(materials) = dial.materials.as_deref() else {
+        return (0, 0, 0);
+    };
     let (mut red, mut total, mut other) = (0, 0, 0);
     for (piece, material) in &dial.pieces {
         let name = match piece.role {
             ZonePieceRole::Hilite => "redhilite",
             ZonePieceRole::Hatch => "red_hatchptrn",
         };
-        let drawn_red = dial
-            .materials
+        let drawn_red = materials
             .get(&material.0)
             .and_then(|m| m.base_color_texture.as_ref())
             .is_some_and(|texture| art.images.get(name) == Some(texture));
@@ -352,13 +354,16 @@ pub fn smoke_crash(
         let origin = Vec3::new(crash_point.x, SURFACE_RAY_START_M, crash_point.z);
         let surface = world
             .spatial
-            .cast_ray(
-                origin,
-                Dir3::NEG_Y,
-                SURFACE_RAY_REACH_M,
-                true,
-                &SpatialQueryFilter::default(),
-            )
+            .as_ref()
+            .and_then(|spatial| {
+                spatial.cast_ray(
+                    origin,
+                    Dir3::NEG_Y,
+                    SURFACE_RAY_REACH_M,
+                    true,
+                    &SpatialQueryFilter::default(),
+                )
+            })
             .map(|hit| {
                 (
                     [origin.x, origin.y - hit.distance, origin.z],
