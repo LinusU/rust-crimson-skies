@@ -161,7 +161,10 @@ pub use flow::{
     ResourceProblem, ScrapbookInputs,
 };
 pub use import_dialog::ImportDialog;
-pub use intro::{INTRO_FILE, IntroMovie, IntroState, follows as intro_follows};
+pub use intro::{
+    GATE_CALLBACK, INTRO_FILE, IntroMovie, IntroState, MISSIONS_PER_CHAPTER, MissionFlags,
+    chapter_gate, follows as intro_follows, gate_record,
+};
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,

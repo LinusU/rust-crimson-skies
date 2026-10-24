@@ -124,6 +124,7 @@ mod parity5_cabin_intro_06;
 mod parity5_cabin_memento_frame;
 mod parity5_cabin_memento_pane_transform;
 mod parity5_cabin_previous_missions;
+mod parity5_intro_2151;
 mod parity5_main_menu;
 mod parity5_start_flow_02;
 mod parity5_start_flow_03;

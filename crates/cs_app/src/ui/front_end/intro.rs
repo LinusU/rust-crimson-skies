@@ -10,10 +10,14 @@
 //!
 //! # What is **not** claimed
 //!
-//! * **Once per pilot.** The gate is the engine callback `2151`, whose value
-//!   domain is unread (the finding's "Unknown"). So the intro plays on every
-//!   entry from the pilot page and nothing is persisted per profile; this is
-//!   the measured script rule, not a "first time only" rule.
+//! * **Once per pilot, as a profile rule.** The gate is the engine callback
+//!   `2151`, read statically in
+//!   `docs/findings/2026-10-24-intro-callback-2151-static.md`: [`chapter_gate`]
+//!   is its measured rule. The campaign progress it reads (the current
+//!   mission's chapter and the two flags of the chapter's first mission
+//!   record) has no writer in this build, so every pilot is still a fresh
+//!   one and the intro plays on every entry from the pilot page; nothing is
+//!   persisted per profile until the progress exists.
 //! * **The menu music during the movie** is stopped while it plays and
 //!   restarted after; the original's handling is unread.
 //! * A movie that cannot be opened or fails part-way is recorded in
@@ -36,6 +40,46 @@ use crate::cinematics::movie_player::{
 
 /// The measured intro movie, under [`MOVIE_DIRECTORY`].
 pub const INTRO_FILE: &str = "chap1.mpg";
+
+/// The engine callback that gates the intro (`callback($$E$$, 2151, FC)`).
+pub const GATE_CALLBACK: u32 = 2151;
+
+/// Missions per chapter in the callback's record arithmetic: it reads the
+/// record `5 * (chapter - 1)`, the chapter's first mission.
+pub const MISSIONS_PER_CHAPTER: usize = 5;
+
+/// The two words of a mission record callback 2151 reads (record offsets
+/// `0x04` and `0x58`); the engine sets both to 1 on records it advances past.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MissionFlags {
+    /// Record offset `0x04`.
+    pub word_04: u32,
+    /// Record offset `0x58`.
+    pub word_58: u32,
+}
+
+/// The record index callback 2151 reads for `chapter` (1-based); `None` for
+/// chapter 0, where the callback returns 0 without a record.
+#[must_use]
+pub fn gate_record(chapter: u32) -> Option<usize> {
+    let chapter = usize::try_from(chapter).ok()?;
+    chapter
+        .checked_sub(1)
+        .map(|before| before * MISSIONS_PER_CHAPTER)
+}
+
+/// Callback 2151's result `FC`: the chapter of the pilot's current mission
+/// when both flag words of that chapter's first mission record are zero, and
+/// `0` otherwise. The cabin script runs the intro only when it is non-zero,
+/// and names the movie `chap<FC>.mpg`.
+#[must_use]
+pub fn chapter_gate(chapter: u32, first_mission: MissionFlags) -> u32 {
+    if first_mission.word_04 != 0 || first_mission.word_58 != 0 {
+        0
+    } else {
+        chapter
+    }
+}
 
 /// Where the intro movie is and where its sound goes.
 #[derive(Clone, Debug)]
