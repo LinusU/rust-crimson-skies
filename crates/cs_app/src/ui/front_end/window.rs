@@ -1244,13 +1244,14 @@ fn frame_shell(world: &mut World) {
                 state.run.focus_moves += 1;
                 ShellOutcome::Nothing
             }
-            ShellEvent::ActivateDown if on_name && name_enter_is_ok(shell) => {
+            ShellEvent::ActivateDown if on_name => {
                 if let Some(plane) = plane.as_mut() {
                     let done = plane.page.press_enter();
                     pilot_step = name_step(plane, done, flow, shell);
                 }
                 ShellOutcome::Nothing
             }
+            ShellEvent::ActivateUp if on_name => ShellOutcome::Nothing,
             ShellEvent::Escape if on_name => {
                 if let Some(plane) = plane.as_mut() {
                     let done = plane.page.escape();
@@ -1657,18 +1658,6 @@ fn pilot_continue(
         let _ = shell.open(section);
     }
     step
-}
-
-/// Whether Enter presses OK: no button holds the focus, or OK does.
-fn name_enter_is_ok(shell: &MenuShell) -> bool {
-    shell
-        .focus()
-        .and_then(|index| {
-            shell
-                .section()
-                .and_then(|section| section.buttons.get(index))
-        })
-        .is_none_or(|button| button.id.eq_ignore_ascii_case(super::plane_name::OK_BUTTON))
 }
 
 /// What the flow does with a Plane Name page outcome (#1958): Cancel is the

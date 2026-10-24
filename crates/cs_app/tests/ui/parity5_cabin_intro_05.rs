@@ -3,8 +3,9 @@
 //!
 //! Next Mission opens the briefing (the mission session's screen, so the flow
 //! hands over), Return to Main Menu goes back with the profile closed, and the
-//! Previous Missions opens its real screen (#1956); the two buttons whose screens
-//! are not built open the marked "not implemented" screen. The layout is
+//! Previous Missions opens its real screen (#1956) and Plane Construction its
+//! name dialog (#1958); the button whose screen is not built opens the marked
+//! "not implemented" screen. The layout is
 //! synthetic text in the original's format; the buttons are pressed through
 //! the shell's pointer path and routed by the production [`StartFlow`].
 
@@ -92,7 +93,10 @@ fn accept_parity5_cabin_intro_05_return_to_main_menu_closes_the_profile() {
 
 #[test]
 fn accept_parity5_cabin_intro_05_the_unbuilt_buttons_open_a_marked_screen() {
-    for (entry, y) in NOT_IMPLEMENTED.iter().zip([130]) {
+    // Every cabin button now has a screen; any entry that returns is
+    // exercised here, one row per entry.
+    let rows: [i32; 0] = [];
+    for (entry, y) in NOT_IMPLEMENTED.iter().zip(rows) {
         let (mut flow, mut shell) = cabin();
         let step = press(&mut flow, &mut shell, y);
         assert_eq!(step, StartStep::NotImplemented(*entry));
@@ -112,7 +116,7 @@ fn accept_parity5_cabin_intro_05_the_unbuilt_buttons_open_a_marked_screen() {
         ));
     }
     let names: Vec<&str> = NOT_IMPLEMENTED.iter().map(|entry| entry.what).collect();
-    assert_eq!(names, ["Plane Construction"]);
+    assert!(names.is_empty(), "{names:?}");
 }
 
 #[test]

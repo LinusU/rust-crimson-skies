@@ -359,7 +359,7 @@ impl PlaneNamePage {
         NameOutcome::Cancel
     }
 
-    /// Enter in the edit box presses OK. An inference from the script's
+    /// Enter presses OK. An inference from the script's
     /// `MB.JM = NOA` (the edit control's partner is the OK button); the
     /// property's meaning is unread.
     pub fn press_enter(&mut self) -> NameOutcome {

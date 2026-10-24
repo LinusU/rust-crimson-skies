@@ -143,3 +143,4 @@ use cs_types::content::{ContentId, ContentKind};
 pub fn id(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).expect("test id")
 }
+mod parity5_cabin_plane_construction;
