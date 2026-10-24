@@ -239,6 +239,13 @@ pub struct BoundTarget {
     /// [`Self::position_m`] when the node stores no box. See
     /// `docs/findings/2026-10-21-m01-objective-target-points.md`.
     pub target_point_m: [f64; 3],
+    /// Half the extent, in metres per world axis, of the axis-aligned bound of
+    /// the node's stored bounding box once its eight corners are carried
+    /// through the composed world transform (the bound the engine's
+    /// intersection walk builds, `docs/findings/2026-10-24-node-box-unk164.md`).
+    /// Zero on every axis when the node stores no box. Its centre is
+    /// [`Self::target_point_m`].
+    pub target_half_extents_m: [f64; 3],
     /// The node's child named `healthy`, when it has one.
     pub healthy: Option<String>,
     /// The node's child named `destroyed`, when it has one.
@@ -744,7 +751,9 @@ fn bind_mission_targets_from(
             .find(|node| node.index() == target.index)
             && let Some(raw) = nodes.get(target.index)
         {
-            target.target_point_m = target_point(node, raw);
+            let (point, half) = target_bounds(node, raw);
+            target.target_point_m = point;
+            target.target_half_extents_m = half;
         }
     }
 
@@ -762,25 +771,48 @@ fn bind_mission_targets_from(
     }
 }
 
-/// The target record's point for one node: its composed transform applied to
-/// the centre of its stored bounding box.
+/// The target record's point for one node, and half the extents of its box.
+///
+/// The point is the composed transform applied to the centre of the node's
+/// stored bounding box; the extents are those of the axis-aligned bound of the
+/// box's eight corners carried through the same transform, which is what the
+/// engine's intersection walk builds from the same record.
 ///
 /// The record stores up to three boxes (`unk116`, `unk140`, `unk164`) and the
 /// measured sites each fill exactly one of them; the first non-empty one is
-/// used, and a node with none keeps its origin. Which box the engine reads
-/// for a node holding several is unmeasured.
-fn target_point(node: &SceneNode, raw: &cs_formats::gamez::RawNode) -> [f64; 3] {
+/// used, and a node with none keeps its origin and a zero extent. Which box the
+/// engine reads is the record's own `unk112` selector, which agrees with
+/// "the non-empty one" on every measured class
+/// (`docs/findings/2026-10-08-m01-lc-world-residual-roles.md`).
+fn target_bounds(node: &SceneNode, raw: &cs_formats::gamez::RawNode) -> ([f64; 3], [f64; 3]) {
     let info = &raw.info;
-    let centre = [info.unk116, info.unk140, info.unk164]
+    let found = [info.unk116, info.unk140, info.unk164]
         .into_iter()
-        .find(|bounds| bounds.iter().flatten().any(|value| *value != 0.0))
-        .map(|[min, max]| {
-            std::array::from_fn(|axis| (f64::from(min[axis]) + f64::from(max[axis])) / 2.0)
+        .find(|bounds| bounds.iter().flatten().any(|value| *value != 0.0));
+    let Some([min, max]) = found else {
+        return (node.world_transform().translation(), [0.0; 3]);
+    };
+    let transform = node.world_transform();
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for corner in 0..8 {
+        let local: [f64; 3] = std::array::from_fn(|axis| {
+            f64::from(if corner >> axis & 1 == 0 {
+                min[axis]
+            } else {
+                max[axis]
+            })
         });
-    match centre {
-        Some(centre) => node.world_transform().apply(centre),
-        None => node.world_transform().translation(),
+        let world = transform.apply(local);
+        for axis in 0..3 {
+            low[axis] = low[axis].min(world[axis]);
+            high[axis] = high[axis].max(world[axis]);
+        }
     }
+    (
+        std::array::from_fn(|axis| (low[axis] + high[axis]) / 2.0),
+        std::array::from_fn(|axis| (high[axis] - low[axis]) / 2.0),
+    )
 }
 
 /// The coupling the world group states for the node named `node`.
@@ -921,6 +953,7 @@ fn merge_target(
         path: node.path().to_owned(),
         position_m: node.world_transform().translation(),
         target_point_m: node.world_transform().translation(),
+        target_half_extents_m: [0.0; 3],
         healthy,
         destroyed,
         coupling,

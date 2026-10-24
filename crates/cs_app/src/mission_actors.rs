@@ -87,7 +87,7 @@ use cs_sim::net_state::{NetActorState, NetControlMode};
 use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::world_actors::runtime::WorldActorKind;
 use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 use cs_types::space::{Quaternion, WorldPosition};
 
@@ -206,17 +206,19 @@ pub struct BoundGroundTarget {
     pub actor: ActorId,
 }
 
-/// Claim id of the designed swept box of a ground target
-/// (BUG-M01-CONVOY-GUN-HITS, #1998).
+/// Claim id of the designed swept box of a ground target that stores no
+/// bounding box (BUG-M01-CONVOY-GUN-HITS, #1998).
 pub const GROUND_TARGET_BOX_CLAIM: &str = "m01-convoy-gun-hits.designed-ground-target-box";
 
-/// The designed half extents, in metres, of a ground target's swept box.
+/// Claim id of the swept box taken from the node's stored bounding box
+/// (#2048): the box is read, the engine's own hit test is not.
+pub const GROUND_TARGET_NODE_BOX_CLAIM: &str = "m01-convoy-gun-hits.node-box-ground-target-box";
+
+/// The designed half extents, in metres, of the swept box of a ground target
+/// whose container record stores no bounding box.
 ///
-/// The container stores a bounding box per node, but its extents have no
-/// decoded reader in this tree; only its centre is measured
-/// ([`MissionGroundTarget::target_point_m`]). The box is an axis-aligned
-/// *designed* cube-ish volume generous enough to cover a truck of any heading
-/// (a truck is roughly 3 m x 3 m x 7 m), so aiming at the visible body hits.
+/// A target that stores one takes the extents of that box instead
+/// ([`MissionGroundTarget::target_half_extents_m`]).
 pub const DESIGNED_GROUND_TARGET_HALF_EXTENTS_M: [f64; 3] = [5.0, 3.0, 5.0];
 
 /// Component: where a ground target's swept box came from.
@@ -226,7 +228,8 @@ pub struct MissionGroundTargetSweep {
     pub half_extents_m: [f64; 3],
     /// The box centre in metres: the measured target point.
     pub centre_m: [f64; 3],
-    /// `designed` for the extents; the centre is measured.
+    /// `inferred` when the extents are the node's stored box, `designed`
+    /// when the record stores none; the centre is measured either way.
     pub provenance: Provenance,
 }
 
@@ -234,13 +237,17 @@ pub struct MissionGroundTargetSweep {
 ///
 /// The box is centred on the measured target point (the centre of the node's
 /// stored box) and is still: M01's ground targets declare no route, so their
-/// velocity is zero. A non-finite point falls back to the node position
-/// rather than refusing every round.
+/// velocity is zero. Its half extents are those of the node's stored box in
+/// the world axes; a node that stores none (`target_half_extents_m` all zero
+/// or not finite) takes [`DESIGNED_GROUND_TARGET_HALF_EXTENTS_M`]. A
+/// non-finite point falls back to the node position rather than refusing every
+/// round.
 #[must_use]
 pub fn ground_target_sweep(
     actor: ActorId,
     node: DamageNodeKey,
     target_point_m: [f64; 3],
+    target_half_extents_m: [f64; 3],
     position_m: [f64; 3],
 ) -> (
     (
@@ -256,18 +263,38 @@ pub fn ground_target_sweep(
     } else {
         position_m
     };
+    let stored = target_half_extents_m
+        .iter()
+        .all(|half| half.is_finite() && *half > 0.0);
+    let (half_extents_m, provenance) = if stored {
+        (
+            target_half_extents_m,
+            Provenance::new(
+                ClaimId::new(GROUND_TARGET_NODE_BOX_CLAIM)
+                    .expect("a claim id this module declares"),
+                ClaimStatus::Inferred,
+                None,
+            )
+            .expect("an inferred provenance needs no source"),
+        )
+    } else {
+        (
+            DESIGNED_GROUND_TARGET_HALF_EXTENTS_M,
+            Provenance::designed(
+                ClaimId::new(GROUND_TARGET_BOX_CLAIM).expect("a claim id this module declares"),
+            ),
+        )
+    };
     let centre = Vec3::new(centre_m[0] as f32, centre_m[1] as f32, centre_m[2] as f32);
     (
         (
             NodeVisualTransform(GlobalTransform::from_translation(centre)),
             LinearVelocity(Vec3::ZERO),
-            PartSweptBox::new(actor, node, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M),
+            PartSweptBox::new(actor, node, half_extents_m),
             MissionGroundTargetSweep {
-                half_extents_m: DESIGNED_GROUND_TARGET_HALF_EXTENTS_M,
+                half_extents_m,
                 centre_m,
-                provenance: Provenance::designed(
-                    ClaimId::new(GROUND_TARGET_BOX_CLAIM).expect("a claim id this module declares"),
-                ),
+                provenance,
             },
         ),
         centre_m,
@@ -294,6 +321,9 @@ pub struct MissionGroundTarget {
     pub position_m: [f64; 3],
     /// The point the targeting record holds ([`crate::mission_targets::BoundTarget::target_point_m`]).
     pub target_point_m: [f64; 3],
+    /// Half the extents of the node's stored box in the world axes
+    /// ([`crate::mission_targets::BoundTarget::target_half_extents_m`]).
+    pub target_half_extents_m: [f64; 3],
     /// The node's authored `healthy` child, when it has one.
     pub healthy: Option<String>,
     /// The node's authored `destroyed` child, when it has one.
@@ -1389,6 +1419,7 @@ fn spawn_mission_actors_under(
             actor,
             target_node_key.clone(),
             target.target_point_m,
+            target.target_half_extents_m,
             target.position_m,
         );
         let entity = world
@@ -1408,6 +1439,7 @@ fn spawn_mission_actors_under(
                     generation,
                     position_m: target.position_m,
                     target_point_m: target.target_point_m,
+                    target_half_extents_m: target.target_half_extents_m,
                     healthy: target.healthy.clone(),
                     destroyed: target.destroyed.clone(),
                     coupling: target.coupling.fields.clone(),

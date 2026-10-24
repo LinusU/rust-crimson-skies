@@ -15,8 +15,8 @@ use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::{App, GlobalTransform, Transform, Vec3};
 use cs_app::damage::{DamageActorBinding, DamageScheduleReport};
 use cs_app::mission_actors::{
-    DESIGNED_GROUND_TARGET_HALF_EXTENTS_M, MissionGroundTargetReport, MissionGroundTargetSweep,
-    ground_target_sweep,
+    DESIGNED_GROUND_TARGET_HALF_EXTENTS_M, MissionGroundTarget, MissionGroundTargetReport,
+    MissionGroundTargetSweep, ground_target_sweep,
 };
 use cs_app::mission_session::{
     MissionCockpitActions, MissionComposition, MissionHost, admit_actor, build_headless, teardown,
@@ -60,10 +60,14 @@ fn idle(app: &mut App) {
     app.update();
 }
 
+/// Whether the damage authority holds `actor` as destroyed: its recorded
+/// lifecycle, not one tick's report, which a later tick of the same update
+/// overwrites.
 fn destroyed(app: &App, actor: ActorId) -> bool {
     app.world()
-        .get_resource::<DamageScheduleReport>()
-        .is_some_and(|report| report.destroyed.contains(&actor))
+        .resource::<SessionDamageResolver>()
+        .resolver()
+        .is_destroyed(&actor)
 }
 
 /// Parks the player `STANDOFF_M` short of `point`, nose on it, at rest.
@@ -132,7 +136,7 @@ fn synthetic_ground_target(app: &mut App, serial: u64, faction: &str, centre: Ve
         })
         .expect("rosters");
     let _ = admit_actor(&mut world.resource_mut::<SessionScoreLedger>(), actor);
-    let (bundle, _) = ground_target_sweep(actor, key("t_truck_syn"), position, position);
+    let (bundle, _) = ground_target_sweep(actor, key("t_truck_syn"), position, [0.0; 3], position);
     world.spawn((
         Transform::from_translation(centre),
         bundle,
@@ -277,7 +281,20 @@ fn accept_m01_convoy_gun_hits_retail_trucks_are_destroyed_by_the_fire_key() {
             key(node),
             "{node}: the box addresses its own node"
         );
-        assert_eq!(half, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M);
+        // The box is the node's stored bounding box (#2048), not the designed
+        // fallback: a truck's box is a few metres a side, never the 10 m cube.
+        let stored = app
+            .world()
+            .entity(entity)
+            .get::<MissionGroundTarget>()
+            .expect("bound ground target")
+            .target_half_extents_m;
+        assert_eq!(half, stored, "{node}: the sweep carries the stored extents");
+        assert!(
+            stored.iter().all(|h| (0.5..=12.0).contains(h)),
+            "{node}: stored half extents {stored:?}"
+        );
+        assert_ne!(half, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M);
 
         // The candidate exists at the measured position, as a hostile pair.
         let candidates = part_sweep_candidates(app.world(), 1.0 / 60.0, |_| None);
@@ -303,9 +320,36 @@ fn accept_m01_convoy_gun_hits_retail_trucks_are_destroyed_by_the_fire_key() {
         }
         assert!(
             killed,
-            "{node} was not destroyed by the fire key: {:?}",
+            "{node} (half {half:?}, centre {centre:?}) was not destroyed by the fire key: {:?}",
             app.world().get_resource::<DamageScheduleReport>()
         );
     }
     teardown(&mut app);
+}
+
+/// **A ground target that stores a box sweeps that box; one that stores none
+/// keeps the designed fallback, and says so.**
+#[test]
+fn accept_m01_convoy_gun_hits_the_sweep_takes_the_stored_box_or_the_designed_fallback() {
+    let actor = ActorId {
+        session: cs_types::net::SessionId::new(1).expect("a session id"),
+        serial: 77,
+    };
+    let at = [10.0, 2.0, -30.0];
+    let ((_, _, swept, sweep), _) =
+        ground_target_sweep(actor, key("t_truck_box"), at, [1.5, 2.3, 3.6], at);
+    assert_eq!(swept.half_extents_m, [1.5, 2.3, 3.6]);
+    assert_eq!(sweep.half_extents_m, [1.5, 2.3, 3.6]);
+    assert_eq!(
+        sweep.provenance.class,
+        cs_types::evidence::ClaimStatus::Inferred
+    );
+
+    let ((_, _, swept, sweep), _) =
+        ground_target_sweep(actor, key("t_truck_nobox"), at, [0.0; 3], at);
+    assert_eq!(swept.half_extents_m, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M);
+    assert_eq!(
+        sweep.provenance.class,
+        cs_types::evidence::ClaimStatus::Designed
+    );
 }

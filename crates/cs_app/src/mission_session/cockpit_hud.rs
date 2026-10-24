@@ -700,6 +700,7 @@ mod tests {
             generation: crate::scene::SceneGeneration::default(),
             position_m: [0.0; 3],
             target_point_m: [0.0; 3],
+            target_half_extents_m: [0.0; 3],
             healthy: None,
             destroyed: None,
             coupling: Vec::new(),
