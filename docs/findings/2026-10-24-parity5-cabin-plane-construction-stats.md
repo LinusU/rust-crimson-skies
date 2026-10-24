@@ -66,7 +66,7 @@ to 3 on the first pass.
   plane), so outside the smoke the hub shows no statistics until #2052.
 * **The owner-command smoke does not pass on main either**: it ends on
   `ScrapBook_TOC` instead of `MainMenu` and expects two notices for panels that
-  are now built (the same two failures on `origin/main` at 15b39eb23). Filed.
+  are now built (the same two failures on `origin/main` at 15b39eb23). Filed as #2067.
 
 ## Verification
 
