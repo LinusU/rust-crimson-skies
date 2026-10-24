@@ -671,7 +671,7 @@ pub(super) fn type_text(app: &mut App, text: &str) {
     }
 }
 
-fn tap(app: &mut App, key: KeyCode) {
+pub(super) fn tap(app: &mut App, key: KeyCode) {
     drive(app, |queue| queue.keys.push((key, true)));
     drive(app, |queue| queue.keys.push((key, false)));
 }
@@ -733,7 +733,7 @@ fn cabin_app() -> App {
 }
 
 /// The cabin → the Plane Name dialog → a typed name → OK → the hub.
-fn open_hub(app: &mut App, name: &str) {
+pub(super) fn open_hub(app: &mut App, name: &str) {
     press_button(app, "PC_B_PLANEX");
     assert_eq!(section(app), NAME_SECTION);
     type_text(app, name);
