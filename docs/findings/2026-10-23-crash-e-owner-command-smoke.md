@@ -76,9 +76,13 @@ world scenery, not `PlaytestSea`/`PlaytestGround`) and `crash_dial_red_pair`.
 With the grouped-scenery colliders in, the same dive (from `(-4742, 721, -4469)`) meets scenery: the ray under
 the observed point finds scenery at y = 321.3 (the owner's observed height is 324), and the fatal contact is
 `scenery`, 291 m horizontally from the observed point at `(-4808, 205, -4563)`. `crash_on_plateau` now passes
-without any invented coordinate, which resolves the unknown above. Retail run on this machine (claude-2):
-7 of 10 checks pass; `crash_dial_red_pair` (the red pieces are drawn: 4 of 4, no other zone), `crash_frames_drawn`
-and `crash_failed_screen_shown` fail on **this machine only because every captured framebuffer is entirely black**,
-the briefing frames too (0 per mille off black), also under `caffeinate -d`. So no frame of the plateau contact,
-the dial, the crash camera or Mission Failed is cited here; they need a run on a machine whose captures are not
-black.
+without any invented coordinate, which resolves the unknown above. Retail run on this machine (claude-2, 2026-10-24, display live; `--capture-dir private/cap2021d`):
+**10 of 10 checks pass**, including `crash_dial_red_pair` (4 of 4 red pieces, 995 per mille off black),
+`crash_frames_drawn` (939 / 939 per mille) and `crash_failed_screen_shown` (744 per mille). An earlier run of this
+branch on the same host failed three checks only because every capture was black (display asleep); the off-black
+floor was not changed. Frames cited (private, not committed): `frame_cr02491_crash_dial.png` (jungle hills under
+the dive, left-wing zone red on the dial, but only a thin red sliver on the attitude dial's left rim is visible,
+#2031), `frame_cr03841_crash_contact.png` (plane tumbling into the jungle slope, `Fatal Crash!` in blue default
+text at the left edge), `frame_cr03896_crash_camera.png` (detached crash camera) and `frame_cr03947_failed.png`
+(Mission Failed). Comparison with the original's crash frames and whether the `Fatal Crash!` text style matches stay
+with the owner.
