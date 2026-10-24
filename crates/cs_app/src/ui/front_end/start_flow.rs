@@ -141,6 +141,7 @@ pub fn presentation(screen: Screen) -> Presentation {
         | Screen::Settings
         | Screen::Credits
         | Screen::Cabin
+        | Screen::Scrapbook
         | Screen::ProfileSelect
         | Screen::IaSelect => Presentation::Shell,
         Screen::Briefing
@@ -155,10 +156,6 @@ pub fn presentation(screen: Screen) -> Presentation {
         Screen::Pause | Screen::PauseSettings => Presentation::Pending {
             what: "the Esc pause map",
             task: Some(1740),
-        },
-        Screen::Scrapbook => Presentation::Pending {
-            what: "the Previous Missions list",
-            task: None,
         },
         Screen::Construction => Presentation::Pending {
             what: "Plane Construction",
@@ -230,15 +227,11 @@ pub struct NotImplemented {
     pub what: &'static str,
 }
 
-/// The cabin's three buttons that open a screen this project has not built.
+/// The cabin's two buttons that open a screen this project has not built.
 /// Each opens a marked "not implemented" screen (rule 5: a missing screen
-/// blocks release, it never passes); a follow-up task builds each.
+/// blocks release, it never passes); a follow-up task builds each. (Previous
+/// Missions was the third until #1956 built it: [`super::previous_missions`].)
 pub const NOT_IMPLEMENTED: &[NotImplemented] = &[
-    NotImplemented {
-        section: "ScrapBook_TOC",
-        button: "PC_B_PREVIOUS",
-        what: "Previous Missions",
-    },
     NotImplemented {
         section: "MomentoSelection",
         button: "PC_B_CHANGEMOMENTO",
@@ -486,8 +479,18 @@ impl StartFlow {
         &self.not_implemented_seen
     }
 
-    /// Closes the not-implemented screen, back on the cabin. `false` when none
-    /// was up.
+    /// Opens the marked "not implemented" screen for a button of the screen
+    /// the machine is on whose target is not built (the Previous Missions
+    /// page's View Selected and Current Mission, which open the scrapbook
+    /// journal).
+    pub fn show_not_implemented(&mut self, entry: NotImplemented) -> StartStep {
+        self.notice = Some(entry);
+        self.not_implemented_seen.push(entry);
+        StartStep::NotImplemented(entry)
+    }
+
+    /// Closes the not-implemented screen, back on the screen under it.
+    /// `false` when none was up.
     pub fn dismiss_notice(&mut self) -> bool {
         self.notice.take().is_some()
     }

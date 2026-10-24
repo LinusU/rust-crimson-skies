@@ -3,7 +3,8 @@
 //!
 //! Next Mission opens the briefing (the mission session's screen, so the flow
 //! hands over), Return to Main Menu goes back with the profile closed, and the
-//! other three buttons open the marked "not implemented" screen. The layout is
+//! Previous Missions opens its real screen (#1956); the two buttons whose screens
+//! are not built open the marked "not implemented" screen. The layout is
 //! synthetic text in the original's format; the buttons are pressed through
 //! the shell's pointer path and routed by the production [`StartFlow`].
 
@@ -90,8 +91,8 @@ fn accept_parity5_cabin_intro_05_return_to_main_menu_closes_the_profile() {
 }
 
 #[test]
-fn accept_parity5_cabin_intro_05_the_other_three_buttons_open_a_marked_screen() {
-    for (entry, y) in NOT_IMPLEMENTED.iter().zip([50, 90, 130]) {
+fn accept_parity5_cabin_intro_05_the_unbuilt_buttons_open_a_marked_screen() {
+    for (entry, y) in NOT_IMPLEMENTED.iter().zip([90, 130]) {
         let (mut flow, mut shell) = cabin();
         let step = press(&mut flow, &mut shell, y);
         assert_eq!(step, StartStep::NotImplemented(*entry));
@@ -111,8 +112,21 @@ fn accept_parity5_cabin_intro_05_the_other_three_buttons_open_a_marked_screen() 
         ));
     }
     let names: Vec<&str> = NOT_IMPLEMENTED.iter().map(|entry| entry.what).collect();
+    assert_eq!(names, ["Change Memento", "Plane Construction"]);
+}
+
+#[test]
+fn accept_parity5_cabin_intro_05_previous_missions_opens_its_screen_not_a_notice() {
+    let (mut flow, mut shell) = cabin();
+    let step = press(&mut flow, &mut shell, 50);
     assert_eq!(
-        names,
-        ["Previous Missions", "Change Memento", "Plane Construction"]
+        step,
+        StartStep::Moved {
+            from: Screen::Cabin,
+            to: Screen::Scrapbook
+        }
     );
+    assert_eq!(shell.section_name(), Some("ScrapBook_TOC"));
+    assert!(flow.notice().is_none());
+    assert!(flow.not_implemented_seen().is_empty());
 }

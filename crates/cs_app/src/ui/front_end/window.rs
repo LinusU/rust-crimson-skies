@@ -88,12 +88,13 @@ use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
 use super::pilot_page::{CONTINUE_BUTTON, DELETE_BUTTON, PILOT_SECTION, PilotOutcome, PilotPage};
+use super::previous_missions::{PreviousMissionsPage, TOC_SECTION, TocOutcome};
 use super::retail::{FrontEndScreens, RetailError};
 use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
 use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuMix, MenuSamples, MenuSoundTable};
-use super::start_flow::{FIRST_MISSION, StartFlow, StartStep};
+use super::start_flow::{FIRST_MISSION, NotImplemented, StartFlow, StartStep};
 use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
 use crate::cinematics::movie_player::{AudioOutput, MoviePlayerPlugin};
@@ -207,6 +208,19 @@ pub struct ShellResource {
     notice_scene: (Vec<Entity>, (u32, u32)),
     /// The Preferences → Audio page (#1996), when the run has one.
     audio_page: Option<AudioPageState>,
+    /// The cabin's Previous Missions page (#1956), when the run has one.
+    previous: Option<PreviousState>,
+}
+
+/// The Previous Missions page's live state.
+struct PreviousState {
+    page: PreviousMissionsPage,
+    /// What the page's buttons did, in order.
+    outcomes: Vec<TocOutcome>,
+    /// The overlay's entities while the page is on screen.
+    scene: Vec<Entity>,
+    /// The surface the overlay was laid out for.
+    drawn_surface: (u32, u32),
 }
 
 /// The Audio page's live state.
@@ -278,6 +292,20 @@ impl ShellResource {
     #[must_use]
     pub fn pilot_page(&self) -> Option<&PilotPage> {
         self.pilots.as_ref().map(|pilots| &pilots.page)
+    }
+
+    /// The Previous Missions page, when the run has one.
+    #[must_use]
+    pub fn previous_missions(&self) -> Option<&PreviousMissionsPage> {
+        self.previous.as_ref().map(|state| &state.page)
+    }
+
+    /// What the Previous Missions page's buttons did, in order.
+    #[must_use]
+    pub fn previous_outcomes(&self) -> &[TocOutcome] {
+        self.previous
+            .as_ref()
+            .map_or(&[], |state| state.outcomes.as_slice())
     }
 
     /// The profile session behind the pilot page.
@@ -458,6 +486,7 @@ pub struct FrontEndShellPlugin {
     flow: Mutex<Option<StartFlow>>,
     pilots: Mutex<Option<PilotSetup>>,
     audio_page: Mutex<Option<AudioPage>>,
+    previous: Mutex<Option<PreviousMissionsPage>>,
     audio: Mutex<Option<MenuAudio>>,
     audio_note: Mutex<Option<String>>,
     intro: Mutex<Option<IntroMovie>>,
@@ -485,6 +514,7 @@ impl FrontEndShellPlugin {
             flow: Mutex::new(None),
             pilots: Mutex::new(None),
             audio_page: Mutex::new(None),
+            previous: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -512,6 +542,13 @@ impl FrontEndShellPlugin {
             .audio_page
             .lock()
             .expect("the plugin is not shared yet") = Some(page);
+        self
+    }
+
+    /// Gives the `ScrapBook_TOC` section its page (#1956).
+    #[must_use]
+    pub fn with_previous_missions(self, page: PreviousMissionsPage) -> Self {
+        *self.previous.lock().expect("the plugin is not shared yet") = Some(page);
         self
     }
 
@@ -553,6 +590,7 @@ impl FrontEndShellPlugin {
             flow: Mutex::new(None),
             pilots: Mutex::new(None),
             audio_page: Mutex::new(None),
+            previous: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -654,6 +692,17 @@ impl Plugin for FrontEndShellPlugin {
                     released: None,
                     applied: None,
                 }),
+            previous: self
+                .previous
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .map(|page| PreviousState {
+                    page,
+                    outcomes: Vec::new(),
+                    scene: Vec::new(),
+                    drawn_surface: (0, 0),
+                }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
             && !app.is_plugin_added::<MoviePlayerPlugin>()
@@ -749,6 +798,26 @@ pub fn headless_app_audio_page(
     if let Some(audio) = audio {
         plugin = plugin.with_audio(Ok(audio));
     }
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
+/// As [`headless_app_flow`], with the Previous Missions page — the #1956
+/// route tests.
+pub fn headless_app_previous_missions(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    page: PreviousMissionsPage,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell).with_previous_missions(page);
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -856,6 +925,11 @@ fn frame_shell(world: &mut World) {
             .shell
             .section_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(PILOT_SECTION));
+    let on_toc = state.previous.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(TOC_SECTION));
     if let Some(pilots) = &mut state.pilots {
         // Typed text reaches the page only while it is on screen; the
         // reader advances either way so keys typed elsewhere never replay.
@@ -956,6 +1030,10 @@ fn frame_shell(world: &mut World) {
     if on_page && let Some(pilots) = pilots.as_mut() {
         pilots.page.hover_at(point);
     }
+    let previous = &mut state.previous;
+    if on_toc && let Some(previous) = previous.as_mut() {
+        previous.page.hover_at(point);
+    }
     let audio_page = &mut state.audio_page;
     if on_audio
         && let Some(page) = audio_page.as_mut()
@@ -1003,8 +1081,14 @@ fn frame_shell(world: &mut World) {
                     .as_ref()
                     .filter(|_| on_page)
                     .and_then(|pilots| point.and_then(|(x, y)| pilots.page.row_at(x, y)));
+                let toc_row = previous
+                    .as_ref()
+                    .filter(|_| on_toc)
+                    .and_then(|previous| point.and_then(|(x, y)| previous.page.row_at(x, y)));
                 if audio_hit {
                     // The Audio page's slider or drop-down took the press.
+                } else if let (Some(previous), Some(row)) = (previous.as_mut(), toc_row) {
+                    previous.page.select_row(row);
                 } else if let (Some(pilots), Some(row)) = (pilots.as_mut(), row) {
                     pilots.page.select_row(row);
                 } else {
@@ -1038,6 +1122,12 @@ fn frame_shell(world: &mut World) {
             ShellEvent::FocusNext | ShellEvent::FocusPrev if on_page => {
                 if let Some(pilots) = pilots.as_mut() {
                     pilots.page.move_selection(event == ShellEvent::FocusNext);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::FocusNext | ShellEvent::FocusPrev if on_toc => {
+                if let Some(previous) = previous.as_mut() {
+                    previous.page.move_selection(event == ShellEvent::FocusNext);
                 }
                 ShellOutcome::Nothing
             }
@@ -1106,6 +1196,33 @@ fn frame_shell(world: &mut World) {
                 audio.page.set_focus(Some(AudioControl::Music));
             }
             continue;
+        }
+        if pilot_step.is_none()
+            && on_toc
+            && let ShellOutcome::Unhandled { id, .. } = &outcome
+            && let Some(previous) = previous.as_mut()
+        {
+            let pressed = previous.page.press(id);
+            if pressed != TocOutcome::Nothing {
+                previous.outcomes.push(pressed.clone());
+            }
+            pilot_step = match pressed {
+                TocOutcome::JournalNotBuilt { button } => flow.as_mut().map(|flow| {
+                    flow.show_not_implemented(NotImplemented {
+                        section: "ScrapBook",
+                        button,
+                        what: "the Scrapbook journal",
+                    })
+                }),
+                TocOutcome::Replay { mission } => {
+                    eprintln!(
+                        "cs: replaying mission {mission} needs the per-pilot progress store, \
+                         which is not built"
+                    );
+                    Some(StartStep::Stay)
+                }
+                TocOutcome::ReplayOff | TocOutcome::Nothing => None,
+            };
         }
         if pilot_step.is_none()
             && on_page
@@ -1275,6 +1392,7 @@ fn frame_shell(world: &mut World) {
         }
     }
     sync_pilot_scene(world, &mut state);
+    sync_previous_scene(world, &mut state);
     sync_audio_scene(world, &mut state);
     sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
@@ -1503,6 +1621,54 @@ fn sync_audio_scene(world: &mut World, state: &mut ShellResource) {
         }
         audio.scene = super::audio_view::spawn_page(world, &audio.page, &state.art.images, surface);
         audio.drawn_surface = surface;
+    }
+}
+
+/// Keeps the Previous Missions page's overlay in step with its model: drawn
+/// while the `ScrapBook_TOC` section is shown, redrawn when the model or the
+/// surface changed, gone otherwise.
+fn sync_previous_scene(world: &mut World, state: &mut ShellResource) {
+    if !state.visuals {
+        return;
+    }
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(TOC_SECTION));
+    let surface = state.surface;
+    let buttons: Vec<(String, super::ShellRect)> = state
+        .shell
+        .section()
+        .map(|section| {
+            section
+                .buttons
+                .iter()
+                .map(|button| (button.id.to_ascii_uppercase(), button.rect))
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(previous) = state.previous.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in previous.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = previous.page.take_dirty();
+    if previous.scene.is_empty() || dirty || previous.drawn_surface != surface {
+        for entity in previous.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        previous.scene = super::previous_missions_view::spawn_page(
+            world,
+            &previous.page,
+            &state.art.images,
+            &buttons,
+            surface,
+        );
+        previous.drawn_surface = surface;
     }
 }
 
@@ -2212,7 +2378,7 @@ fn cabin_script() -> Vec<(u32, Step)> {
 /// The deterministic pass over the whole start flow (#1842): the main menu,
 /// Campaign, a typed new pilot and Continue (the intro movie starts), three
 /// frames of the movie, Esc to skip it, the cabin, a press on Previous
-/// Missions (the marked notice), Esc, and Return to Main Menu. Needs
+/// Missions (the list screen), its Return to Cabin, and Return to Main Menu. Needs
 /// `--smoke-seconds 16` or more.
 #[inline(always)]
 fn flow_script() -> Vec<(u32, Step)> {
@@ -2237,9 +2403,10 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(11.3), Step::HoverButton("PC_B_PREVIOUS")),
         (at(11.5), Step::Mouse(true)),
         (at(11.7), Step::Mouse(false)),
-        (at(12.2), Step::Shot("flow-notice")),
-        (at(12.5), Step::Key(KeyCode::Escape, true)),
-        (at(12.6), Step::Key(KeyCode::Escape, false)),
+        (at(12.2), Step::Shot("flow-previous-missions")),
+        (at(12.4), Step::HoverButton("SBTOC_B_RETURN")),
+        (at(12.5), Step::Mouse(true)),
+        (at(12.6), Step::Mouse(false)),
         (at(13.0), Step::Shot("flow-cabin-after")),
         (at(13.2), Step::HoverButton("PC_B_RETURNMM")),
         (at(13.4), Step::Mouse(true)),
@@ -2692,10 +2859,19 @@ fn evaluate(
         return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
     if smoke.scene == SmokeScene::Flow {
-        // The notice and its dismissal do not move the section.
-        if run.visited != ["MainMenu", "Campaign", "PassengerCabin", "MainMenu"] {
+        if run.visited
+            != [
+                "MainMenu",
+                "Campaign",
+                "PassengerCabin",
+                "ScrapBook_TOC",
+                "PassengerCabin",
+                "MainMenu",
+            ]
+        {
             failures.push(format!(
-                "the flow visited {:?}, expected MainMenu → Campaign → PassengerCabin → MainMenu",
+                "the flow visited {:?}, expected MainMenu → Campaign → PassengerCabin → \
+                 ScrapBook_TOC → PassengerCabin → MainMenu",
                 run.visited
             ));
         }
@@ -2706,9 +2882,9 @@ fn evaluate(
                 facts.intro
             ));
         }
-        if facts.notices != ["PC_B_PREVIOUS"] {
+        if !facts.notices.is_empty() {
             failures.push(format!(
-                "the not-implemented notices opened were {:?}; expected exactly Previous Missions",
+                "not-implemented notices opened during the flow: {:?}",
                 facts.notices
             ));
         }
@@ -3155,6 +3331,14 @@ pub(super) fn shell_app_with(
     // buttons.
     let pilots = pilot_setup(request, &layout);
     let audio_page = audio_page_setup(request, &screens, &layout);
+    let previous = previous_missions_setup(request, &screens, &layout);
+    if previous.is_some()
+        && let Some(artwork) = screens.graphic_artwork(super::previous_missions::ICON_ART)
+    {
+        // The list's icon strip, which no pane or button references.
+        art.entry(super::previous_missions::ICON_ART.to_owned())
+            .or_insert(artwork);
+    }
     if let Some(page) = &audio_page {
         // The slider and drop-down art the generic rows do not reference.
         let rows = page
@@ -3217,6 +3401,9 @@ pub(super) fn shell_app_with(
     }
     if let Some(page) = audio_page {
         plugin = plugin.with_audio_page(page);
+    }
+    if let Some(page) = previous {
+        plugin = plugin.with_previous_missions(page);
     }
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
@@ -3295,6 +3482,39 @@ fn audio_page_setup(
         Ok(page) => Some(page),
         Err(error) => {
             eprintln!("cs: no audio page: {error}");
+            None
+        }
+    }
+}
+
+/// The Previous Missions page for a run (#1956): its rows from the layout,
+/// its captions and list text from the installation's own string table. The
+/// start flow keeps no per-pilot progress yet, so the pilot is a fresh one
+/// ([`MissionProgress::fresh`]). A page the installation cannot supply is
+/// reported and the section still draws its panes and buttons.
+fn previous_missions_setup(
+    request: &FrontEndRequest,
+    screens: &FrontEndScreens,
+    layout: &super::OriginalLayout,
+) -> Option<PreviousMissionsPage> {
+    let strings = match crate::mission_session::FlightCheckStrings::read(&request.cs_path, screens)
+    {
+        Ok(strings) => strings,
+        Err(error) => {
+            eprintln!("cs: no previous-missions page: {error}");
+            return None;
+        }
+    };
+    match PreviousMissionsPage::from_layout(
+        layout,
+        &|name: &str| strings.resolve_tagged(name),
+        &|id: u32| strings.resolve_id_tagged(id),
+        &|art: &str| screens.art_extent(art),
+        super::MissionProgress::fresh(),
+    ) {
+        Ok(page) => Some(page),
+        Err(error) => {
+            eprintln!("cs: no previous-missions page: {error}");
             None
         }
     }

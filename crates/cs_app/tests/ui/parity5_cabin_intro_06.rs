@@ -4,8 +4,8 @@
 //! * The synthetic test proves the scene selector (runs in CI).
 //! * The windowed test drives `cs --front-end --smoke-seconds 16` on the flow
 //!   scene on a GPU: main menu, Campaign, a typed new pilot, the intro movie
-//!   (three frames, then skipped), the cabin, the marked not-implemented
-//!   notice for Previous Missions, and Return to Main Menu. It is `#[ignore]`d
+//!   (three frames, then skipped), the cabin, the Previous Missions screen
+//!   (#1956), its Return to Cabin, and Return to Main Menu. It is `#[ignore]`d
 //!   because CI has neither the installation nor a GPU. Nothing here is
 //!   `human_play` or `verified_original`.
 
@@ -61,7 +61,7 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "the run passed its own checks: {report}\nstderr: {stderr}"
     );
     assert!(
-        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"PassengerCabin\",\"MainMenu\"]"),
+        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"PassengerCabin\",\"ScrapBook_TOC\",\"PassengerCabin\",\"MainMenu\"]"),
         "{report}"
     );
     for label in [
@@ -72,7 +72,7 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "intro-b",
         "intro-c",
         "flow-cabin",
-        "flow-notice",
+        "flow-previous-missions",
         "flow-cabin-after",
         "flow-mainmenu-again",
     ] {

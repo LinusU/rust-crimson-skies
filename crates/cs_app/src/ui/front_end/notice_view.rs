@@ -1,4 +1,4 @@
-//! The marked "not implemented" screen a cabin button opens when its screen
+//! The marked "not implemented" screen a button opens when its screen
 //! has not been built (PARITY5-CABIN-INTRO.05).
 //!
 //! It is a project notice, not an original screen: a dark panel over the cabin
@@ -22,7 +22,7 @@ pub fn lines(entry: &NotImplemented) -> [String; 3] {
     [
         "NOT IMPLEMENTED".to_owned(),
         format!("{} is not built yet.", entry.what),
-        "Esc, Return or a click returns to the cabin.".to_owned(),
+        "Esc, Return or a click closes this notice.".to_owned(),
     ]
 }
 
