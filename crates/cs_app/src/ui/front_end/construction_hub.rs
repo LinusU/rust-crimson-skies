@@ -87,6 +87,9 @@ use super::construction_armor_paint::{
 };
 use super::construction_hangar::{HangarPage, SavedPlane, SlotIcons};
 use super::construction_panels::{ChoiceKind, ChoiceOption, ChoicePanel, ChoicePress};
+use super::construction_purchase::{
+    PURCHASE_BUTTON, PURCHASE_SECTION, PurchaseError, PurchaseFeed, PurchaseOutcome, PurchasePage,
+};
 use super::construction_slots::{SlotKind, SlotOption, SlotPanel, SlotPress};
 use super::construction_stats::{self, PlaneRecord};
 use super::original::{OriginalLayout, Section};
@@ -250,7 +253,8 @@ impl Panel {
 }
 
 /// What Ready opens: the *Construction totals* purchase panel (the button's
-/// `ScriptToExe` is `Purchase`), which no task builds yet.
+/// `ScriptToExe` is `Purchase`, task #2053). Built when the layout has the
+/// `Purchase` rows; the marked notice stands in for a layout that lacks them.
 pub const READY_NOT_BUILT: NotImplemented = NotImplemented {
     section: HUB_SECTION,
     button: "PX_B_READY",
@@ -442,6 +446,22 @@ pub enum HubOutcome {
     List,
     /// Ready: its panel is not built.
     Ready,
+    /// Ready opened the purchase panel ([`HubPage::purchase`]).
+    Purchase,
+    /// A message box is up ([`HubPage::message`]): the name is missing (203),
+    /// the hangar is full (204) or the plane was bought (703).
+    Message,
+    /// *Purchase Now* may run: the caller commits the draft
+    /// ([`super::construction_purchase::commit_purchase`]), stores the plane
+    /// in `slot`, and tells the page ([`HubPage::finish_purchase`]).
+    Commit {
+        /// The record the plane goes into.
+        slot: usize,
+        /// The plane's name.
+        name: String,
+        /// The cost taken off the cash.
+        value: i32,
+    },
     /// Sell: the hangar is not built.
     Sell,
     /// Cancel with unsaved changes: the prompt is up ([`HubPage::prompt`]).
@@ -478,6 +498,18 @@ pub struct HubPage {
     icons: Option<SlotIcons>,
     default_loadout: bool,
     hangar: Option<HangarPage>,
+    purchase: Option<PurchasePage>,
+    purchase_open: bool,
+    message: Option<Message>,
+}
+
+/// An OK-only message box over the hub.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Message {
+    text: String,
+    /// Closing the box of a finished purchase leaves the screen
+    /// (`mail 12004`).
+    leaves: bool,
 }
 
 /// A stand-in for the width the engine measures a caption at: the face is not
@@ -612,6 +644,11 @@ impl HubPage {
             default_loadout: true,
             // A layout without the Hangar rows leaves Sell on the marked notice.
             hangar: HangarPage::from_layout(layout, name, id).ok(),
+            // A layout without the Purchase rows leaves Ready on the marked
+            // notice.
+            purchase: PurchasePage::from_layout(layout, name, id).ok(),
+            purchase_open: false,
+            message: None,
         })
     }
 
@@ -624,6 +661,87 @@ impl HubPage {
     /// The Sell hangar's page, to press its buttons.
     pub const fn hangar_mut(&mut self) -> Option<&mut HangarPage> {
         self.hangar.as_mut()
+    }
+
+    /// The purchase panel, when the layout supplied its rows.
+    #[must_use]
+    pub const fn purchase(&self) -> Option<&PurchasePage> {
+        self.purchase.as_ref()
+    }
+
+    /// Whether the purchase panel is the one on screen (Ready was pressed
+    /// and no tab since).
+    #[must_use]
+    pub const fn purchase_open(&self) -> bool {
+        self.purchase_open && self.purchase.is_some()
+    }
+
+    /// Hands the purchase panel the plane and the cash. `Ok(false)` when the
+    /// layout gave the panel no rows.
+    ///
+    /// # Errors
+    ///
+    /// [`PurchaseError`] for a plane the tables do not cover.
+    pub fn set_purchase_feed(&mut self, feed: PurchaseFeed) -> Result<bool, PurchaseError> {
+        let Some(purchase) = &mut self.purchase else {
+            return Ok(false);
+        };
+        purchase.set_feed(feed)?;
+        self.dirty = true;
+        Ok(true)
+    }
+
+    /// The message box that is up, if one is.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_ref().map(|message| message.text.as_str())
+    }
+
+    /// The tab held down: none while the purchase panel is up (Ready's latch
+    /// is released by the panel's own `mail 10017`, `PLANECONSTRUCTION.SCRIPT`
+    /// `case 10017`, and the tab before it by Ready's press).
+    #[must_use]
+    pub fn latched(&self) -> Option<&'static str> {
+        if self.purchase_open() {
+            None
+        } else {
+            Some(self.selected.button())
+        }
+    }
+
+    /// Whether *Purchase Now* is active (`E 2264`).
+    #[must_use]
+    pub fn purchase_enabled(&self) -> bool {
+        self.purchase_open()
+            && self
+                .purchase
+                .as_ref()
+                .is_some_and(PurchasePage::button_enabled)
+    }
+
+    /// Tells the page the commit ran: the purchase box (`E 2107`) is up, and
+    /// closing it leaves the screen. Nothing happens without a purchase panel.
+    pub fn finish_purchase(&mut self) -> HubOutcome {
+        let Some(text) = self.purchase.as_ref().and_then(PurchasePage::purchased) else {
+            return HubOutcome::Nothing;
+        };
+        self.message = Some(Message { text, leaves: true });
+        self.dirty = true;
+        HubOutcome::Message
+    }
+
+    /// Closes the message box (its OK): after a purchase this leaves the
+    /// screen, otherwise it keeps building.
+    pub fn dismiss_message(&mut self) -> HubOutcome {
+        let Some(message) = self.message.take() else {
+            return HubOutcome::Nothing;
+        };
+        self.dirty = true;
+        if message.leaves {
+            HubOutcome::Leave
+        } else {
+            HubOutcome::Stay
+        }
     }
 
     /// Hands the hangar the pilot's saved planes (see
@@ -802,7 +920,7 @@ impl HubPage {
     /// drop-down before the shell sees it. [`HubOutcome::Nothing`] means the
     /// press is not the panel's.
     pub fn press_at(&mut self, x: i32, y: i32) -> HubOutcome {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.message.is_some() || self.purchase_open() {
             return HubOutcome::Nothing;
         }
         let selected = self.selected;
@@ -1017,6 +1135,8 @@ impl HubPage {
     pub fn open(&mut self, name: &str) {
         self.text = name.chars().take(self.edit.max_chars).collect();
         self.selected = Panel::Airframe;
+        self.purchase_open = false;
+        self.message = None;
         self.prompt = None;
         self.dirty = true;
         if let Some(armor) = &mut self.armor {
@@ -1043,6 +1163,9 @@ impl HubPage {
     /// built.
     #[must_use]
     pub fn panel_section(&self) -> Option<&'static str> {
+        if self.purchase_open() {
+            return Some(PURCHASE_SECTION);
+        }
         match self.selected {
             Panel::Armor if self.armor.is_some() => {
                 Some(super::construction_armor_paint::ARMOR_SECTION)
@@ -1129,7 +1252,7 @@ impl HubPage {
 
     /// Typed text: printable characters up to the row's `MaxChars`.
     pub fn type_text(&mut self, text: &str) {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.message.is_some() {
             return;
         }
         for character in text.chars().filter(|c| !c.is_control()) {
@@ -1142,7 +1265,7 @@ impl HubPage {
 
     /// Backspace.
     pub fn backspace(&mut self) {
-        if self.prompt.is_none() {
+        if self.prompt.is_none() && self.message.is_none() {
             self.text.pop();
             self.dirty = true;
         }
@@ -1213,7 +1336,11 @@ impl HubPage {
             });
         }
         out.extend(self.stats.texts(self.stat_levels()));
+        if self.purchase_open() {
+            out.extend(self.purchase.iter().flat_map(PurchasePage::texts));
+        }
         match self.selected {
+            _ if self.purchase_open() => {}
             Panel::Armor => out.extend(self.armor.iter().flat_map(ArmorPanel::texts)),
             Panel::Paint => out.extend(self.paint.iter().flat_map(PaintPanel::texts)),
             _ => {}
@@ -1233,7 +1360,7 @@ impl HubPage {
 
     /// A press on one of the page's buttons.
     pub fn press(&mut self, button: &str) -> HubOutcome {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.message.is_some() {
             return HubOutcome::Nothing;
         }
         if button.eq_ignore_ascii_case(CANCEL_BUTTON) {
@@ -1250,7 +1377,16 @@ impl HubPage {
                 HubOutcome::Leave
             }
         } else if button.eq_ignore_ascii_case(READY_BUTTON) {
-            HubOutcome::Ready
+            if self.purchase.is_some() {
+                self.close_list();
+                self.purchase_open = true;
+                self.dirty = true;
+                HubOutcome::Purchase
+            } else {
+                HubOutcome::Ready
+            }
+        } else if button.eq_ignore_ascii_case(PURCHASE_BUTTON) {
+            self.press_purchase()
         } else if button.eq_ignore_ascii_case(SELL_BUTTON) {
             if self.sell_enabled() {
                 HubOutcome::Sell
@@ -1260,10 +1396,46 @@ impl HubPage {
         } else if let Some(panel) = Panel::of_button(button) {
             self.close_list();
             self.selected = panel;
+            self.purchase_open = false;
             self.dirty = true;
             HubOutcome::Panel(panel)
         } else {
             HubOutcome::Nothing
+        }
+    }
+
+    /// *Purchase Now*: the name check of `mail 20001` and `E 2210`.
+    fn press_purchase(&mut self) -> HubOutcome {
+        if !self.purchase_open() {
+            return HubOutcome::Nothing;
+        }
+        // Without the hangar's records `E 2210` has nothing to ask.
+        let Some(hangar) = &self.hangar else {
+            return HubOutcome::Nothing;
+        };
+        let free = hangar.free_slot();
+        let Some(purchase) = &self.purchase else {
+            return HubOutcome::Nothing;
+        };
+        match purchase.press_purchase(&self.text, free) {
+            PurchaseOutcome::Nothing => HubOutcome::Nothing,
+            PurchaseOutcome::HangarFull { text } | PurchaseOutcome::NameRequired { text } => {
+                match text {
+                    Some(text) => {
+                        self.message = Some(Message {
+                            text,
+                            leaves: false,
+                        });
+                        self.dirty = true;
+                        HubOutcome::Message
+                    }
+                    // A string table without the box's text cannot show it.
+                    None => HubOutcome::Nothing,
+                }
+            }
+            PurchaseOutcome::Commit { slot, name, value } => {
+                HubOutcome::Commit { slot, name, value }
+            }
         }
     }
 

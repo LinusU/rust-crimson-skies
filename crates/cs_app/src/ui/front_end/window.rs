@@ -232,6 +232,8 @@ struct HubState {
     drawn_surface: (u32, u32),
     /// The hub section's own panes, kept while a panel's are added to them.
     base_panes: Option<Vec<super::shell::ShellPane>>,
+    /// The hub section's own buttons, kept while the purchase panel's is added.
+    base_buttons: Option<Vec<super::shell::ShellButton>>,
     /// The panel section whose panes the hub section now carries.
     panes_of: Option<&'static str>,
     /// The levels and blueprint the hub section now carries.
@@ -405,6 +407,31 @@ impl ShellResource {
         if let Some(hub) = self.hub.as_mut() {
             hub.page.set_choices(panel, options, selected);
         }
+    }
+
+    /// Hands the hub's purchase panel the plane and the cash (#2053).
+    /// `Ok(false)` when the run has no hub or the layout gave the panel no rows.
+    ///
+    /// # Errors
+    ///
+    /// [`super::construction_purchase::PurchaseError`] for a plane the tables
+    /// do not cover.
+    pub fn set_hub_purchase_feed(
+        &mut self,
+        feed: super::construction_purchase::PurchaseFeed,
+    ) -> Result<bool, super::construction_purchase::PurchaseError> {
+        match self.hub.as_mut() {
+            Some(hub) => hub.page.set_purchase_feed(feed),
+            None => Ok(false),
+        }
+    }
+
+    /// Tells the hub the commit of a [`HubOutcome::Commit`] ran: the purchase
+    /// box is up. `false` when the run has no hub or no purchase panel.
+    pub fn finish_hub_purchase(&mut self) -> bool {
+        self.hub
+            .as_mut()
+            .is_some_and(|hub| hub.page.finish_purchase() == HubOutcome::Message)
     }
 
     /// Hands the hub's Armor panel its lists. `false` when the run has no hub
@@ -914,6 +941,7 @@ impl Plugin for FrontEndShellPlugin {
                     scene: Vec::new(),
                     drawn_surface: (0, 0),
                     base_panes: None,
+                    base_buttons: None,
                     panes_of: None,
                     stats_of: None,
                     hangar_scene: Vec::new(),
@@ -1519,6 +1547,21 @@ fn frame_shell(world: &mut World) {
             ShellEvent::FocusPrev => {
                 shell.move_focus(false);
                 state.run.focus_moves += 1;
+                ShellOutcome::Nothing
+            }
+            ShellEvent::ActivateDown | ShellEvent::Escape
+                if on_hub && hub.as_ref().is_some_and(|hub| hub.page.message().is_some()) =>
+            {
+                // A message box's OK; after a purchase it leaves the screen.
+                if let Some(hub) = hub.as_mut() {
+                    let done = hub.page.dismiss_message();
+                    pilot_step = hub_step(hub, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::ActivateUp
+                if on_hub && hub.as_ref().is_some_and(|hub| hub.page.message().is_some()) =>
+            {
                 ShellOutcome::Nothing
             }
             ShellEvent::ActivateDown
@@ -2146,6 +2189,11 @@ fn hub_step(
         HubOutcome::Nothing => None,
         HubOutcome::ConfirmLeave
         | HubOutcome::Stay
+        | HubOutcome::Purchase
+        | HubOutcome::Message
+        // The commit is the caller's: the run keeps no draft or profile yet
+        // (task #2052), so a drive reads it from `hub_outcomes()`.
+        | HubOutcome::Commit { .. }
         | HubOutcome::List
         | HubOutcome::Choose { .. }
         | HubOutcome::ChooseSlot { .. } => Some(StartStep::Stay),
@@ -2366,14 +2414,18 @@ fn sync_hub_scene(world: &mut World, state: &mut ShellResource) {
         .section_name()
         .is_some_and(|name| name.eq_ignore_ascii_case(HUB_SECTION));
     if active && let Some(hub) = state.hub.as_mut() {
-        state.shell.set_latched(Some(hub.page.selected().button()));
+        state.shell.set_latched(hub.page.latched());
+        if install_panel_panes(&mut state.shell, hub) {
+            state.redraw = true;
+        }
         let _ = state.shell.set_enabled(
             super::construction_hub::SELL_BUTTON,
             hub.page.sell_enabled(),
         );
-        if install_panel_panes(&mut state.shell, hub) {
-            state.redraw = true;
-        }
+        let _ = state.shell.set_enabled(
+            super::construction_purchase::PURCHASE_BUTTON,
+            hub.page.purchase_enabled(),
+        );
     }
     if !state.visuals {
         return;
@@ -2436,6 +2488,16 @@ fn install_panel_panes(shell: &mut MenuShell, hub: &mut HubState) -> bool {
                 .collect()
         })
         .unwrap_or_default();
+    let purchase_buttons: Vec<super::shell::ShellButton> =
+        if wanted == Some(super::construction_purchase::PURCHASE_SECTION) {
+            shell
+                .sections()
+                .get(&super::construction_purchase::PURCHASE_SECTION.to_ascii_uppercase())
+                .map(|section| section.buttons.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
     let Some(section) = shell.section_mut(HUB_SECTION) else {
         return false;
     };
@@ -2456,6 +2518,12 @@ fn install_panel_panes(shell: &mut MenuShell, hub: &mut HubState) -> bool {
         ));
     }
     section.panes = panes.into_iter().chain(extra).collect();
+    // The purchase panel's button is a button of the hub while it is up.
+    let base_buttons = hub
+        .base_buttons
+        .get_or_insert_with(|| section.buttons.clone());
+    section.buttons = base_buttons.clone();
+    section.buttons.extend(purchase_buttons);
     hub.panes_of = wanted;
     hub.stats_of = Some(stats);
     hub.page.mark_dirty();

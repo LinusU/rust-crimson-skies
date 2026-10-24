@@ -80,8 +80,11 @@ pub(super) fn spawn_page(
             continue;
         };
         let size = tab.size.map_or(DEFAULT_SIZE, |size| size as f32);
-        // The selected tab is held down: the strip's depressed colour.
-        let selected = tab.button.eq_ignore_ascii_case(page.selected().button());
+        // The selected tab is held down: the strip's depressed colour. While
+        // the purchase panel is up no tab is held (`HubPage::latched`).
+        let selected = page
+            .latched()
+            .is_some_and(|held| tab.button.eq_ignore_ascii_case(held));
         let color = tab.colors[if selected { 3 } else { 1 }];
         let line = ShellRect {
             x: rect.x,
@@ -90,6 +93,20 @@ pub(super) fn spawn_page(
             height: rect.height,
         };
         canvas.text(line, &tab.text, size, argb(color), 1, CAPTION_Z);
+    }
+    if page.purchase_open()
+        && let Some(caption) = page.purchase().and_then(|purchase| purchase.button())
+        && let Some((_, rect)) = buttons.iter().find(|(id, _)| *id == caption.button)
+    {
+        let size = caption.size.map_or(DEFAULT_SIZE, |size| size as f32);
+        let color = caption.colors[if page.purchase_enabled() { 1 } else { 0 }];
+        let line = ShellRect {
+            x: rect.x,
+            y: rect.y + (rect.height as f32 * 0.5 - size * 0.6) as i32,
+            width: rect.width,
+            height: rect.height,
+        };
+        canvas.text(line, &caption.text, size, argb(color), 1, CAPTION_Z);
     }
     let edit = page.edit();
     if let Some(frame) = edit.frame_color {
@@ -123,6 +140,28 @@ pub(super) fn spawn_page(
             1,
             Z + 0.6,
         );
+    } else if let Some(message) = page.message() {
+        canvas.text(
+            PROMPT_AREA,
+            message,
+            PANEL_NOTE_SIZE,
+            argb(PROMPT_COLOUR),
+            1,
+            Z + 0.6,
+        );
+        canvas.text(
+            ShellRect {
+                y: PROMPT_AREA.y + 24,
+                ..PROMPT_AREA
+            },
+            "Enter / Esc: OK",
+            DEFAULT_SIZE + 2.0,
+            argb(PANEL_NOTE_COLOUR),
+            1,
+            Z + 0.6,
+        );
+    } else if page.purchase_open() {
+        // The purchase panel is its texts, drawn above.
     } else if let Some(panel) = page.choice_panel(page.selected()) {
         draw_choice_panel(&mut canvas, panel);
     } else if let Some(panel) = page.slot_panel(page.selected()) {
