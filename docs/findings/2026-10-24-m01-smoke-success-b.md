@@ -41,9 +41,28 @@ Kestrels are never woken, and the Kestrel beat never starts. The census (section
 what is missing is a declaring member that names `do_approach1..6` (and, probably,
 `texdrop`, `do_direction`) for the landing player's join. Nothing was guessed or forced.
 
+## Re-measured after #2098 (declaration fix): the landing completes, the Kestrel kill cannot
+
+`cs --cs-path <retail> --mission M01 --smoke-seconds 400 --smoke-success` on the rebased branch:
+the proximity, mark and landing checks pass. Block 20 (`texdrop` EXECUTED) completed at host
+tick 2773, no player refusals, and block 22 (the Kestrel wake) completed at 3374. Framebuffers
+`success_near`, `success_marked` and `success_landed` arrived.
+
+The Kestrel beat then fails: 5371 guns-key presses from 60 m marks astern (2700 placements)
+destroyed none of `medkestrel_1..3`, and `success_frames_drawn` fails because the
+`success_kestrels` frame is only taken after a kill. Reading the production path shows why this
+is not a tuning problem:
+
+* `mission_actors::designed_frame_node` registers every scripted actor with an **unresolved**
+  integrity pool (claim `m01-actors.damage-pool`: "no M01 damage table is measured (#668)"), so a
+  routed hit is reported unresolved and never destroys the actor.
+* No scripted aircraft carries a `PartSweptBox` (only ground targets, parts and the player do), so a
+  gun round has no volume to hit on a Kestrel.
+
+Making the Kestrels killable needs a designed or measured aircraft integrity pool and a gun-hit
+volume. Both are unmeasured game rules (AGENTS.md rule 4), so the stage does not invent them.
+
 ## Not established
 
-* The Kestrel beat (placement astern, guns key, damage-authority kills) has not run on
-  retail: its checks pass only on the synthetic measurements of the pure tests. It needs the
-  landing to complete first.
-* Where `do_approach1..6` are declared in C3 (or how the original resolves them).
+* Whether and how the original's guns destroy `medkestrel_1..3` (pool, hit volume).
+* The Kestrel beat's placement constants: no round can hit, so they are untested on retail.
