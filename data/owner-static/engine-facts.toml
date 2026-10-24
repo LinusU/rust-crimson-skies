@@ -6382,3 +6382,145 @@ name = "splash.health_damage_field"
 va = 0x005adb78
 bytes = "8d7b50"
 fact = "the record parser stores HEALTH_DAMAGE at weapon+0x50 (lea edi,[ebx+0x50]); a record with no HEALTH_DAMAGE reads DAMAGE into the same slot"
+
+# The OrdinanceLayout screen's rocket table and plane-record readings (#2069
+# F2066-B, finding docs/findings/2026-10-24-parity5-ordinance-feed.md).
+#
+# `E 2028` counts and names the rocket rows through a table of twelve
+# eight-byte records at `table_va` (`count_va` counts, `nth_va` answers the
+# record index of the n-th row, `row_of_va` answers the row of a rocket id:
+# the number of passing records among `0..=id`, minus one). A record
+# (`first`, `aux` as two little-endian dwords) passes when any of the three
+# flag cells (`flag_a_va`, `flag_b_va`, `flag_c_va`) is non-zero, or when
+# `first <= progress_cell + 1`. `progress_cell_va` and the three flag cells
+# lie in the zero-initialised tail of `.data`, so the image holds no starting
+# value for them: what they mean in the campaign is unread. `aux` is read by
+# none of the three functions. `E 2031` answers `-1` for a rocket box the
+# plane record lacks: boxes below four against the dword at
+# `box_low_count_offset`, boxes four and up against the dword at
+# `box_high_count_offset` plus `box_high_bias`. `E 2036` / `E 2037` store the
+# ammunition kind / the record index `nth_va` answers for the chosen row into
+# the working copy at `draft_va` (stride `record_stride`, the record layout of
+# `[flight_check_layout]`); `E 2035` loads the working copy from the live
+# record and `E 2034` copies it back.
+[ordinance_feed]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+table_va = 0x619efc
+table_entries = 12
+count_va = 0x40ff00
+nth_va = 0x40ff50
+row_of_va = 0x40ffa0
+flag_a_va = 0x647b5c
+flag_b_va = 0x647b68
+flag_c_va = 0x647b6c
+progress_cell_va = 0x64b678
+ammo_rows = 5
+ammo_row_base = 3360
+rocket_row_base = 3395
+gun_name_base = 3320
+box_low_count_offset = 0x34
+box_high_count_offset = 0x38
+box_high_bias = 4
+draft_va = 0x6480cc
+draft_ammo_va = 0x648164
+draft_rocket_va = 0x648174
+# The roster records 11 and 12 (`[[flight_check_default]]`) carry 2 and 2.
+default_box_low_count = 2
+default_box_high_count = 2
+
+[[ordinance_rocket_entry]]
+index = 0
+va = 0x619efc
+first = 1
+aux = 4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 1
+va = 0x619f04
+first = 1
+aux = 4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 2
+va = 0x619f0c
+first = 2
+aux = 2
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 3
+va = 0x619f14
+first = 8
+aux = 2
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 4
+va = 0x619f1c
+first = 7
+aux = 2
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 5
+va = 0x619f24
+first = 12
+aux = 2
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 6
+va = 0x619f2c
+first = 7
+aux = 2
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 7
+va = 0x619f34
+first = 7
+aux = 4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 8
+va = 0x619f3c
+first = 17
+aux = 4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 9
+va = 0x619f44
+first = 17
+aux = 1
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 10
+va = 0x619f4c
+first = 20
+aux = 0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[ordinance_rocket_entry]]
+index = 11
+va = 0x619f54
+first = 1
+aux = 0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"

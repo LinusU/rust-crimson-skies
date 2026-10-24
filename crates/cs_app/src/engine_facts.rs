@@ -123,6 +123,8 @@ pub struct EngineFacts {
     flight_check: FlightCheckFacts,
     /// The loadout binder's (gun, ammunition) -> weapon-record map (#1628).
     gun_loadout: GunLoadoutFact,
+    /// The OrdinanceLayout screen's rocket table and record readings (#2069).
+    ordinance: OrdinanceFacts,
     /// The original's default control bindings (#1733), in table order.
     control_bindings: Vec<ControlBindingFact>,
 }
@@ -354,6 +356,7 @@ impl EngineFacts {
             provisionals: provisional_facts(&document)?,
             flight_check: flight_check_facts(&document, image_va_base)?,
             gun_loadout: gun_loadout_fact(&document, image_va_base)?,
+            ordinance: ordinance_facts(&document, image_va_base)?,
             control_bindings: control_binding_facts(&document, image_va_base)?,
         };
         let missions = mission_facts(&document, &facts, image_va_base)?;
@@ -429,6 +432,13 @@ impl EngineFacts {
     #[must_use]
     pub fn gun_loadout(&self) -> &GunLoadoutFact {
         &self.gun_loadout
+    }
+
+    /// The OrdinanceLayout screen's rocket table and plane-record readings
+    /// (#2069).
+    #[must_use]
+    pub fn ordinance(&self) -> &OrdinanceFacts {
+        &self.ordinance
     }
 
     /// The per-mission player-airframe rows, in file order.
@@ -1057,6 +1067,142 @@ fn gun_loadout_fact(
         }
     }
     Ok(fact)
+}
+
+/// The keys of `[ordinance_feed]`, every one an integer. The `*_va` keys are
+/// virtual addresses in the image; the rest are counts, string-table ids and
+/// record offsets.
+const ORDINANCE_FEED_KEYS: &[&str] = &[
+    "table_va",
+    "table_entries",
+    "count_va",
+    "nth_va",
+    "row_of_va",
+    "flag_a_va",
+    "flag_b_va",
+    "flag_c_va",
+    "progress_cell_va",
+    "ammo_rows",
+    "ammo_row_base",
+    "rocket_row_base",
+    "gun_name_base",
+    "box_low_count_offset",
+    "box_high_count_offset",
+    "box_high_bias",
+    "draft_va",
+    "draft_ammo_va",
+    "draft_rocket_va",
+    "default_box_low_count",
+    "default_box_high_count",
+];
+
+/// One record of the rocket table at `table_va`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrdinanceRocketEntry {
+    /// The record's virtual address.
+    pub va: u64,
+    /// The first dword: the record passes when it is at most the progress
+    /// cell plus one (or when a flag cell is non-zero).
+    pub first: i32,
+    /// The second dword; none of the three table functions reads it.
+    pub aux: i32,
+}
+
+/// The OrdinanceLayout screen's measured rocket table and plane-record
+/// readings (#2069), committed in `data/owner-static/engine-facts.toml`
+/// `[ordinance_feed]` / `[[ordinance_rocket_entry]]`.
+#[derive(Clone, Debug)]
+pub struct OrdinanceFacts {
+    /// The claim id the table was recorded under.
+    pub claim: String,
+    values: Vec<(&'static str, u64)>,
+    entries: Vec<OrdinanceRocketEntry>,
+}
+
+impl OrdinanceFacts {
+    /// One value by its `[ordinance_feed]` key.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not one of the schema's keys; the parser guarantees
+    /// every schema key is present.
+    #[must_use]
+    pub fn value(&self, key: &str) -> u64 {
+        self.values
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("{key:?} is not an [ordinance_feed] key"))
+    }
+
+    /// The rocket table's records, in table order.
+    #[must_use]
+    pub fn rocket_entries(&self) -> &[OrdinanceRocketEntry] {
+        &self.entries
+    }
+}
+
+/// `[ordinance_feed]` and its `[[ordinance_rocket_entry]]` rows.
+fn ordinance_facts(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<OrdinanceFacts, EngineFactsError> {
+    let table = single(document, "ordinance_feed")?;
+    let mut allowed = vec!["claim", "provenance"];
+    allowed.extend_from_slice(ORDINANCE_FEED_KEYS);
+    known_keys(table, &allowed, "ordinance_feed")?;
+    let claim = cited(table, "ordinance_feed")?;
+    let mut values = Vec::with_capacity(ORDINANCE_FEED_KEYS.len());
+    for key in ORDINANCE_FEED_KEYS {
+        let value = if key.ends_with("_va") {
+            scalar_va(table, key, image_va_base)?
+        } else {
+            u64::try_from(scalar_int_in(table, key)?).map_err(|_| {
+                EngineFactsError::schema(format!("ordinance_feed: {key} is negative"))
+            })?
+        };
+        values.push((*key, value));
+    }
+    let count = values
+        .iter()
+        .find(|(name, _)| *name == "table_entries")
+        .map_or(0, |(_, value)| *value);
+    let rows = array(document, "ordinance_rocket_entry")?;
+    if rows.len() as u64 != count {
+        return Err(EngineFactsError::schema(format!(
+            "ordinance_feed: table_entries is {count}, the file declares {} rows",
+            rows.len()
+        )));
+    }
+    let mut entries = Vec::with_capacity(rows.len());
+    for (position, row) in rows.iter().enumerate() {
+        known_keys(
+            row,
+            &["index", "va", "first", "aux", "claim", "provenance"],
+            "ordinance_rocket_entry",
+        )?;
+        cited(row, "ordinance_rocket_entry")?;
+        if scalar_int_in(row, "index")? != position as i64 {
+            return Err(EngineFactsError::schema(format!(
+                "ordinance_rocket_entry: row {position} is out of order"
+            )));
+        }
+        let int32 = |key: &str| {
+            i32::try_from(scalar_int_in(row, key)?).map_err(|_| {
+                EngineFactsError::schema(format!("ordinance_rocket_entry: {key} is not a dword"))
+            })
+        };
+        entries.push(OrdinanceRocketEntry {
+            va: scalar_va(row, "va", image_va_base)?,
+            first: int32("first")?,
+            aux: int32("aux")?,
+        });
+    }
+    Ok(OrdinanceFacts {
+        claim,
+        values,
+        entries,
+    })
 }
 
 /// The `[[airframe]]` rows: exactly [`AIRFRAME_ROWS`], in index order at the
