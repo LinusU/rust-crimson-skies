@@ -39,3 +39,15 @@ thousands of metres from the actor, so no round could reach them.
   the tanks (they are objective targets under an enemy zeppelin) is unmeasured; a
   follow-up task is filed. Affected content: whether a player can destroy
   `hydrogentank1` in retail M01 and so win "The Lost Treasure" (#2083).
+
+## Side effects on recorded facts
+
+* `rock_zeppelin` and `pzhookpoint` (nested under `piratezep`) are re-seated too. The
+  convoy test's recorded overlap `rock_zeppelin x pzhookpoint` was an artefact of the
+  container-origin placement and is gone; the four `x susp_bridge` pairs were already gone
+  since #2061 dropped the bridge's enclosing box. `accept_m01_convoy_destruction_ground_box_overlaps_are_the_recorded_ones`
+  now records no overlap.
+* Three other retail tests fail identically on `main` and are not touched here:
+  `accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured`,
+  `accept_m01_music_lazy_prepare_names_tracks_and_decodes_on_request` (13 tracks, 19 expected) and
+  `accept_m01_play_ai_hostiles_close_and_betty_holds_station_within_n_seconds`.
