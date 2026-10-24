@@ -104,6 +104,7 @@ mod machine;
 mod memento;
 mod movie;
 mod notice_view;
+pub mod ordinance_feed;
 pub mod ordinance_layout;
 mod ordinance_layout_view;
 mod original;
