@@ -47,6 +47,7 @@ use std::path::PathBuf;
 use bevy::app::AppExit;
 
 use super::cabin::show_memento as show_cabin_memento;
+use super::construction_hub::HUB_SECTION;
 use super::memento::{
     ACCEPT_BUTTON, ARROW_LEFT_BUTTON, ARROW_RIGHT_BUTTON, DEFAULT_MEMENTO, Direction,
     MEMENTO_SECTION, MementoScreen, MementoUnlocks, index_of, show_picture,
@@ -191,6 +192,8 @@ const EXTRA_SECTIONS: &[(&str, Screen)] = &[
     // The cabin's Plane Construction button starts `PlaneName`, the name
     // dialog (#1958); `PlaneConstruction` is the screen its OK starts.
     ("PlaneName", Screen::Construction),
+    // …and its OK opens the hub (#2042), the same machine screen.
+    (HUB_SECTION, Screen::Construction),
     ("MultiPlayerMain", Screen::Lobby),
 ];
 
@@ -239,16 +242,6 @@ pub struct NotImplemented {
 /// built by #1956: [`super::previous_missions`]; Change Memento by #1957:
 /// [`super::memento`]; the Plane Name dialog by #1958: [`super::plane_name`].)
 pub const NOT_IMPLEMENTED: &[NotImplemented] = &[];
-
-/// What the Plane Name dialog's OK opens: `planeconstruction.script`, the
-/// construction screen proper. Its presenter is not built (the dialog before
-/// it is, #1958), so OK with a name puts the marked notice up over the
-/// dialog (rule 5: a missing screen blocks release, it never passes).
-pub const CONSTRUCTION_NOT_BUILT: NotImplemented = NotImplemented {
-    section: "PlaneConstruction",
-    button: "PN_B_OK",
-    what: "Plane Construction",
-};
 
 /// The layout section that presents `screen` through the shell. The extra
 /// pairs come first: Plane Construction is shown as its name dialog.
@@ -362,6 +355,9 @@ pub struct StartFlow {
     memento_unlocks: MementoUnlocks,
     /// Extent of each picture by lower-cased layout art name.
     memento_pictures: BTreeMap<String, (u32, u32)>,
+    /// Whether the construction screen shows the hub (`PlaneConstruction`)
+    /// rather than the name dialog before it (#2042).
+    hub_open: bool,
 }
 
 impl Default for StartFlow {
@@ -392,6 +388,7 @@ impl StartFlow {
             memento_screen: None,
             memento_unlocks: MementoUnlocks::new_pilot(),
             memento_pictures: BTreeMap::new(),
+            hub_open: false,
         }
     }
 
@@ -444,7 +441,36 @@ impl StartFlow {
     /// shell presents it.
     #[must_use]
     pub fn section(&self) -> Option<&'static str> {
+        if self.hub_open && self.screen() == Screen::Construction {
+            return Some(HUB_SECTION);
+        }
         section_of_screen(self.screen())
+    }
+
+    /// The Plane Name dialog's OK: the construction screen shows the hub. The
+    /// machine stays on `Construction`; the hub is that screen proper. Returns
+    /// the section to open, or `None` off the construction screen.
+    pub fn open_construction_hub(&mut self) -> Option<&'static str> {
+        if self.screen() != Screen::Construction {
+            return None;
+        }
+        self.hub_open = true;
+        Some(HUB_SECTION)
+    }
+
+    /// Whether the construction screen is showing the hub.
+    #[must_use]
+    pub fn hub_open(&self) -> bool {
+        self.hub_open && self.screen() == Screen::Construction
+    }
+
+    /// Records a screen that is not built as seen, without putting its notice
+    /// up: the hub opens on the Airframe tab, whose panel is not built, and the
+    /// release gate must count it.
+    pub fn record_not_implemented(&mut self, entry: NotImplemented) {
+        if !self.not_implemented_seen.contains(&entry) {
+            self.not_implemented_seen.push(entry);
+        }
     }
 
     /// The same flow with every [`Presentation::Pending`] screen treated as
@@ -745,6 +771,9 @@ impl StartFlow {
             Ok(outcome) => outcome,
             Err(refusal) => return self.refuse(StartRefusal::Machine(refusal.to_string())),
         };
+        if outcome.to != Screen::Construction {
+            self.hub_open = false;
+        }
         let mut quit = false;
         for effect in &outcome.effects {
             match effect {

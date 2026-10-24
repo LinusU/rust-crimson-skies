@@ -87,6 +87,8 @@ mod audio_view;
 mod briefing;
 mod cabin;
 mod capture;
+pub mod construction_hub;
+mod construction_hub_view;
 mod flight_check_view;
 mod flow;
 mod import_dialog;
@@ -132,6 +134,10 @@ pub use cabin::{
 pub use capture::{
     Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,
     ScreenCapture, ScreenCaptureError, capture_artwork, capture_screen,
+};
+pub use construction_hub::{
+    HUB_SECTION, HUB_UNAVAILABLE, HubError, HubFeed, HubOutcome, HubPage, Panel as HubPanel,
+    READY_NOT_BUILT, SELL_NOT_BUILT,
 };
 pub(crate) use flight_check_view::strip_font_tag;
 pub use flight_check_view::{
@@ -200,19 +206,18 @@ pub use sound::{
     music_sample_id,
 };
 pub use start_flow::{
-    CONSTRUCTION_NOT_BUILT, FIRST_MISSION, FRONT_END_SMOKE_SUBDIR, MISSION_SMOKE_SUBDIR,
-    MissionEnd, NOT_IMPLEMENTED, NotImplemented, Presentation, REPLAY_SMOKE_SUBDIR,
-    RESUMED_SMOKE_SUBDIR, StartFlow, StartFlowError, StartFlowRequest, StartRefusal, StartStep,
-    handover_args, presentation, return_args, return_args_smoke, return_to_front_end,
-    run_start_flow, screen_of_section,
+    FIRST_MISSION, FRONT_END_SMOKE_SUBDIR, MISSION_SMOKE_SUBDIR, MissionEnd, NOT_IMPLEMENTED,
+    NotImplemented, Presentation, REPLAY_SMOKE_SUBDIR, RESUMED_SMOKE_SUBDIR, StartFlow,
+    StartFlowError, StartFlowRequest, StartRefusal, StartStep, handover_args, presentation,
+    return_args, return_args_smoke, return_to_front_end, run_start_flow, screen_of_section,
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
     MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, SMOKE_SCENE_ENV,
     ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport,
-    SmokeScene, headless_app, headless_app_audio, headless_app_audio_page, headless_app_flow,
-    headless_app_intro, headless_app_pilots, headless_app_plane_name,
-    headless_app_previous_missions, run_front_end, shell_app,
+    SmokeScene, headless_app, headless_app_audio, headless_app_audio_page,
+    headless_app_construction, headless_app_flow, headless_app_intro, headless_app_pilots,
+    headless_app_plane_name, headless_app_previous_missions, run_front_end, shell_app,
 };
 
 /// A front-end screen.

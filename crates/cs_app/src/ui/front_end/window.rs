@@ -84,6 +84,7 @@ use super::audio_page::{
     ACCEPT_BUTTON, AUDIO_SECTION, AudioControl, AudioPage, AudioSettingsFile, MUSIC_BUTTON,
 };
 use super::cabin::CabinHub;
+use super::construction_hub::{HUB_SECTION, HubOutcome, HubPage, READY_NOT_BUILT, SELL_NOT_BUILT};
 use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
@@ -95,9 +96,7 @@ use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
 use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuMix, MenuSamples, MenuSoundTable};
-use super::start_flow::{
-    CONSTRUCTION_NOT_BUILT, FIRST_MISSION, NotImplemented, StartFlow, StartStep,
-};
+use super::start_flow::{FIRST_MISSION, NotImplemented, StartFlow, StartStep};
 use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
 use crate::cinematics::movie_player::{AudioOutput, MoviePlayerPlugin};
@@ -215,6 +214,21 @@ pub struct ShellResource {
     previous: Option<PreviousState>,
     /// The cabin's Plane Name page (#1958), when the run has one.
     plane: Option<PlaneState>,
+    /// The Plane Construction hub (#2042), when the run has one.
+    hub: Option<HubState>,
+}
+
+/// The Plane Construction hub's live state.
+struct HubState {
+    page: HubPage,
+    /// What the page's buttons did, in order.
+    outcomes: Vec<HubOutcome>,
+    /// Typed keys the page has not read yet.
+    keys: MessageCursor<KeyboardInput>,
+    /// The overlay's entities while the page is on screen.
+    scene: Vec<Entity>,
+    /// The surface the overlay was laid out for.
+    drawn_surface: (u32, u32),
 }
 
 /// The Plane Name page's live state.
@@ -322,6 +336,32 @@ impl ShellResource {
     #[must_use]
     pub fn plane_name(&self) -> Option<&PlaneNamePage> {
         self.plane.as_ref().map(|state| &state.page)
+    }
+
+    /// Hands the Plane Construction hub the numbers the draft gives it.
+    /// `false` when the run has no hub.
+    pub fn set_hub_feed(&mut self, feed: super::construction_hub::HubFeed) -> bool {
+        match self.hub.as_mut() {
+            Some(hub) => {
+                hub.page.set_feed(feed);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The Plane Construction hub, when the run has one.
+    #[must_use]
+    pub fn construction_hub(&self) -> Option<&HubPage> {
+        self.hub.as_ref().map(|state| &state.page)
+    }
+
+    /// What the Plane Construction hub's buttons did, in order.
+    #[must_use]
+    pub fn hub_outcomes(&self) -> &[HubOutcome] {
+        self.hub
+            .as_ref()
+            .map_or(&[], |state| state.outcomes.as_slice())
     }
 
     /// What the Plane Name page's buttons did, in order.
@@ -520,6 +560,7 @@ pub struct FrontEndShellPlugin {
     audio_page: Mutex<Option<AudioPage>>,
     previous: Mutex<Option<PreviousMissionsPage>>,
     plane: Mutex<Option<PlaneNamePage>>,
+    hub: Mutex<Option<HubPage>>,
     audio: Mutex<Option<MenuAudio>>,
     audio_note: Mutex<Option<String>>,
     intro: Mutex<Option<IntroMovie>>,
@@ -549,6 +590,7 @@ impl FrontEndShellPlugin {
             audio_page: Mutex::new(None),
             previous: Mutex::new(None),
             plane: Mutex::new(None),
+            hub: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -583,6 +625,13 @@ impl FrontEndShellPlugin {
     #[must_use]
     pub fn with_plane_name(self, page: PlaneNamePage) -> Self {
         *self.plane.lock().expect("the plugin is not shared yet") = Some(page);
+        self
+    }
+
+    /// Gives the `PlaneConstruction` section its page (#2042).
+    #[must_use]
+    pub fn with_construction_hub(self, page: HubPage) -> Self {
+        *self.hub.lock().expect("the plugin is not shared yet") = Some(page);
         self
     }
 
@@ -633,6 +682,7 @@ impl FrontEndShellPlugin {
             audio_page: Mutex::new(None),
             previous: Mutex::new(None),
             plane: Mutex::new(None),
+            hub: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -757,6 +807,18 @@ impl Plugin for FrontEndShellPlugin {
                     scene: Vec::new(),
                     drawn_surface: (0, 0),
                 }),
+            hub: self
+                .hub
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .map(|page| HubState {
+                    page,
+                    outcomes: Vec::new(),
+                    keys: MessageCursor::default(),
+                    scene: Vec::new(),
+                    drawn_surface: (0, 0),
+                }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
             && !app.is_plugin_added::<MoviePlayerPlugin>()
@@ -872,6 +934,29 @@ pub fn headless_app_plane_name(
     app.init_resource::<ButtonInput<KeyCode>>();
     app.init_resource::<ButtonInput<MouseButton>>();
     let plugin = FrontEndShellPlugin::headless(shell).with_plane_name(page);
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
+/// As [`headless_app_plane_name`], with the Plane Construction hub the dialog's
+/// OK opens — the #2042 route tests.
+pub fn headless_app_construction(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    page: PlaneNamePage,
+    hub: HubPage,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell)
+        .with_plane_name(page)
+        .with_construction_hub(hub);
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -1009,10 +1094,42 @@ fn frame_shell(world: &mut World) {
             .shell
             .section_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(NAME_SECTION));
+    let on_hub = state.hub.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(HUB_SECTION));
     let notice_up = state
         .flow
         .as_ref()
         .is_some_and(|flow| flow.notice().is_some());
+    if let Some(hub) = &mut state.hub {
+        // As the plane-name page: typed text reaches the edit box only while
+        // the hub is on screen and no notice is over it. While the cancel
+        // prompt is up the keys answer it.
+        let typed: Vec<KeyboardInput> = hub
+            .keys
+            .read(world.resource::<Messages<KeyboardInput>>())
+            .filter(|event| event.state == ButtonState::Pressed)
+            .cloned()
+            .collect();
+        if on_hub && !notice_up {
+            for event in typed {
+                if hub.page.prompt().is_some() {
+                    // Y answers as Enter does, N as Esc.
+                    match event.text.as_deref() {
+                        Some("y" | "Y") => events.push(ShellEvent::ActivateDown),
+                        Some("n" | "N") => events.push(ShellEvent::Escape),
+                        _ => {}
+                    }
+                } else if event.logical_key == Key::Backspace {
+                    hub.page.backspace();
+                } else if let Some(text) = &event.text {
+                    hub.page.type_text(text);
+                }
+            }
+        }
+    }
     if let Some(plane) = &mut state.plane {
         // As the pilot page: typed text reaches the edit box only while the
         // page is on screen and no notice is over it.
@@ -1134,6 +1251,7 @@ fn frame_shell(world: &mut World) {
     }
     let previous = &mut state.previous;
     let plane = &mut state.plane;
+    let hub = &mut state.hub;
     if on_toc && let Some(previous) = previous.as_mut() {
         previous.page.hover_at(point);
     }
@@ -1244,10 +1362,35 @@ fn frame_shell(world: &mut World) {
                 state.run.focus_moves += 1;
                 ShellOutcome::Nothing
             }
+            ShellEvent::ActivateDown
+                if on_hub && hub.as_ref().is_some_and(|hub| hub.page.prompt().is_some()) =>
+            {
+                if let Some(hub) = hub.as_mut() {
+                    let done = hub
+                        .page
+                        .answer_prompt(super::construction_hub::LEAVE_ANSWER);
+                    pilot_step = hub_step(hub, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::ActivateUp
+                if on_hub && hub.as_ref().is_some_and(|hub| hub.page.prompt().is_some()) =>
+            {
+                ShellOutcome::Nothing
+            }
+            ShellEvent::Escape
+                if on_hub && hub.as_ref().is_some_and(|hub| hub.page.prompt().is_some()) =>
+            {
+                if let Some(hub) = hub.as_mut() {
+                    let done = hub.page.answer_prompt(0);
+                    pilot_step = hub_step(hub, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
             ShellEvent::ActivateDown if on_name => {
                 if let Some(plane) = plane.as_mut() {
                     let done = plane.page.press_enter();
-                    pilot_step = name_step(plane, done, flow, shell);
+                    pilot_step = name_step(plane, hub, done, flow, shell);
                 }
                 ShellOutcome::Nothing
             }
@@ -1255,7 +1398,7 @@ fn frame_shell(world: &mut World) {
             ShellEvent::Escape if on_name => {
                 if let Some(plane) = plane.as_mut() {
                     let done = plane.page.escape();
-                    pilot_step = name_step(plane, done, flow, shell);
+                    pilot_step = name_step(plane, hub, done, flow, shell);
                 }
                 ShellOutcome::Nothing
             }
@@ -1327,7 +1470,30 @@ fn frame_shell(world: &mut World) {
             && let Some(plane) = plane.as_mut()
         {
             let done = plane.page.press(id);
-            pilot_step = name_step(plane, done, flow, shell);
+            pilot_step = name_step(plane, hub, done, flow, shell);
+        }
+        if pilot_step.is_none()
+            && on_hub
+            && let ShellOutcome::Unhandled { id, .. } = &outcome
+            && let Some(hub) = hub.as_mut()
+        {
+            let done = hub.page.press(id);
+            pilot_step = hub_step(hub, done, flow, shell);
+        }
+        // The tabs' and Ready's `ScriptToExe` name layout sections the hub
+        // itself nests (`[@Guns@]`, `[@Purchase@]`, the panels' own rows), so
+        // the shell reports their press as a move there. The panels draw those
+        // rows when they are built; until then the press is the page's, and
+        // the shell steps back onto the hub.
+        if pilot_step.is_none()
+            && on_hub
+            && let ShellOutcome::Entered { .. } = &outcome
+            && let Some(id) = shell.last_applied().map(str::to_owned)
+            && let Some(hub) = hub.as_mut()
+        {
+            let _ = shell.escape();
+            let done = hub.page.press(&id);
+            pilot_step = hub_step(hub, done, flow, shell).or(Some(StartStep::Stay));
         }
         if pilot_step.is_none()
             && on_toc
@@ -1548,6 +1714,7 @@ fn frame_shell(world: &mut World) {
     sync_pilot_scene(world, &mut state);
     sync_previous_scene(world, &mut state);
     sync_plane_scene(world, &mut state);
+    sync_hub_scene(world, &mut state);
     sync_audio_scene(world, &mut state);
     sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
@@ -1672,10 +1839,12 @@ fn pilot_continue(
 
 /// What the flow does with a Plane Name page outcome (#1958): Cancel is the
 /// table's `Cancel` row back to the cabin, OK with a name the way on to the
-/// construction screen — which is not built, so the marked notice is up
-/// over the dialog — and an empty name stays.
+/// construction hub (#2042: the page opens with the name; a run whose hub rows
+/// the installation cannot supply keeps the marked notice over the dialog) and
+/// an empty name stays.
 fn name_step(
     plane: &mut PlaneState,
+    hub: &mut Option<HubState>,
     done: NameOutcome,
     flow: &mut Option<StartFlow>,
     shell: &mut MenuShell,
@@ -1702,9 +1871,80 @@ fn name_step(
                 Some(StartStep::Stay)
             }
         },
-        NameOutcome::Construct { .. } => flow
+        NameOutcome::Construct { name, .. } => {
+            let Some(hub) = hub.as_mut() else {
+                // The installation could not supply the hub's rows: the marked
+                // notice stands in for it (rule 5).
+                return flow.as_mut().map(|flow| {
+                    flow.show_not_implemented(super::construction_hub::HUB_UNAVAILABLE)
+                });
+            };
+            hub.page.open(&name);
+            hub.outcomes.clear();
+            match flow.as_mut() {
+                Some(flow) => {
+                    let section = flow.open_construction_hub()?;
+                    let _ = shell.open(section);
+                    // The hub opens on the Airframe tab, whose panel is not
+                    // built: counted, with no notice over the hub.
+                    flow.record_not_implemented(
+                        super::construction_hub::Panel::Airframe.not_built().0,
+                    );
+                    Some(StartStep::Moved {
+                        from: flow.screen(),
+                        to: flow.screen(),
+                    })
+                }
+                None => {
+                    let _ = shell.open(HUB_SECTION);
+                    Some(StartStep::Stay)
+                }
+            }
+        }
+    }
+}
+
+/// What the flow does with a hub outcome (#2042): a tab, Ready or Sell whose
+/// panel is not built puts the marked notice up; Cancel, once confirmed if
+/// the draft has unsaved changes, is the table's `Cancel` row back to the
+/// cabin.
+fn hub_step(
+    hub: &mut HubState,
+    done: HubOutcome,
+    flow: &mut Option<StartFlow>,
+    shell: &mut MenuShell,
+) -> Option<StartStep> {
+    if done == HubOutcome::Nothing {
+        return None;
+    }
+    hub.outcomes.push(done.clone());
+    match done {
+        HubOutcome::Nothing => None,
+        HubOutcome::ConfirmLeave | HubOutcome::Stay => Some(StartStep::Stay),
+        HubOutcome::Panel(panel) => flow
             .as_mut()
-            .map(|flow| flow.show_not_implemented(CONSTRUCTION_NOT_BUILT)),
+            .map(|flow| flow.show_not_implemented(panel.not_built().0)),
+        HubOutcome::Ready => flow
+            .as_mut()
+            .map(|flow| flow.show_not_implemented(READY_NOT_BUILT)),
+        HubOutcome::Sell => flow
+            .as_mut()
+            .map(|flow| flow.show_not_implemented(SELL_NOT_BUILT)),
+        HubOutcome::Leave => match flow.as_mut() {
+            Some(flow) => {
+                let step = flow.press_machine(super::Action::Cancel);
+                if matches!(step, StartStep::Moved { .. })
+                    && let Some(section) = flow.section()
+                {
+                    let _ = shell.open(section);
+                }
+                Some(step)
+            }
+            None => {
+                let _ = shell.escape();
+                Some(StartStep::Stay)
+            }
+        },
     }
 }
 
@@ -1747,6 +1987,55 @@ fn sync_plane_scene(world: &mut World, state: &mut ShellResource) {
         }
         plane.scene = super::plane_name_view::spawn_page(world, &plane.page, &buttons, surface);
         plane.drawn_surface = surface;
+    }
+}
+
+/// Keeps the Plane Construction hub in step with its model: the selected tab
+/// held down, Sell enabled by its count, the overlay drawn while the
+/// `PlaneConstruction` section is shown and gone otherwise.
+fn sync_hub_scene(world: &mut World, state: &mut ShellResource) {
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(HUB_SECTION));
+    if active && let Some(hub) = state.hub.as_ref() {
+        state.shell.set_latched(Some(hub.page.selected().button()));
+        let _ = state.shell.set_enabled(
+            super::construction_hub::SELL_BUTTON,
+            hub.page.sell_enabled(),
+        );
+    }
+    if !state.visuals {
+        return;
+    }
+    let surface = state.surface;
+    let buttons: Vec<(String, super::ShellRect)> = state
+        .shell
+        .section()
+        .map(|section| {
+            section
+                .buttons
+                .iter()
+                .map(|button| (button.id.to_ascii_uppercase(), button.rect))
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(hub) = state.hub.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in hub.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = hub.page.take_dirty();
+    if hub.scene.is_empty() || dirty || hub.drawn_surface != surface {
+        for entity in hub.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        hub.scene = super::construction_hub_view::spawn_page(world, &hub.page, &buttons, surface);
+        hub.drawn_surface = surface;
     }
 }
 
@@ -2696,8 +2985,9 @@ fn memento_script() -> Vec<(u32, Step)> {
 /// The deterministic pass over the whole start flow (#1842): the main menu,
 /// Campaign, a typed new pilot and Continue (the intro movie starts), three
 /// frames of the movie, Esc to skip it, the cabin, a press on Previous
-/// Missions (the list screen), its Return to Cabin, and Return to Main Menu. Needs
-/// `--smoke-seconds 19` or more.
+/// Missions (the list screen), its Return to Cabin, the Plane Name dialog and the
+/// construction hub its OK opens, and Return to Main Menu. Needs
+/// `--smoke-seconds 21` or more.
 #[inline(always)]
 fn flow_script() -> Vec<(u32, Step)> {
     let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
@@ -2732,14 +3022,24 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(14.0), Step::Shot("flow-plane-name")),
         (at(14.1), Step::Type("Skylark")),
         (at(14.3), Step::Shot("flow-plane-name-typed")),
-        (at(14.5), Step::HoverButton("PN_B_CANCEL")),
+        (at(14.5), Step::HoverButton("PN_B_OK")),
         (at(14.6), Step::Mouse(true)),
         (at(14.7), Step::Mouse(false)),
-        (at(15.1), Step::Shot("flow-cabin-again")),
-        (at(15.3), Step::HoverButton("PC_B_RETURNMM")),
+        (at(15.2), Step::Shot("flow-plane-construction")),
+        (at(15.4), Step::HoverButton("PX_B_GUNS")),
         (at(15.5), Step::Mouse(true)),
-        (at(15.7), Step::Mouse(false)),
-        (at(16.3), Step::Shot("flow-mainmenu-again")),
+        (at(15.6), Step::Mouse(false)),
+        (at(16.0), Step::Shot("flow-plane-construction-guns")),
+        (at(16.1), Step::Key(KeyCode::Enter, true)),
+        (at(16.2), Step::Key(KeyCode::Enter, false)),
+        (at(16.5), Step::HoverButton("PX_B_CANCEL")),
+        (at(16.6), Step::Mouse(true)),
+        (at(16.7), Step::Mouse(false)),
+        (at(17.1), Step::Shot("flow-cabin-again")),
+        (at(17.3), Step::HoverButton("PC_B_RETURNMM")),
+        (at(17.5), Step::Mouse(true)),
+        (at(17.7), Step::Mouse(false)),
+        (at(18.3), Step::Shot("flow-mainmenu-again")),
     ]
 }
 
@@ -3196,13 +3496,15 @@ fn evaluate(
                 "ScrapBook_TOC",
                 "PassengerCabin",
                 "PlaneName",
+                "PlaneConstruction",
                 "PassengerCabin",
                 "MainMenu",
             ]
         {
             failures.push(format!(
                 "the flow visited {:?}, expected MainMenu → Campaign → PassengerCabin → \
-                 ScrapBook_TOC → PassengerCabin → PlaneName → PassengerCabin → MainMenu",
+                 ScrapBook_TOC → PassengerCabin → PlaneName → PlaneConstruction → \
+                 PassengerCabin → MainMenu",
                 run.visited
             ));
         }
@@ -3213,9 +3515,12 @@ fn evaluate(
                 facts.intro
             ));
         }
-        if !facts.notices.is_empty() {
+        // The hub opens on the Airframe tab and the script presses Guns: their
+        // panels are not built (#2043, #2045), so exactly those two are marked.
+        if facts.notices != ["PX_B_AIRFRAME", "PX_B_GUNS"] {
             failures.push(format!(
-                "not-implemented notices opened during the flow: {:?}",
+                "not-implemented notices during the flow: {:?}, expected the hub's Airframe \
+                 and Guns panels",
                 facts.notices
             ));
         }
@@ -3704,6 +4009,7 @@ pub(super) fn shell_app_with(
     let audio_page = audio_page_setup(request, &screens, &layout);
     let previous = previous_missions_setup(request, &screens, &layout);
     let plane = plane_name_setup(request, &screens, &layout);
+    let hub = construction_hub_setup(request, &screens, &layout);
     if previous.is_some()
         && let Some(artwork) = screens.graphic_artwork(super::previous_missions::ICON_ART)
     {
@@ -3779,6 +4085,9 @@ pub(super) fn shell_app_with(
     }
     if let Some(page) = plane {
         plugin = plugin.with_plane_name(page);
+    }
+    if let Some(page) = hub {
+        plugin = plugin.with_construction_hub(page);
     }
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
@@ -3921,6 +4230,36 @@ fn plane_name_setup(
         Ok(page) => Some(page),
         Err(error) => {
             eprintln!("cs: no plane-name page: {error}");
+            None
+        }
+    }
+}
+
+/// The Plane Construction hub for a run (#2042): its rows from the layout, its
+/// captions and prompt from the installation's own string table. A hub the
+/// installation cannot supply is reported, and the Plane Name dialog's OK
+/// then stands on the marked notice.
+fn construction_hub_setup(
+    request: &FrontEndRequest,
+    screens: &FrontEndScreens,
+    layout: &super::OriginalLayout,
+) -> Option<HubPage> {
+    let strings = match crate::mission_session::FlightCheckStrings::read(&request.cs_path, screens)
+    {
+        Ok(strings) => strings,
+        Err(error) => {
+            eprintln!("cs: no construction hub: {error}");
+            return None;
+        }
+    };
+    match HubPage::from_layout(
+        layout,
+        &|name: &str| strings.resolve_tagged(name),
+        &|id: u32| strings.resolve_id_tagged(id),
+    ) {
+        Ok(page) => Some(page),
+        Err(error) => {
+            eprintln!("cs: no construction hub: {error}");
             None
         }
     }

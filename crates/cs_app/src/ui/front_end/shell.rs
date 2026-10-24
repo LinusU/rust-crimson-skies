@@ -537,6 +537,8 @@ pub struct MenuShell {
     unhandled: Vec<(String, String, UnhandledEffect)>,
     /// The row id of the button the last press applied.
     applied: Option<String>,
+    /// The button a page holds drawn down (a selected tab), by row id.
+    latched: Option<String>,
 }
 
 impl MenuShell {
@@ -576,6 +578,12 @@ impl MenuShell {
         {
             let _ = super::plane_name::centre_dialog(dialog);
         }
+        // The hub shows no pane whose figure the engine alone supplies.
+        if let Some(hub) =
+            sections.get_mut(&super::construction_hub::HUB_SECTION.to_ascii_uppercase())
+        {
+            super::construction_hub::prepare_section(hub);
+        }
         let cursor = CURSOR_CANDIDATES
             .iter()
             .find_map(|name| measure(name).map(|extent| ((*name).to_owned(), extent)));
@@ -589,6 +597,7 @@ impl MenuShell {
             cursor,
             unhandled: Vec::new(),
             applied: None,
+            latched: None,
         }
     }
 
@@ -1027,10 +1036,25 @@ impl MenuShell {
         if self.pressed.is_some_and(|(held, _)| held == index) {
             return ButtonVisual::Depressed;
         }
+        let latched = self.latched.as_deref().is_some_and(|id| {
+            self.section()
+                .is_some_and(|section| section.buttons[index].id.eq_ignore_ascii_case(id))
+        });
+        if latched {
+            return ButtonVisual::Depressed;
+        }
         if self.focus == Some(index) {
             return ButtonVisual::Rollover;
         }
         ButtonVisual::Active
+    }
+
+    /// Holds one button of the current section drawn down, or none: the
+    /// selected tab of a page whose script sends the button `mail(10000, ..)`
+    /// and the previous one `mail(10018, ..)` (the construction hub). It is
+    /// cleared whenever a section is opened.
+    pub fn set_latched(&mut self, id: Option<&str>) {
+        self.latched = id.map(str::to_owned);
     }
 
     /// The button under a logical point: the later declaration wins an
@@ -1156,6 +1180,7 @@ impl MenuShell {
         });
         self.hover = self.pointer.and_then(|(x, y)| self.button_at(x, y));
         self.pressed = None;
+        self.latched = None;
     }
 }
 
