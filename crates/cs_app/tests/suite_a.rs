@@ -27,6 +27,7 @@ mod campaign {
     mod f29_c_3c_admit;
     mod f29_c_3c_extraction;
     mod f37_c_fu1;
+    mod m01_ai_aircraft_damage;
     mod m01_bridge_convoy_spawn;
     mod m01_c3_win_route_census;
     mod m01_convoy_destruction;

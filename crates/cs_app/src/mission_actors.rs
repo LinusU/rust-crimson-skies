@@ -73,9 +73,10 @@
 use std::collections::BTreeMap;
 
 use avian3d::prelude::{LinearVelocity, NoAutoMass, Rotation};
+use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
-    App, Component, Entity, FixedPreUpdate, GlobalTransform, Plugin, Quat, Resource, Transform,
-    Vec3, World,
+    App, ChildOf, Component, Entity, FixedPostUpdate, FixedPreUpdate, GlobalTransform, Plugin,
+    Quat, Query, Resource, Transform, Vec3, With, Without, World,
 };
 use cs_script::ir::{ActorId as WorldActorId, MemberName};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
@@ -86,7 +87,7 @@ use cs_sim::damage::{
 use cs_sim::net_state::{NetActorState, NetControlMode};
 use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::world_actors::runtime::WorldActorKind;
-use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
+use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 use cs_types::space::{Quaternion, WorldPosition};
@@ -114,6 +115,45 @@ const MISSION_DAMAGE_PRODUCER: u32 = 0;
 /// The designed single node every scripted actor's damage graph carries:
 /// a lethal internal-structure part with an unresolved pool.
 pub(crate) const SCRIPTED_DAMAGE_NODE: &str = "airframe";
+
+/// Claim id of the designed integrity pool of a scripted AI aircraft
+/// (#2100).
+pub const AI_AIRCRAFT_POOL_CLAIM: &str = "m01-ai-aircraft.designed-pool";
+
+/// Claim id of the designed swept hit box of a scripted AI aircraft (#2100).
+pub const AI_AIRCRAFT_BOX_CLAIM: &str = "m01-ai-aircraft.designed-box";
+
+/// The designed integrity of a scripted AI aircraft, in the damage unit the
+/// gun records declare. A design choice, not a measurement and not fitted to
+/// any capture: fifty of the designed gun's twelve-unit rounds, a few seconds
+/// of the player's gunfire.
+pub const DESIGNED_AI_AIRCRAFT_INTEGRITY: f64 = 600.0;
+
+/// The designed half extents, in metres, of a scripted AI aircraft's swept
+/// hit box. The box is axis-aligned in the world, so it is a rounded-up
+/// airframe envelope rather than a measured mesh bound.
+pub const DESIGNED_AI_AIRCRAFT_HALF_EXTENTS_M: [f64; 3] = [6.0, 2.0, 6.0];
+
+/// Component: the swept hit box of one scripted AI aircraft, a child of its
+/// body whose [`NodeVisualTransform`] follows the body every fixed tick.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct ScriptedAircraftHullBox {
+    /// The box provenance: `designed`, claim [`AI_AIRCRAFT_BOX_CLAIM`].
+    pub provenance: Provenance,
+}
+
+/// Composes each scripted aircraft's hull box [`NodeVisualTransform`] from its
+/// live body, so a round sweeps the box where the aircraft actually is.
+pub fn compose_scripted_aircraft_hull_boxes(
+    mut hulls: Query<(&ChildOf, &mut NodeVisualTransform), With<ScriptedAircraftHullBox>>,
+    bodies: Query<&GlobalTransform, Without<ScriptedAircraftHullBox>>,
+) {
+    for (parent, mut node) in &mut hulls {
+        if let Ok(global) = bodies.get(parent.parent()) {
+            node.0 = *global;
+        }
+    }
+}
 
 /// Resource: the scripted-aircraft records the composition spawns — every
 /// `aiv.zrd` record except the `player` one (the composition's own
@@ -669,8 +709,10 @@ fn designed_damage_graph(
     parts: &[DamageNodeKey],
     turrets: &[parts::TurretRecord],
     actor: &str,
+    designed_integrity: Option<f64>,
 ) -> Result<(ContentId, DamageGraph, DamagePolicy), String> {
-    let (subject, graph, _) = designed_actor_graph(spelling, parts, turrets, actor)?;
+    let (subject, graph, _) =
+        designed_actor_graph(spelling, parts, turrets, actor, designed_integrity)?;
     let policy = DamagePolicy {
         attribution: AttributionRule::FirstLethalHit,
     };
@@ -691,8 +733,9 @@ fn designed_actor_graph(
     parts: &[DamageNodeKey],
     turrets: &[parts::TurretRecord],
     actor: &str,
+    designed_integrity: Option<f64>,
 ) -> Result<(ContentId, DamageGraph, Vec<DamageNodeKey>), String> {
-    let (subject, frame) = designed_frame_node(spelling)?;
+    let (subject, frame) = designed_frame_node(spelling, designed_integrity)?;
     let mut nodes = vec![frame];
     let mut added = Vec::new();
     for key in parts {
@@ -711,11 +754,25 @@ fn designed_actor_graph(
 
 /// The one lethal internal-structure frame node every scripted actor carries
 /// and the graph subject its spelling names.
-fn designed_frame_node(spelling: &str) -> Result<(ContentId, DamageNode), String> {
+fn designed_frame_node(
+    spelling: &str,
+    designed_integrity: Option<f64>,
+) -> Result<(ContentId, DamageNode), String> {
     let subject = ContentId::from_source(ContentKind::Blueprint, spelling)
         .map_err(|error| error.to_string())?;
     let node_key = DamageNodeKey::new(SCRIPTED_DAMAGE_NODE)
         .map_err(|error| format!("the damage node key refuses: {error}"))?;
+    if let Some(pool) = designed_integrity {
+        let claim = ClaimId::new(AI_AIRCRAFT_POOL_CLAIM)
+            .map_err(|error| format!("the damage claim id refuses: {error}"))?;
+        let node = DamageNode::new(
+            node_key,
+            DamageNodeKind::InternalStructure,
+            Resolved::Known(Known::new(pool, Provenance::designed(claim))),
+        )
+        .with_lethal(true);
+        return Ok((subject, node));
+    }
     let claim = ClaimId::new("m01-actors.damage-pool")
         .map_err(|error| format!("the damage claim id refuses: {error}"))?;
     let integrity = Resolved::unknown(
@@ -1155,7 +1212,13 @@ fn spawn_mission_actors_under(
             "damage-graph.scripted-aircraft.{}",
             name.to_ascii_lowercase()
         );
-        match designed_damage_graph(&graph_spelling, &[], &binding.turrets, &name) {
+        match designed_damage_graph(
+            &graph_spelling,
+            &[],
+            &binding.turrets,
+            &name,
+            Some(DESIGNED_AI_AIRCRAFT_INTEGRITY),
+        ) {
             Ok((subject, graph, policy)) => {
                 match session_damage(world, session).register_actor(actor, graph, policy) {
                     Ok(()) => {
@@ -1164,6 +1227,20 @@ fn spawn_mission_actors_under(
                             graph: subject,
                             generation,
                         });
+                        if let Ok(node) = DamageNodeKey::new(SCRIPTED_DAMAGE_NODE) {
+                            world.spawn((
+                                ScriptedAircraftHullBox {
+                                    provenance: Provenance::designed(
+                                        ClaimId::new(AI_AIRCRAFT_BOX_CLAIM)
+                                            .expect("a claim id this module declares"),
+                                    ),
+                                },
+                                PartSweptBox::new(actor, node, DESIGNED_AI_AIRCRAFT_HALF_EXTENTS_M),
+                                NodeVisualTransform(GlobalTransform::from_translation(position)),
+                                Transform::IDENTITY,
+                                ChildOf(entity),
+                            ));
+                        }
                         let control = if airframe.is_some() {
                             NetControlMode::Autopilot
                         } else {
@@ -1321,7 +1398,13 @@ fn spawn_mission_actors_under(
             .first()
             .and_then(|(chain, _)| chain.first().map(String::as_str))
             .unwrap_or_default();
-        match designed_damage_graph(&graph_spelling, &part_keys, &binding.turrets, actor_name) {
+        match designed_damage_graph(
+            &graph_spelling,
+            &part_keys,
+            &binding.turrets,
+            actor_name,
+            None,
+        ) {
             Ok((graph_subject, graph, policy)) => {
                 let part_nodes: Vec<DamageNodeKey> = graph
                     .nodes()
@@ -1846,6 +1929,12 @@ impl Plugin for MissionZeppelinAllegiancePlugin {
             .add_systems(
                 FixedPreUpdate,
                 (roster_mission_zeppelins, roster_mission_ground_targets),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                compose_scripted_aircraft_hull_boxes
+                    .after(avian3d::prelude::PhysicsSystems::StepSimulation)
+                    .before(crate::weapons::drive_weapon_session),
             );
     }
 }

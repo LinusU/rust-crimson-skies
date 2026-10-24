@@ -465,7 +465,13 @@ pub fn mission_world_observation(world: &mut World) {
         // exactly the groups whose count is accounted for above.
         let mut positions: BTreeMap<i32, Vec<[f64; 3]>> = BTreeMap::new();
         let mut query = world.query::<(&ScriptedAircraftActor, Option<&Transform>)>();
+        let resolver = world.get_resource::<SessionDamageResolver>();
         for (actor, transform) in query.iter(world) {
+            // A destroyed aircraft leaves its group's count (#2100): the
+            // wreck stays in the world, as a destroyed ground target does.
+            if resolver.is_some_and(|damage| damage.resolver().is_destroyed(&actor.damage_actor)) {
+                continue;
+            }
             if let Some(group) = actor.record.group
                 && let Ok(id) = i32::try_from(group)
                 && let Some(count) = living.get_mut(&id)
