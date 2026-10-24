@@ -180,7 +180,7 @@ pub(super) fn ids(id: u32) -> Option<String> {
     }
 }
 
-fn layout() -> OriginalLayout {
+pub(super) fn layout() -> OriginalLayout {
     OriginalLayout::parse(LAYOUT).expect("the fixture parses")
 }
 

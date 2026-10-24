@@ -267,6 +267,13 @@ fn hub_panes(app: &App) -> Vec<String> {
 fn accept_parity5_cabin_plane_construction_stats_c_the_bars_and_the_blueprint_follow_the_record() {
     let mut app = cabin_app(page());
     open_hub(&mut app, "Ace");
+    // The Plane Name OK now feeds the pilot's own plane (#2075), whose
+    // bars and blueprint are drawn; take it away to see a hub with no record.
+    assert!(
+        app.world_mut()
+            .resource_mut::<ShellResource>()
+            .set_hub_feed(HubFeed::default())
+    );
     app.update();
     assert_eq!(hub_panes(&app), ["PX_P_BACKGROUND"]);
     let record = PlaneRecord {
