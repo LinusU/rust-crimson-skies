@@ -73,6 +73,9 @@ use std::fmt;
 
 use cs_content::construction::BudgetQuantity;
 
+use cs_types::content::ContentId;
+
+use super::construction_panels::{ChoiceKind, ChoiceOption, ChoicePanel, ChoicePress};
 use super::original::{OriginalLayout, Section};
 use super::pilot_page::EditBox;
 use super::previous_missions::{colour, split_tag};
@@ -385,8 +388,21 @@ pub struct TabCaption {
 pub enum HubOutcome {
     /// The press is not the page's.
     Nothing,
-    /// A tab was selected; its panel is not built.
+    /// A tab was selected. An Airframe or Engine tab whose panel is built
+    /// ([`HubPage::panel_built`]) needs nothing more; any other panel is not
+    /// built.
     Panel(Panel),
+    /// An entry of the Airframe or Engine panel's list was chosen
+    /// (`mail 10015`); [`super::construction_panels::apply_choice`] puts it
+    /// into the draft.
+    Choose {
+        /// The panel.
+        panel: Panel,
+        /// The content chosen.
+        id: ContentId,
+    },
+    /// A press opened or closed a panel's list.
+    List,
     /// Ready: its panel is not built.
     Ready,
     /// Sell: the hangar is not built.
@@ -413,6 +429,8 @@ pub struct HubPage {
     selected: Panel,
     feed: HubFeed,
     unread: Vec<String>,
+    airframe: Option<ChoicePanel>,
+    engine: Option<ChoicePanel>,
     dirty: bool,
 }
 
@@ -529,8 +547,101 @@ impl HubPage {
             selected: Panel::Airframe,
             feed: HubFeed::default(),
             unread,
+            // A layout without a panel's rows leaves that tab on the marked
+            // notice (rule 5: a missing screen blocks, it never passes).
+            airframe: ChoicePanel::from_layout(layout, ChoiceKind::Airframe, name).ok(),
+            engine: ChoicePanel::from_layout(layout, ChoiceKind::Engine, name).ok(),
             dirty: true,
         })
+    }
+
+    /// The Airframe or Engine panel, when the layout supplied its rows.
+    #[must_use]
+    pub fn choice_panel(&self, panel: Panel) -> Option<&ChoicePanel> {
+        match panel {
+            Panel::Airframe => self.airframe.as_ref(),
+            Panel::Engine => self.engine.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn choice_panel_mut(&mut self, panel: Panel) -> Option<&mut ChoicePanel> {
+        match panel {
+            Panel::Airframe => self.airframe.as_mut(),
+            Panel::Engine => self.engine.as_mut(),
+            _ => None,
+        }
+    }
+
+    /// Whether `panel` is built (task #2043: Airframe and Engine, when their
+    /// rows are in the layout).
+    #[must_use]
+    pub fn panel_built(&self, panel: Panel) -> bool {
+        self.choice_panel(panel).is_some()
+    }
+
+    /// Hands a panel its entries and the one the draft holds. Does nothing
+    /// for a panel that is not built.
+    pub fn set_choices(
+        &mut self,
+        panel: Panel,
+        options: Vec<ChoiceOption>,
+        selected: Option<&ContentId>,
+    ) {
+        if let Some(choice) = self.choice_panel_mut(panel) {
+            choice.set_options(options, selected);
+            self.dirty = true;
+        }
+    }
+
+    /// The draft changed: the panel's choice follows it.
+    pub fn follow_choice(&mut self, panel: Panel, selected: Option<&ContentId>) {
+        if let Some(choice) = self.choice_panel_mut(panel) {
+            choice.follow(selected);
+        }
+    }
+
+    /// The pointer moved: the open list's rolled-over entry follows it.
+    pub fn hover_at(&mut self, point: Option<(i32, i32)>) {
+        let selected = self.selected;
+        if let Some(choice) = self.choice_panel_mut(selected) {
+            choice.hover_at(point);
+        }
+    }
+
+    /// A pointer press at a logical point, offered to the selected panel's
+    /// drop-down before the shell sees it. [`HubOutcome::Nothing`] means the
+    /// press is not the panel's.
+    pub fn press_at(&mut self, x: i32, y: i32) -> HubOutcome {
+        if self.prompt.is_some() {
+            return HubOutcome::Nothing;
+        }
+        let selected = self.selected;
+        let Some(choice) = self.choice_panel_mut(selected) else {
+            return HubOutcome::Nothing;
+        };
+        match choice.press_at(x, y) {
+            ChoicePress::Nothing => HubOutcome::Nothing,
+            ChoicePress::Toggled => HubOutcome::List,
+            ChoicePress::Chose(id) => HubOutcome::Choose {
+                panel: selected,
+                id,
+            },
+        }
+    }
+
+    /// Closes the selected panel's open list (Esc); whether one was open.
+    pub fn close_list(&mut self) -> bool {
+        let selected = self.selected;
+        self.choice_panel_mut(selected)
+            .is_some_and(ChoicePanel::close_list)
+    }
+
+    /// Whether the selected panel's list is open.
+    #[must_use]
+    pub fn list_open(&self) -> bool {
+        self.choice_panel(self.selected)
+            .is_some_and(ChoicePanel::is_open)
     }
 
     /// The plane-name edit box.
@@ -586,7 +697,14 @@ impl HubPage {
 
     /// Whether the model changed since the last call; clears the flag.
     pub fn take_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.dirty)
+        let mut changed = std::mem::take(&mut self.dirty);
+        for panel in [self.airframe.as_mut(), self.engine.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            changed |= panel.take_dirty();
+        }
+        changed
     }
 
     /// Opens the page afresh with the plane's `name` (the dialog before it
@@ -656,7 +774,12 @@ impl HubPage {
                     fill(&label.template, &capacity.to_string())
                 }
                 WEIGHT_LABEL => {
-                    if feed.weight_pending {
+                    if feed.weight_pending
+                        || self
+                            .airframe
+                            .as_ref()
+                            .is_some_and(ChoicePanel::weight_pending)
+                    {
                         // String 1032 replaces 1031; it has no figure.
                         match &self.pending_weight {
                             Some(text) => text.clone(),
@@ -726,6 +849,7 @@ impl HubPage {
                 HubOutcome::Nothing
             }
         } else if let Some(panel) = Panel::of_button(button) {
+            self.close_list();
             self.selected = panel;
             self.dirty = true;
             HubOutcome::Panel(panel)
