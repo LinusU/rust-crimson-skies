@@ -1952,7 +1952,10 @@ fn name_step(
                 Some(StartStep::Stay)
             }
         },
-        NameOutcome::Construct { name, .. } => {
+        NameOutcome::Construct {
+            name,
+            default_loadout,
+        } => {
             let Some(hub) = hub.as_mut() else {
                 // The installation could not supply the hub's rows: the marked
                 // notice stands in for it (rule 5).
@@ -1961,6 +1964,7 @@ fn name_step(
                 });
             };
             hub.page.open(&name);
+            hub.page.set_default_loadout(default_loadout);
             hub.outcomes.clear();
             match flow.as_mut() {
                 Some(flow) => {

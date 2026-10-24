@@ -88,6 +88,7 @@ mod briefing;
 mod cabin;
 mod capture;
 pub mod construction_armor_paint;
+pub mod construction_hangar;
 pub mod construction_hub;
 mod construction_hub_view;
 pub mod construction_panels;
@@ -140,7 +141,7 @@ pub use capture::{
 };
 pub use construction_hub::{
     HUB_SECTION, HUB_UNAVAILABLE, HubError, HubFeed, HubOutcome, HubPage, Panel as HubPanel,
-    READY_NOT_BUILT, SELL_NOT_BUILT,
+    READY_NOT_BUILT, SELL_NOT_BUILT, StartingLoadout,
 };
 pub(crate) use flight_check_view::strip_font_tag;
 pub use flight_check_view::{

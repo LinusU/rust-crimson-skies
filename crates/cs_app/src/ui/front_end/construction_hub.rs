@@ -46,7 +46,13 @@
 //!   at once. Leaving goes back to whoever opened the dialog: `$$CV$$` Instant
 //!   Action, `$$TGA$$` the multiplayer menu, else the cabin.
 //! * **Sell** is active only when `E 2018` answers 3 or more (handler
-//!   `0x4097ea`, a count it reads from the engine); it runs `hangar.script`.
+//!   `0x4097ea`, a count it reads from the engine); it runs `hangar.script`
+//!   ([`super::construction_hangar`]).
+//! * **Default loadout.** `PLANECONSTRUCTION.SCRIPT` asks the Plane Name
+//!   dialog's check box (`mail(10008, @planename@OOA)`) and hands the answer to
+//!   `E 2212` (handler `0x40aacc`): [`StartingLoadout`].
+//! * **The four picture panes** (`px_p_plane0..3`, `E 2243`) are
+//!   [`super::construction_hangar::SlotIcons`].
 //!
 //! # What is *not* known, and so not claimed
 //!
@@ -54,9 +60,8 @@
 //!   are filled by `E 2015(25, 0x20, ..)` (handler `0x409685`, tables
 //!   unread), and the 20 bar graphs are shown from `E 2015(25, 0x40, ..)`:
 //!   nothing is drawn for them and the bars are not presented.
-//! * **The plane picture** (`E 2243`, handler `0x40d54d`), **`E 2230`**
-//!   (handler `0x40d473`), **`E 2212`** (handler `0x40aacc`, it copies a plane
-//!   record) and **`E 2507`** (the `A` callback class) are unread.
+//! * **`E 2230`** (handler `0x40d473`) and **`E 2507`** (the `A` callback
+//!   class) are unread.
 //! * **The cash and cost figures' unit.** The strings say pounds (*lbs.*) and
 //!   dollars; the draft's own weight and price units are fed through
 //!   unchanged and their equivalence to the engine's is unmeasured.
@@ -78,6 +83,7 @@ use cs_types::content::ContentId;
 use super::construction_armor_paint::{
     ArmorFeed, ArmorPanel, DescBox, DropList, PaintFeed, PaintPanel, PanelEdit,
 };
+use super::construction_hangar::{HangarPage, SavedPlane, SlotIcons};
 use super::construction_panels::{ChoiceKind, ChoiceOption, ChoicePanel, ChoicePress};
 use super::construction_slots::{SlotKind, SlotOption, SlotPanel, SlotPress};
 use super::original::{OriginalLayout, Section};
@@ -261,8 +267,17 @@ pub const HUB_UNAVAILABLE: NotImplemented = NotImplemented {
 pub const SELL_NOT_BUILT: NotImplemented = NotImplemented {
     section: HUB_SECTION,
     button: "PX_B_SELL",
-    what: "the Sell hangar",
+    what: "the Sell hangar's window",
 };
+
+/// What a new plane starts with (`E 2212`, the Plane Name dialog's check box).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartingLoadout {
+    /// The airframe's template record, weapons included (box checked).
+    Stock,
+    /// The template with the gun and hardpoint fields cleared (box unchecked).
+    Empty,
+}
 
 /// What the draft hands the hub. Every number is optional: a figure nobody
 /// supplied is drawn as nothing, never as zero.
@@ -452,6 +467,9 @@ pub struct HubPage {
     armor: Option<ArmorPanel>,
     paint: Option<PaintPanel>,
     edits: Vec<PanelEdit>,
+    icons: Option<SlotIcons>,
+    default_loadout: bool,
+    hangar: Option<HangarPage>,
 }
 
 /// A stand-in for the width the engine measures a caption at: the face is not
@@ -579,7 +597,70 @@ impl HubPage {
             armor: ArmorPanel::from_layout(layout, name).ok(),
             paint: PaintPanel::from_layout(layout, name).ok(),
             edits: Vec::new(),
+            // A layout without the four picture panes draws none.
+            icons: SlotIcons::from_section(section),
+            // The check box starts checked (`PN_B_DEFAULT`, `1,1`).
+            default_loadout: true,
+            // A layout without the Hangar rows leaves Sell on the marked notice.
+            hangar: HangarPage::from_layout(layout, name, id).ok(),
         })
+    }
+
+    /// The Sell hangar's page, when the layout supplied its rows.
+    #[must_use]
+    pub const fn hangar(&self) -> Option<&HangarPage> {
+        self.hangar.as_ref()
+    }
+
+    /// The Sell hangar's page, to press its buttons.
+    pub const fn hangar_mut(&mut self) -> Option<&mut HangarPage> {
+        self.hangar.as_mut()
+    }
+
+    /// Hands the hangar the pilot's saved planes (see
+    /// [`HangarPage::set_planes`]) and takes the hub's Sell count from them,
+    /// as `E 2018` counts. Does nothing without the hangar's rows.
+    pub fn set_saved_planes(
+        &mut self,
+        planes: Vec<Option<SavedPlane>>,
+        selected: usize,
+        cash: u64,
+    ) {
+        let Some(hangar) = self.hangar.as_mut() else {
+            return;
+        };
+        // The hub is the construction screen: engine state 13 or 17.
+        hangar.set_planes(planes, true, selected, cash);
+        self.feed.saved_planes = Some(hangar.saved_count());
+        self.dirty = true;
+    }
+
+    /// The four saved-plane picture panes (`PX_P_PLANE0..3`), when the layout
+    /// has all four.
+    #[must_use]
+    pub const fn slot_icons(&self) -> Option<&SlotIcons> {
+        self.icons.as_ref()
+    }
+
+    /// Whether the Plane Name dialog's *Default loadout* box was checked
+    /// (`PN_B_DEFAULT`): the script passes it to `E 2212` (handler `0x40aacc`),
+    /// which fills the plane being built from the airframe's template record
+    /// (`0x619f58 + 204 * airframe`); with the box unchecked it then clears the
+    /// gun and hardpoint fields to the empty position. Which loadout each
+    /// airframe's template holds is unread, so a caller applies
+    /// [`StartingLoadout::Stock`] only with a template it has.
+    #[must_use]
+    pub const fn starting_loadout(&self) -> StartingLoadout {
+        if self.default_loadout {
+            StartingLoadout::Stock
+        } else {
+            StartingLoadout::Empty
+        }
+    }
+
+    /// Records the dialog's check box (carried by `NameOutcome::Construct`).
+    pub fn set_default_loadout(&mut self, checked: bool) {
+        self.default_loadout = checked;
     }
 
     /// The Airframe or Engine panel, when the layout supplied its rows.

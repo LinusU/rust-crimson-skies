@@ -603,7 +603,11 @@ fn rect_row(section: &Section, id: &str) -> Result<ShellRect, SlotError> {
     })
 }
 
-fn text_row(section: &Section, id: &str, name: Option<NameFn<'_>>) -> Result<SlotText, SlotError> {
+pub(super) fn text_row(
+    section: &Section,
+    id: &str,
+    name: Option<NameFn<'_>>,
+) -> Result<SlotText, SlotError> {
     let row = find(section, id)?;
     let bad = || SlotError::Column { row: id.to_owned() };
     let number = |index: usize| {

@@ -149,4 +149,5 @@ mod parity5_cabin_plane_construction;
 mod parity5_cabin_plane_construction_airframe_engine;
 mod parity5_cabin_plane_construction_armor_paint;
 mod parity5_cabin_plane_construction_guns_hardpoints;
+mod parity5_cabin_plane_construction_hangar;
 mod parity5_cabin_plane_construction_hub;
