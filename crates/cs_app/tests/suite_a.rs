@@ -152,6 +152,7 @@ mod accept_f49_d_03_fu_faction;
 mod accept_f49_d_03_fu_rules_difficulty;
 mod accept_f49_d_03_fu_rules_end;
 mod accept_f49_d_03_fu_rules_roster;
+mod accept_f49_d_03_fu_rules_type_order;
 mod accept_f49_d_03_retail_catalog;
 mod accept_f49_d_04_validation_errors;
 mod accept_f53_d_dependent_save;

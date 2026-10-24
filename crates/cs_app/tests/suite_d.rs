@@ -57,6 +57,7 @@ mod evidence_report_f49_d_02;
 mod evidence_report_f49_d_03;
 mod evidence_report_f49_d_03_fu_rules_end;
 mod evidence_report_f49_d_03_fu_rules_roster;
+mod evidence_report_f49_d_03_fu_rules_type_order;
 mod evidence_report_f49_d_parent;
 mod evidence_report_flight_original_levelop;
 mod evidence_report_flight_original_playtest;
