@@ -44,12 +44,12 @@ use cs_content::ai::DeclaredSkillTier;
 use cs_content::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use cs_content::environment::EnvironmentId;
 use cs_content::instant_action::{
-    IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError,
-    IaWingmanPlane, IaWingmanTemplate, IaWingmen, InstantActionCatalog, InstantActionPreset,
-    RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec, ScenarioOptions, ScenarioParameters,
-    ScenarioRoster, ScenarioSchemaError, ScenarioSeed, ScenarioSide, ia_spawns_named_ace,
-    ia_wingman_template, measured_ia_victory_rules, retail_scenario_options_with_pilots,
-    survey_retail_instant_action,
+    ActorIntensity, GameIntensity, IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory,
+    IaPlayerPlane, IaSurveyError, IaWingmanPlane, IaWingmanTemplate, IaWingmen,
+    InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec,
+    ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed,
+    ScenarioSide, ia_spawns_named_ace, ia_wingman_template, measured_ia_victory_rules,
+    retail_scenario_options_with_pilots, survey_retail_instant_action,
 };
 use cs_content::world::WorldId;
 use cs_types::asset_id::SourceSpan;
@@ -80,8 +80,8 @@ pub const IA_SURVIVABILITY_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.surviva
 pub const IA_GROUP_PLANE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.group-plane";
 /// Unmeasured: the preset title.
 pub const IA_TITLE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.title";
-/// Unmeasured: the preset difficulty.
-pub const IA_DIFFICULTY_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.difficulty";
+/// The preset difficulty is carried per actor (`GameIntensity`), not per scenario.
+pub const IA_DIFFICULTY_PER_ACTOR_CLAIM: &str = "f49.d.03.difficulty-per-actor";
 /// Unmeasured: the preset victory rules.
 pub const IA_RULES_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.rules";
 
@@ -110,13 +110,14 @@ pub const IA_WINGMAN_BASE_ROLE: &str = "wingman_base";
 /// Why a preset's title is unmeasured.
 pub const TITLE_UNMEASURED_REASON: &str = "the original's Instant Action preset titles are not \
      measured (F49-D.01 records the identities, not the display names)";
-/// Why a preset's difficulty is unmeasured.
-pub const DIFFICULTY_UNMEASURED_REASON: &str = "the original binds no single difficulty to a \
-     scenario: no ia.zrd key names one (F32-D census), the executable never reads the group `enemy_skill` key, \
-     and its spawn routine 0x45a390 overwrites the GameIntensity console variable around each \
-     spawn call 0x47c210 (the ace from `ace_skill` as 0/1/2, every enemy group as 1, the \
-     player and wingmen untraced), so a preset-level difficulty has nothing to lower \
-     (docs/findings/2026-10-24-f49-d-03-fu-rules-difficulty.md)";
+/// Why a preset carries no scenario-level difficulty.
+pub const DIFFICULTY_PER_ACTOR_REASON: &str = "the original binds no single difficulty to a \
+     scenario: no ia.zrd key names one (F32-D census) and the executable never reads the group \
+     `enemy_skill` key; its spawn routine 0x45a390 overwrites the GameIntensity console variable \
+     around each spawn call 0x47c210 (the ace from `ace_skill` as 0/1/2, every enemy group as 1) \
+     and writes nothing around the wingmen's, which run under the player's option value, so \
+     each actor carries its own intensity \
+     (docs/findings/2026-10-25-f49-d-03-fu-intensity.md)";
 
 /// Why the rules of a preset with mission type `mission_type` are unmeasured.
 ///
@@ -322,6 +323,28 @@ fn airframe_id(
     Ok(id)
 }
 
+/// The `GameIntensity` the spawn routine holds around every enemy group's
+/// spawn call (the group record's last dword, `1` and written by no reader).
+const GROUP_INTENSITY: GameIntensity = match GameIntensity::new(1) {
+    Some(value) => value,
+    None => unreachable!(),
+};
+
+/// The `GameIntensity` the spawn routine holds around the ace's spawn call:
+/// `ace_skill` `novice`/`veteran`/`ace` is stored as 0/1/2 and mapped 0->0,
+/// 2->2, else 1 (`0x45acbe..0x45acfc`).
+const fn ace_intensity(skill: DeclaredSkillTier) -> GameIntensity {
+    let value = match skill {
+        DeclaredSkillTier::Novice => 0,
+        DeclaredSkillTier::Veteran => 1,
+        DeclaredSkillTier::Ace => 2,
+    };
+    match GameIntensity::new(value) {
+        Some(value) => value,
+        None => unreachable!(),
+    }
+}
+
 fn resolve_skill(
     skill: Option<&str>,
     role: &str,
@@ -450,14 +473,17 @@ pub fn directory_roster(
         Some(IaWingmanTemplate::Follower) | None => IA_WINGMAN_FOLLOWER_ROLE,
     };
     for slot in 0..wingmen.count() {
-        actors.push(actor(
-            ScenarioSide::Ally,
-            slot,
-            wingman_role,
-            wingman_airframe.clone(),
-            &wingman_plane_provenance,
-            &subject,
-        )?);
+        actors.push(
+            actor(
+                ScenarioSide::Ally,
+                slot,
+                wingman_role,
+                wingman_airframe.clone(),
+                &wingman_plane_provenance,
+                &subject,
+            )?
+            .with_intensity(ActorIntensity::PlayerOption),
+        );
     }
 
     let mut next_enemy_slot = 0_u32;
@@ -477,7 +503,8 @@ pub fn directory_roster(
             airframe,
             &provenance,
             &subject,
-        )?;
+        )?
+        .with_intensity(ActorIntensity::Set(GROUP_INTENSITY));
         if let Some(skill) = resolve_skill(group.skill(), &role, inputs)? {
             spec = spec.with_skill(skill);
         }
@@ -515,7 +542,9 @@ pub fn directory_roster(
             &subject,
         )?;
         if let Some(skill) = resolve_skill(ace.skill(), "ace", inputs)? {
-            spec = spec.with_skill(skill);
+            spec = spec
+                .with_skill(skill)
+                .with_intensity(ActorIntensity::Set(ace_intensity(skill)));
         }
         if let Some(label) = ace.name_label() {
             spec = spec.with_label(label.to_owned());
@@ -590,13 +619,19 @@ pub fn directory_presets(
             roster.clone(),
             preset_seed(&preset_id),
             (
-                claim(IA_DIFFICULTY_UNMEASURED_CLAIM)?,
-                DIFFICULTY_UNMEASURED_REASON,
+                claim(IA_DIFFICULTY_PER_ACTOR_CLAIM)?,
+                DIFFICULTY_PER_ACTOR_REASON,
             ),
             (
                 claim(IA_RULES_UNMEASURED_CLAIM)?,
                 &rules_unmeasured_reason(mission_type),
             ),
+        );
+        // The original binds the difficulty per actor (`GameIntensity` around
+        // each spawn call), not per scenario.
+        parameters = parameters.with_per_actor_difficulty(
+            claim(IA_DIFFICULTY_PER_ACTOR_CLAIM)?,
+            DIFFICULTY_PER_ACTOR_REASON,
         );
         // The engine image's Instant Action end check (`0x45b9d0`) measures
         // one end condition per `mission_type` name; a name it does not cover

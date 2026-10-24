@@ -55,6 +55,8 @@ pub enum ActorField {
     Pilot,
     /// Its survivability policy.
     Survivability,
+    /// The `GameIntensity` it is created under.
+    Intensity,
 }
 
 /// One difference between two lowered scenarios.
@@ -115,6 +117,9 @@ fn differing_fields(a: &LoweredScenarioActor, b: &LoweredScenarioActor) -> Vec<A
     }
     if a.survivability != b.survivability {
         fields.push(ActorField::Survivability);
+    }
+    if a.intensity != b.intensity {
+        fields.push(ActorField::Intensity);
     }
     fields
 }

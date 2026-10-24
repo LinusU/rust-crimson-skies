@@ -59,9 +59,9 @@ mod retail;
 use std::fmt;
 
 use cs_content::instant_action::{
-    CustomScenarioDraft, CustomScenarioRequest, InstantActionCatalog, RosterSlot,
-    ScenarioActorSpec, ScenarioParameters, ScenarioProblem, ScenarioProblems, ScenarioSeed,
-    ScenarioSide, require_declared, require_known,
+    ActorIntensity, CustomScenarioDraft, CustomScenarioRequest, Declared, InstantActionCatalog,
+    RosterSlot, ScenarioActorSpec, ScenarioParameters, ScenarioProblem, ScenarioProblems,
+    ScenarioSeed, ScenarioSide, require_declared, require_known,
 };
 use cs_content::pilots::DeclaredSurvivability;
 use cs_sim::allies::{
@@ -83,8 +83,8 @@ pub use retail::{
 };
 
 pub use retail::{
-    DIFFICULTY_UNMEASURED_REASON, FACTION_UNMEASURED_REASON, IA_CATALOG_CLAIM,
-    IA_DIFFICULTY_UNMEASURED_CLAIM, IA_ENVIRONMENT_CLAIM, IA_FACTION_UNMEASURED_CLAIM,
+    DIFFICULTY_PER_ACTOR_REASON, FACTION_UNMEASURED_REASON, IA_CATALOG_CLAIM,
+    IA_DIFFICULTY_PER_ACTOR_CLAIM, IA_ENVIRONMENT_CLAIM, IA_FACTION_UNMEASURED_CLAIM,
     IA_LOADOUT_UNMEASURED_CLAIM, IA_PRESET_CLAIM, IA_RULES_UNMEASURED_CLAIM,
     IA_SURVIVABILITY_UNMEASURED_CLAIM, IA_WINGMAN_BASE_ROLE, IA_WINGMAN_FOLLOWER_ROLE,
     IA_WORLD_CLAIM, LOADOUT_UNMEASURED_REASON, SURVIVABILITY_UNMEASURED_REASON,
@@ -154,6 +154,32 @@ pub struct LoweredScenarioActor {
     pub pilot: Option<PilotId>,
     /// The lowered survivability.
     pub survivability: SurvivabilityPolicy,
+    /// The `GameIntensity` the original creates it under, when the scenario
+    /// carries one (a retail preset's actors; a custom scenario's difficulty
+    /// is the scenario-level tier instead).
+    pub intensity: Option<ActorIntensity>,
+}
+
+/// The difficulty a lowered scenario runs under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoweredDifficulty {
+    /// One tier for the whole scenario (a custom scenario's choice).
+    Tier(cs_content::ai::DifficultyTier),
+    /// No scenario-level difficulty: each actor carries its own
+    /// [`LoweredScenarioActor::intensity`] (a retail preset, as the original's
+    /// spawn routine sets it per actor).
+    PerActor,
+}
+
+impl LoweredDifficulty {
+    /// The scenario-level tier, when there is one.
+    #[must_use]
+    pub const fn tier(self) -> Option<cs_content::ai::DifficultyTier> {
+        match self {
+            Self::Tier(tier) => Some(tier),
+            Self::PerActor => None,
+        }
+    }
 }
 
 /// The world one selection loads.
@@ -181,7 +207,7 @@ pub struct LoweredScenario {
     respawns: RespawnBudget,
     deadline_ticks: Option<u64>,
     tie_outcome: TieOutcome,
-    difficulty: cs_content::ai::DifficultyTier,
+    difficulty: LoweredDifficulty,
     seed: ScenarioSeed,
 }
 
@@ -245,9 +271,9 @@ impl LoweredScenario {
         self.tie_outcome
     }
 
-    /// The declared difficulty tier.
+    /// The declared difficulty: a scenario-level tier, or per actor.
     #[must_use]
-    pub const fn difficulty(&self) -> cs_content::ai::DifficultyTier {
+    pub const fn difficulty(&self) -> LoweredDifficulty {
         self.difficulty
     }
 
@@ -582,14 +608,33 @@ fn lower_parameters(
     // The preset's difficulty and rules are measured per scenario or not at all
     // (F49-D.03): an unmeasured one refuses here with its claim and reason, so a
     // retail preset never launches under a defaulted tier or victory rule.
-    let difficulty = require_declared("scenario difficulty", parameters.difficulty())
-        .map_err(unknown_as)?
-        .tier();
+    let difficulty = match parameters.difficulty() {
+        Declared::PerActor { .. } => LoweredDifficulty::PerActor,
+        other => LoweredDifficulty::Tier(
+            require_declared("scenario difficulty", other)
+                .map_err(unknown_as)?
+                .tier(),
+        ),
+    };
     let rules =
         *require_declared("scenario victory rules", parameters.rules()).map_err(unknown_as)?;
     let mut actors = Vec::with_capacity(parameters.roster().len());
     for actor in parameters.roster().actors() {
-        actors.push(lower_actor(actor)?);
+        let mut lowered = lower_actor(actor)?;
+        match (parameters.difficulty(), lowered.intensity) {
+            (Declared::PerActor { claim_id, reason }, None) => {
+                return Err(LowerError::UnknownValue {
+                    field: format!("{} slot {} intensity", actor.side(), actor.slot().index()),
+                    claim_id: claim_id.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            // A scenario-level tier is the whole difficulty: an intensity an
+            // actor copied from a retail preset does not apply under it.
+            (Declared::PerActor { .. }, Some(_)) => {}
+            _ => lowered.intensity = None,
+        }
+        actors.push(lowered);
     }
     Ok(LoweredScenario {
         subject,
@@ -713,6 +758,7 @@ fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerE
         loadout,
         pilot,
         survivability,
+        intensity: actor.intensity(),
     })
 }
 
