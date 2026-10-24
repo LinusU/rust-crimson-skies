@@ -616,6 +616,9 @@ pub struct FlakBurstFxReport {
     pub trail_puffs_spawned: u64,
     /// Trail puffs dropped: no puff art installed.
     pub trail_puffs_undrawn: u64,
+    /// Flicker overlays alive after the latest fixed pass: each one tints
+    /// the whole frame while it runs.
+    pub flickers_live: u64,
 }
 
 /// Component: the flash light of one burst.
@@ -732,6 +735,7 @@ fn advance_flak_fx(
     effect: Option<Res<FlakEffectResource>>,
     mut flashes: Query<(Entity, &FlakFlash, &mut PointLight)>,
     mut flickers: Query<(Entity, &FlakFlicker, &mut BackgroundColor)>,
+    mut report: ResMut<FlakBurstFxReport>,
 ) {
     let (Some(ledger), Some(effect)) = (ledger, effect) else {
         return;
@@ -742,12 +746,17 @@ fn advance_flak_fx(
             None => commands.entity(entity).despawn(),
         }
     }
+    let mut live = 0;
     for (entity, flicker, mut background) in &mut flickers {
         match flicker_color_at(&effect.0, seconds_since(&ledger, flicker.born)) {
-            Some([r, g, b, a]) => background.0 = Color::srgba(r, g, b, a),
+            Some([r, g, b, a]) => {
+                background.0 = Color::srgba(r, g, b, a);
+                live += 1;
+            }
             None => commands.entity(entity).despawn(),
         }
     }
+    report.flickers_live = live;
 }
 
 fn advance_flak_trails(

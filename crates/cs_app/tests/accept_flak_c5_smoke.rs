@@ -88,6 +88,28 @@ fn synthetic_ai() -> ZrdValue {
     ])])
 }
 
+/// **#1966: `stand_down_for_test` undoes a test wake, so the smoke's flak
+/// turret stops bursting round the player once its phase is over.**
+#[test]
+fn accept_dmg_frame_grade_stand_down_clears_the_live_byte() {
+    let specs = read_turret_specs(&synthetic_ai());
+    let nodes = ["aagun01", "aagun02"]
+        .iter()
+        .enumerate()
+        .map(|(index, name)| ((*name).to_owned(), [index as f64, 0.0, 0.0]))
+        .collect::<Vec<(String, [f64; 3])>>();
+    let entries = TurretEntries::bind(&specs, Ok(nodes), &[]);
+    let mut ledger = TurretWakeLedger::new(&entries);
+    ledger.wake_for_test("aagun01", Tick(9));
+    assert!(ledger.entry("aagun01").unwrap().live);
+    assert!(ledger.stand_down_for_test("aagun01"));
+    assert!(!ledger.entry("aagun01").unwrap().live);
+    assert!(
+        !ledger.stand_down_for_test("aagun01"),
+        "a sleeping entry reports it was not live"
+    );
+}
+
 /// **`wake_for_test` walks the ledger's own matcher: the sleeping entry's
 /// live byte sets, the `TurretWake` records which names woke, and an
 /// already-live entry is counted — the same bookkeeping a `WAKEUP_TURRETS`

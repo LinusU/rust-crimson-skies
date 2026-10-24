@@ -44,6 +44,7 @@
 //! | `weapon_rounds_not_drawn` | no live round entity carries a mesh: the original's capture shows no tracer streaks |
 //! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
 //! | `weapon_rocket_launches` | `X` — the original's secondary-fire row — near a declared-hostile actor launches a rocket |
+//! | `damage_frame_ungraded` | no flak flicker overlay tints the damage-phase frames: the flak phase's test-woken turret is stood down first (#1966) |
 //! | `damage_trail_drawn` | a test hit on the player's left wing node resolves and the airframe then draws smoke and fire trail puffs (#1700) |
 //! | `flak_turret_woken` | a sleeping flak turret (a world entry whose `WEAPON` reads as `wep_27`) is test-woken through the wake ledger's own matcher (#1887) |
 //! | `flak_turret_fired` | the woken turret's runtime fires the retail `wep_27` at the player |
@@ -831,6 +832,12 @@ pub struct DamageTrailMetrics {
     pub fire_spawned: u64,
     /// Fixed passes that found a wing burning.
     pub passes_burning: u64,
+    /// The flak phase's test-woken turret was stood down when this phase
+    /// began (it would otherwise keep bursting round the player).
+    pub flak_stood_down: bool,
+    /// The most flak flicker overlays alive on a frame the phase
+    /// photographed: each tints the whole frame (#1966).
+    pub flak_flickers_at_shots: u64,
 }
 
 /// What the flak phase measured (FLAK-C5-SMOKE, #1887): a test-woken flak
@@ -1790,6 +1797,21 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         } else {
             "the turret never went live, so nothing could fire".to_owned()
         },
+    });
+    checks.push(Check {
+        id: "damage_frame_ungraded".to_owned(),
+        applies: m.damage_trail.hit_applied,
+        passed: m.damage_trail.flak_flickers_at_shots == 0,
+        detail: format!(
+            "{} flak flicker overlay(s) tinted the damage-phase frames (the flak phase's test-woken \
+             turret {} when the phase began; #1966)",
+            m.damage_trail.flak_flickers_at_shots,
+            if m.damage_trail.flak_stood_down {
+                "was stood down"
+            } else {
+                "was not live"
+            }
+        ),
     });
     checks.push(Check {
         id: "damage_trail_drawn".to_owned(),
@@ -4755,6 +4777,16 @@ fn smoke_script(
                 data.measurements.damage_trail.passes_burning = trail.passes_burning;
             }
             if at == 0 {
+                // #1966: the flak phase's test-woken turret keeps firing at
+                // the player, and each burst starts a full-window flicker
+                // (alpha 0.2-0.4 black or grey) that dimmed this phase's frame.
+                if let (Some(host), Some(name)) = (
+                    flak.mission_host.as_deref_mut(),
+                    data.measurements.flak.turret.clone(),
+                ) {
+                    data.measurements.damage_trail.flak_stood_down =
+                        host.wake_turrets_mut().stand_down_for_test(&name);
+                }
                 data.measurements.damage_trail.refusal = apply_trail_test_hit(
                     flak.damage.as_deref_mut(),
                     flak.weapons.as_deref(),
@@ -4765,6 +4797,7 @@ fn smoke_script(
                 data.measurements.damage_trail.hit_applied =
                     data.measurements.damage_trail.refusal.is_none();
             } else if at == DAMAGE_TRAIL_SHOT_OFFSET {
+                note_flak_flickers(&mut data, flak.flak_fx.as_deref());
                 due.push("damage_trail".to_owned());
             } else if at == DAMAGE_TRAIL_CRITICAL_OFFSET {
                 data.measurements.damage_trail.spawned_before_critical =
@@ -4780,6 +4813,7 @@ fn smoke_script(
                 data.measurements.damage_trail.critical_applied =
                     data.measurements.damage_trail.critical_refusal.is_none();
             } else if at == DAMAGE_TRAIL_CRITICAL_OFFSET + DAMAGE_TRAIL_SHOT_OFFSET {
+                note_flak_flickers(&mut data, flak.flak_fx.as_deref());
                 due.push("damage_trail_critical".to_owned());
             } else if at >= DAMAGE_TRAIL_CRITICAL_OFFSET + DAMAGE_TRAIL_SHOT_OFFSET + 4 {
                 data.phase = Phase::Help;
@@ -5834,6 +5868,13 @@ fn apply_trail_test_hit(
         .resolve(tick, &events)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Records the flak flickers alive on a damage-phase shot frame.
+fn note_flak_flickers(data: &mut SmokeData, fx: Option<&FlakBurstFxReport>) {
+    let live = fx.map_or(0, |fx| fx.flickers_live);
+    let metrics = &mut data.measurements.damage_trail;
+    metrics.flak_flickers_at_shots = metrics.flak_flickers_at_shots.max(live);
 }
 
 fn update_flak_metrics(

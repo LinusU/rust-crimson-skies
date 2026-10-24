@@ -83,6 +83,7 @@ mod campaign {
     mod vs_m01_rt_window;
 }
 mod accept_crash_a_fatal_crash_facts;
+mod accept_dmg_frame_grade;
 mod accept_doclib_conflict;
 mod accept_engine_image_outside_install;
 mod accept_evidence_content_digest_outliers;

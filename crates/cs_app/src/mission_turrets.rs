@@ -518,6 +518,20 @@ impl TurretWakeLedger {
         self.wake(name, false, DirectiveOperation::WakeTurrets, tick);
     }
 
+    /// The inverse of [`Self::wake_for_test`]: clears the live byte of the
+    /// world entry named `name`, so a scripted run that test-woke a gun can
+    /// stand it down again. Returns whether an entry was live. Nothing in a
+    /// mission run calls it.
+    pub fn stand_down_for_test(&mut self, name: &str) -> bool {
+        let mut was_live = false;
+        for entry in &mut self.entries {
+            if entry.mount == TurretMount::World && entry.name == name {
+                was_live |= std::mem::replace(&mut entry.live, false);
+            }
+        }
+        was_live
+    }
+
     /// The entries with their current live bytes.
     #[must_use]
     pub fn entries(&self) -> &[TurretEntry] {
