@@ -152,7 +152,7 @@ pub use camera_modes::{
     CameraModeMetrics, CameraModeSample, MIN_CAMERA_FRAME_LUMINANCE_LEVELS, MIN_LOOK_ANGLE_RAD,
     MIN_VIEW_SEPARATION_M, MIN_ZOOM_DISTANCE_M,
 };
-pub use convoy_kill::ConvoyKillMetrics;
+pub use convoy_kill::{ConvoyKillMetrics, ConvoyLayoutRow};
 pub use crash::CrashMetrics;
 pub use start_flow::StartFlowMetrics;
 pub use trucks::TrucksMetrics;
@@ -3045,10 +3045,14 @@ fn add_script_systems(app: &mut App) {
             .chain(),
     );
     // Beside the chain (it is at Bevy's tuple limit): the convoy-kill stage's
-    // observation read runs just before the stage that consumes it.
+    // observation read and its visible-node-state sample run just before the
+    // stage that consumes them.
     app.add_systems(
         Last,
-        convoy_kill::sample_convoy_observation.before(convoy_kill::smoke_convoy_kill),
+        (
+            convoy_kill::sample_convoy_observation.before(convoy_kill::smoke_convoy_kill),
+            convoy_kill::sample_convoy_layout.before(convoy_kill::smoke_convoy_kill),
+        ),
     );
 }
 

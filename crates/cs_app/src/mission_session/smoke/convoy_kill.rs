@@ -23,6 +23,7 @@
 //! authored `destroyed` layout or a debris wreck is *drawn* is for the frames
 //! to show by eye next to the Drydock originals.
 
+use bevy::camera::visibility::InheritedVisibility;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::{ClearColor, Commands, Query, Res, ResMut, Resource, Vec3, With, World};
 use cs_sim::damage::ActorId;
@@ -32,13 +33,16 @@ use super::super::compose::MissionPlayerBody;
 use super::super::host::MissionWorldObservation;
 use super::super::observation::mission_world_observation;
 use super::super::weapons::MissionCockpitActions;
+use super::super::world_draw::WorldSceneryNode;
 use super::{
     Check, FlightCheckFrames, PendingPlacement, Phase, Placement, SHOT_GRACE_FRAMES, SmokeConfig,
     SmokeData, SmokeMeasurements, SmokeShots, clear_colour_encodings, json_string,
     non_black_permille, request_screenshot, yaw_toward,
 };
 use crate::damage::DamageScheduleReport;
-use crate::mission_actors::{MissionGroundTargetReport, MissionGroundTargetSweep};
+use crate::mission_actors::{
+    MissionGroundTarget, MissionGroundTargetReport, MissionGroundTargetSweep,
+};
 use crate::world_facts::member_chain;
 
 /// The convoy, by world node name: the three trucks OBJECTIVE6 wakes and the
@@ -97,6 +101,11 @@ pub struct ConvoyKillMetrics {
     pub intact_permille: u32,
     /// The share of the destroyed frame that is off black, per mille.
     pub destroyed_permille: u32,
+    /// Each truck's drawn layout state when the stage began — the intact
+    /// presentation sampled before the first shot.
+    pub layout_before: Vec<ConvoyLayoutRow>,
+    /// Each truck's drawn layout state at the end — after the settle frames.
+    pub layout_after: Vec<ConvoyLayoutRow>,
     /// The stage gave up on a truck.
     pub gave_up_on: Option<String>,
 }
@@ -109,6 +118,94 @@ pub struct ConvoyWorld<'w, 's> {
     sweeps: Query<'w, 's, &'static MissionGroundTargetSweep>,
     damage: Option<Res<'w, DamageScheduleReport>>,
     observation: Option<Res<'w, ConvoyObservationRows>>,
+    layout: Option<Res<'w, ConvoyLayoutRows>>,
+}
+
+/// One truck's drawn node state in a [`ConvoyLayoutRows`] sample: the count
+/// of its drawn scenery nodes that are effectively visible (`*_visible`) or
+/// hidden (`*_hidden`), split between the intact presentation and the
+/// `destroyed` layout. A truck with no authored `destroyed` child carries
+/// zeros in both `destroyed_*` fields.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConvoyLayoutRow {
+    /// The container record's stored display name.
+    pub node: String,
+    /// Drawn nodes of the intact presentation still effectively visible.
+    pub intact_visible: usize,
+    /// Drawn nodes of the intact presentation the layout pass hid.
+    pub intact_hidden: usize,
+    /// Drawn nodes of the `destroyed` layout effectively visible.
+    pub destroyed_visible: usize,
+    /// Drawn nodes of the `destroyed` layout still hidden.
+    pub destroyed_hidden: usize,
+    /// Whether the record authors a `destroyed` layout at all.
+    pub has_destroyed_layout: bool,
+}
+
+/// The convoy's drawn layout state as [`sample_convoy_layout`] saw it last
+/// frame: one row per truck.
+#[derive(Resource, Default)]
+pub struct ConvoyLayoutRows(pub Vec<ConvoyLayoutRow>);
+
+/// Samples the convoy's *visible node state* (#2054): for each truck, the
+/// effective [`InheritedVisibility`] of the drawn [`WorldSceneryNode`]
+/// entities that belong to its intact presentation and to its `destroyed`
+/// layout.
+///
+/// This reads the entities' propagated visibility — what the renderer would
+/// draw — not the layout pass's own report, so a swap that wrote the wrong
+/// nodes still fails the `convoy_layout_swaps` check.
+pub fn sample_convoy_layout(world: &mut World) {
+    if world
+        .get_resource::<SmokeConfig>()
+        .is_none_or(|config| config.mode != super::MissionSmokeMode::ConvoyKill)
+    {
+        return;
+    }
+    let mut targets = world.query::<&MissionGroundTarget>();
+    let bound: Vec<(String, Vec<u32>, Vec<u32>)> = TRUCKS
+        .iter()
+        .filter_map(|node| {
+            targets
+                .iter(world)
+                .find(|target| target.node == *node)
+                .map(|target| {
+                    (
+                        (*node).to_owned(),
+                        target.intact_slots.clone(),
+                        target.destroyed_slots.clone(),
+                    )
+                })
+        })
+        .collect();
+    let mut nodes = world.query::<(&WorldSceneryNode, &InheritedVisibility)>();
+    let rows = bound
+        .iter()
+        .map(|(node, intact, destroyed)| {
+            let mut row = ConvoyLayoutRow {
+                node: node.clone(),
+                has_destroyed_layout: !destroyed.is_empty(),
+                ..ConvoyLayoutRow::default()
+            };
+            for (scenery, visibility) in nodes.iter(world) {
+                if intact.contains(&scenery.node_slot) {
+                    if visibility.get() {
+                        row.intact_visible += 1;
+                    } else {
+                        row.intact_hidden += 1;
+                    }
+                } else if destroyed.contains(&scenery.node_slot) {
+                    if visibility.get() {
+                        row.destroyed_visible += 1;
+                    } else {
+                        row.destroyed_hidden += 1;
+                    }
+                }
+            }
+            row
+        })
+        .collect();
+    world.insert_resource(ConvoyLayoutRows(rows));
 }
 
 /// The convoy's observation rows as the production writer built them last
@@ -215,6 +312,10 @@ pub fn smoke_convoy_kill(
                 .push((node.to_owned(), in_play(node)));
         }
         metrics.start_frame = Some(frame);
+        metrics.layout_before = world
+            .layout
+            .as_deref()
+            .map_or_else(Vec::new, |rows| rows.0.clone());
     }
     let destroyed_now: Vec<String> = metrics
         .actors
@@ -285,6 +386,10 @@ pub fn smoke_convoy_kill(
             metrics.frames_delivered = intact.is_some() && destroyed.is_some();
             metrics.intact_permille = permille(intact);
             metrics.destroyed_permille = permille(destroyed);
+            metrics.layout_after = world
+                .layout
+                .as_deref()
+                .map_or_else(Vec::new, |rows| rows.0.clone());
         }
     }
     data.measurements.convoy_kill = Some(metrics);
@@ -394,8 +499,47 @@ fn step(
     step
 }
 
+/// The `convoy_layout_swaps` verdict (#2054): the run's *visible node
+/// state* — every truck began drawn intact with its `destroyed` layout
+/// hidden, and ended with the intact presentation fully hidden and, where
+/// the record authors one, the `destroyed` layout fully drawn.
+fn layout_swapped(metrics: &ConvoyKillMetrics) -> bool {
+    let intact_at_start = |row: &ConvoyLayoutRow| {
+        row.intact_visible > 0 && row.intact_hidden == 0 && row.destroyed_visible == 0
+    };
+    let presented_at_end = |row: &ConvoyLayoutRow| {
+        row.intact_visible == 0
+            && row.intact_hidden > 0
+            && row.destroyed_hidden == 0
+            && (!row.has_destroyed_layout || row.destroyed_visible > 0)
+    };
+    !metrics.layout_before.is_empty()
+        && metrics.layout_before.iter().all(intact_at_start)
+        && !metrics.layout_after.is_empty()
+        && metrics.layout_after.iter().all(presented_at_end)
+}
+
+/// One layout row, for a check detail or `report.json`: the truck's name
+/// and its `shown/total` counts on each side.
+fn layout_label(row: &ConvoyLayoutRow) -> String {
+    format!(
+        "{}: intact {}/{} shown, destroyed {}/{} shown{}",
+        row.node,
+        row.intact_visible,
+        row.intact_visible + row.intact_hidden,
+        row.destroyed_visible,
+        row.destroyed_visible + row.destroyed_hidden,
+        if row.has_destroyed_layout {
+            ""
+        } else {
+            " (no destroyed layout)"
+        }
+    )
+}
+
 /// The convoy-kill checks: the guns key destroyed every truck through the
-/// damage authority, the observation followed, and the frames are drawn.
+/// damage authority, the observation followed, the destroyed layout is what
+/// the scene draws, and the frames are drawn.
 pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     let Some(c) = &m.convoy_kill else {
         return vec![Check {
@@ -433,6 +577,25 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 "the mission observation rows read {:?} before the first shot and {:?} at the \
                  end (in_play)",
                 c.in_play_before, c.in_play_after
+            ),
+        },
+        Check {
+            id: "convoy_layout_swaps".to_owned(),
+            applies: true,
+            passed: layout_swapped(c),
+            detail: format!(
+                "the visible node state read [{}] before the first shot and [{}] at the end \
+                 (shown/total drawn nodes per side)",
+                c.layout_before
+                    .iter()
+                    .map(layout_label)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                c.layout_after
+                    .iter()
+                    .map(layout_label)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ),
         },
         Check {
@@ -493,11 +656,30 @@ pub fn convoy_kill_json(metrics: Option<&ConvoyKillMetrics>) -> String {
         .gave_up_on
         .as_deref()
         .map_or_else(|| "null".to_owned(), json_string);
+    let layout = |rows: &[ConvoyLayoutRow]| {
+        rows.iter()
+            .map(|row| {
+                format!(
+                    "{{\"node\":{},\"intact_visible\":{},\"intact_hidden\":{},\
+                     \"destroyed_visible\":{},\"destroyed_hidden\":{},\
+                     \"has_destroyed_layout\":{}}}",
+                    json_string(&row.node),
+                    row.intact_visible,
+                    row.intact_hidden,
+                    row.destroyed_visible,
+                    row.destroyed_hidden,
+                    row.has_destroyed_layout
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     format!(
         "{{\"start_frame\":{},\"trucks\":{},\"in_play_before\":[{}],\"fire_presses\":{},\
          \"destroyed\":[{destroyed}],\"in_play_after\":[{}],\"last_destroyed_frame\":{},\
          \"placements\":{},\"frames_delivered\":{},\"intact_permille\":{},\
-         \"destroyed_permille\":{},\"gave_up_on\":{gave_up}}}",
+         \"destroyed_permille\":{},\"layout_before\":[{}],\"layout_after\":[{}],\
+         \"gave_up_on\":{gave_up}}}",
         option_u32(c.start_frame),
         c.actors.len(),
         rows(&c.in_play_before),
@@ -508,5 +690,7 @@ pub fn convoy_kill_json(metrics: Option<&ConvoyKillMetrics>) -> String {
         c.frames_delivered,
         c.intact_permille,
         c.destroyed_permille,
+        layout(&c.layout_before),
+        layout(&c.layout_after),
     )
 }

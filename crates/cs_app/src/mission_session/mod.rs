@@ -376,7 +376,7 @@ pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, BriefingButtonMetrics, BriefingMetrics,
     BriefingReplayMetrics, BriefingShotMetrics, BriefingVoiceMetrics, CINEMATIC_SHOT_SECONDS,
     CameraMetrics, CameraModeMetrics, CameraModeSample, Check, CinematicMetrics,
-    CockpitViewMetrics, CockpitViewSample, ConvoyKillMetrics, CrashMetrics,
+    CockpitViewMetrics, CockpitViewSample, ConvoyKillMetrics, ConvoyLayoutRow, CrashMetrics,
     DEFAULT_MISSION_CAPTURE_DIR, DamageTrailMetrics, ENGAGEMENT_SAMPLE_EVERY_S, EngagementMetrics,
     ExamineMetrics, FirstControlMetrics, FlakMetrics, FlareQuadMetrics, FlightCheckButtonMetrics,
     FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics, LensFlareMetrics,
@@ -443,8 +443,9 @@ pub use wing_fire::{
     read_wing_fire_definition, threshold_reached,
 };
 pub use world_draw::{
-    HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,
-    WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldSceneryCollider, WorldSceneryRoot,
-    WorldWaterArt, WorldWaterLevel, WorldWaterPart, bind_sea_to_world_water, build_scenery,
-    build_world_draw, water_level_of,
+    GroundTargetLayoutReport, GroundTargetLayoutRow, HORIZON_SUBTREE_LABEL, HorizonRest,
+    HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts, PresentedLayout,
+    WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldSceneryCollider, WorldSceneryNode,
+    WorldSceneryRoot, WorldWaterArt, WorldWaterLevel, WorldWaterPart, apply_ground_target_layout,
+    bind_sea_to_world_water, build_scenery, build_world_draw, water_level_of,
 };
