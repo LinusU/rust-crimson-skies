@@ -124,6 +124,8 @@ pub(super) fn spawn_page(
         );
     } else if let Some(panel) = page.choice_panel(page.selected()) {
         draw_choice_panel(&mut canvas, panel);
+    } else if page.panel_built(page.selected()) {
+        draw_armor_paint_panel(&mut canvas, page);
     } else {
         let (notice, task) = page.selected().not_built();
         canvas.text(
@@ -196,6 +198,100 @@ fn draw_choice_panel(canvas: &mut Canvas<'_>, panel: &ChoicePanel) {
             },
             argb(FRAME),
             LIST_Z + 0.3,
+        );
+    }
+}
+
+/// The list's closed-box ground, the item picked and the frame (stand-ins:
+/// the original's `GN_DROPUP`/`GN_DROPDOWN` art and colours are unread).
+const AP_GROUND: u32 = 0xFFE6_DABE;
+const AP_PICKED: u32 = 0xFF80_8080;
+const AP_FRAME: u32 = 0xFF00_0000;
+const AP_HOVER: u32 = 0xFF0D_21E1;
+const AP_TEXT_SIZE: f32 = 11.0;
+
+/// A built panel: its description box and lists.
+fn draw_armor_paint_panel(canvas: &mut Canvas<'_>, page: &HubPage) {
+    if let Some((desc, text)) = page.panel_description() {
+        canvas.block(desc.rect, argb(desc.back), Z + 0.1);
+        canvas.frame(desc.rect, argb(desc.border), Z + 0.2);
+        canvas.text(
+            ShellRect {
+                x: desc.rect.x + 4,
+                y: desc.rect.y + 4,
+                width: desc.rect.width.saturating_sub(8),
+                height: desc.rect.height,
+            },
+            text,
+            AP_TEXT_SIZE,
+            argb(desc.color),
+            0,
+            Z + 0.3,
+        );
+    }
+    for list in page.panel_lists() {
+        let rect = list.row().rect;
+        canvas.block(rect, argb(AP_GROUND), Z + 0.1);
+        canvas.frame(rect, argb(AP_FRAME), Z + 0.3);
+        if let Some((item, _)) = list.selected() {
+            draw_item(canvas, list, item, rect, Z + 0.4);
+        }
+        if list.is_open() {
+            for item in 0..list.shown() {
+                for cell in 0..list.cells() {
+                    let at = list.item_rect(item, cell);
+                    let hot = list.hover() == Some((item, cell));
+                    canvas.block(at, argb(AP_GROUND), LIST_Z);
+                    if list.selected() == Some((item, cell)) {
+                        canvas.block(at, argb(AP_PICKED), LIST_Z + 0.1);
+                    }
+                    canvas.frame(
+                        at,
+                        argb(if hot { AP_HOVER } else { AP_FRAME }),
+                        LIST_Z + 0.2,
+                    );
+                    draw_item(canvas, list, item, at, LIST_Z + 0.3);
+                }
+            }
+        }
+    }
+}
+
+/// An item's swatch or text inside `rect`. A decal's picture is not drawn.
+fn draw_item(
+    canvas: &mut Canvas<'_>,
+    list: &super::construction_armor_paint::DropList,
+    item: usize,
+    rect: ShellRect,
+    z: f32,
+) {
+    let Some(entry) = list.items().get(item) else {
+        return;
+    };
+    if let Some(swatch) = entry.swatch {
+        canvas.block(
+            ShellRect {
+                x: rect.x + 3,
+                y: rect.y + 3,
+                width: rect.width.saturating_sub(6),
+                height: rect.height.saturating_sub(6),
+            },
+            argb(swatch),
+            z,
+        );
+    } else if !entry.label.is_empty() {
+        canvas.text(
+            ShellRect {
+                x: rect.x + 4,
+                y: rect.y + 2,
+                width: rect.width.saturating_sub(8),
+                height: rect.height,
+            },
+            &entry.label,
+            AP_TEXT_SIZE,
+            argb(AP_FRAME),
+            0,
+            z,
         );
     }
 }
