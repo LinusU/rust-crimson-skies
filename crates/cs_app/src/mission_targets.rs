@@ -56,6 +56,7 @@
 //! Nothing here is `verified_original`: the coupling is read from the
 //! installation and its semantics are explicitly open.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::mission_world_actors::{AllegianceBinding, resolve_world_node_allegiance};
@@ -250,6 +251,22 @@ pub struct BoundTarget {
     pub healthy: Option<String>,
     /// The node's child named `destroyed`, when it has one.
     pub destroyed: Option<String>,
+    /// Every stored slot of the target's intact presentation: its own
+    /// subtree, minus the `destroyed` child's subtree and minus the subtree
+    /// of every other bound target nested inside it (the convoy's trucks
+    /// ride inside `susp_bridge`, so the bridge's destruction must not take
+    /// a still-standing truck's nodes with it).
+    ///
+    /// The slot membership is an installation read; that the draw side
+    /// swaps it when the damage authority destroys the target is
+    /// **designed** — the coupling semantics that would drive the swap in
+    /// the original are unmeasured
+    /// ([`UnmeasuredFieldFamily::DamageCoupling`](crate::animation::programs::UnmeasuredFieldFamily::DamageCoupling)).
+    pub intact_slots: Vec<u32>,
+    /// Every stored slot under the authored `destroyed` child (empty when
+    /// the record stores none): the wreck layout the draw side presents
+    /// instead of [`Self::intact_slots`] once the target is destroyed.
+    pub destroyed_slots: Vec<u32>,
     /// The damage coupling the world group states for this node.
     pub coupling: DamageCoupling,
     /// Whether the declaring row carried the `objective` marker.
@@ -764,6 +781,63 @@ fn bind_mission_targets_from(
         target.allegiance = allegiance;
     }
 
+    // The presented slot sets the draw side's layout swap asserts (#2054).
+    // A target's intact set is its own subtree minus the `destroyed`
+    // child's subtree and minus the subtree of every other bound target
+    // nested inside it — the convoy's trucks are `susp_bridge` descendants,
+    // and the bridge's own destruction must not hide a truck the authority
+    // still holds in play. `merge_target` leaves both sets empty and the
+    // sets are only computable once the full target list exists, so they
+    // are filled here, after the merge.
+    let subtrees: Vec<BTreeSet<u32>> = targets
+        .iter()
+        .map(|target| {
+            graph
+                .nodes()
+                .iter()
+                .find(|node| node.index() == target.index)
+                .map(|node| {
+                    graph
+                        .subtree(node.id())
+                        .iter()
+                        .map(|member| member.index())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    let roots: Vec<u32> = targets.iter().map(|target| target.index).collect();
+    for (index, target) in targets.iter_mut().enumerate() {
+        let mut intact = subtrees[index].clone();
+        for (nested, subtree) in subtrees.iter().enumerate() {
+            if nested != index && intact.contains(&roots[nested]) {
+                intact = intact.difference(subtree).copied().collect();
+            }
+        }
+        let mut destroyed = BTreeSet::new();
+        if target.destroyed.is_some()
+            && let Some(node) = graph
+                .nodes()
+                .iter()
+                .find(|node| node.index() == target.index)
+        {
+            for child in node.children() {
+                let Some(child) = graph.node(child) else {
+                    continue;
+                };
+                if Some(child.name()) == target.destroyed.as_deref() {
+                    destroyed = graph
+                        .subtree(child.id())
+                        .iter()
+                        .map(|member| member.index())
+                        .collect();
+                }
+            }
+        }
+        target.intact_slots = intact.difference(&destroyed).copied().collect();
+        target.destroyed_slots = destroyed.into_iter().collect();
+    }
+
     MissionTargetBinding {
         targets,
         declared,
@@ -956,6 +1030,8 @@ fn merge_target(
         target_half_extents_m: [0.0; 3],
         healthy,
         destroyed,
+        intact_slots: Vec::new(),
+        destroyed_slots: Vec::new(),
         coupling,
         objective,
         other_target,

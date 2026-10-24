@@ -53,6 +53,8 @@ fn target_with(allegiance: AllegianceBinding, objective: bool) -> BoundTarget {
         target_half_extents_m: [0.0; 3],
         healthy: None,
         destroyed: None,
+        intact_slots: Vec::new(),
+        destroyed_slots: Vec::new(),
         coupling: DamageCoupling::default(),
         objective,
         other_target: false,

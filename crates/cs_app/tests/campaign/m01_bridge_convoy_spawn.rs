@@ -352,6 +352,8 @@ fn accept_m01_bridge_convoy_spawn_rows_and_damage_node_are_production() {
         target_half_extents_m: [0.0; 3],
         healthy: Some("healthy".to_owned()),
         destroyed: Some("destroyed".to_owned()),
+        intact_slots: Vec::new(),
+        destroyed_slots: Vec::new(),
         coupling: DamageCoupling {
             fields: vec!["HEALTH".to_owned()],
             members: vec!["fueltruck.zrd".to_owned()],

@@ -57,6 +57,8 @@ fn stage_with_target(scratch: &Scratch) -> MissionStage {
             target_half_extents_m: [0.0; 3],
             healthy: None,
             destroyed: None,
+            intact_slots: Vec::new(),
+            destroyed_slots: Vec::new(),
             coupling: DamageCoupling::default(),
             objective: false,
             other_target: false,
