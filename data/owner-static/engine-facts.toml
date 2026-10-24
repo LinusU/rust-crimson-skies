@@ -5961,3 +5961,327 @@ va = 0x6036bc
 kind = "f32"
 value = 5.0
 meaning = "5.0f: the friction factor returns 0.0 above this argument (0x53e335), 1.0 below zero (0x53e354); 255/51 = 5 is the table's last entry"
+
+# FLAK-C3-TRAILS (#1925, finding docs/findings/2026-10-24-flak-c3-trails-object-motion.md): the OBJECT_MOTION
+# parser keys, the launch law of its TRANSLATION_RANGE draw and the per-frame step of the executor 0x4e8fa0.
+# Provenance `static`; nothing here is `verified_original`.
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.gravity_key"
+va = 0x00508664
+bytes = "680c1b6300"
+fact = "OBJECT_MOTION parser pushes the key GRAVITY (string 0x631b0c)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.gravity_flag"
+va = 0x0050868b
+bytes = "834b0c01"
+fact = "a GRAVITY key sets record flag 0x1"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.gravity_local_store"
+va = 0x00508754
+bytes = "894118"
+fact = "GRAVITY LOCAL <real> stores the real at record+0x18 (the token DEFAULT stores the global at 0x9fd164 instead)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_min_key"
+va = 0x005095c6
+bytes = "68a8196300"
+fact = "parser pushes the key TRANSLATION_RANGE_MIN (string 0x6319a8)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_min_flag"
+va = 0x005095de
+bytes = "834e0c08"
+fact = "TRANSLATION_RANGE_MIN sets record flag 0x8, the flag that selects the random launch block"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_min_0"
+va = 0x005095f0
+bytes = "895620"
+fact = "MIN word 0 -> record+0x20"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_min_1"
+va = 0x005097f7
+bytes = "db4014d95e28"
+fact = "MIN word 1 -> record+0x28"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_min_2"
+va = 0x005099f1
+bytes = "db401cd95e30"
+fact = "MIN word 2 -> record+0x30"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_min_3"
+va = 0x00509bf5
+bytes = "db4024d95e38"
+fact = "MIN word 3 -> record+0x38"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_max_key"
+va = 0x00509dd8
+bytes = "686c196300"
+fact = "parser pushes the key TRANSLATION_RANGE_MAX (string 0x63196c)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_max_flag"
+va = 0x00509df0
+bytes = "834e0c10"
+fact = "TRANSLATION_RANGE_MAX sets record flag 0x10"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_max_0"
+va = 0x00509e0f
+bytes = "db400cd95e24"
+fact = "MAX word 0 -> record+0x24"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_max_1"
+va = 0x0050a009
+bytes = "db4014d95e2c"
+fact = "MAX word 1 -> record+0x2c"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_max_2"
+va = 0x0050a203
+bytes = "db401cd95e34"
+fact = "MAX word 2 -> record+0x34"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.range_max_3"
+va = 0x0050a407
+bytes = "db4024d95e3c"
+fact = "MAX word 3 -> record+0x3c"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.run_time_key"
+va = 0x0050ca32
+bytes = "68a4f76200"
+fact = "parser pushes the key RUN_TIME (string 0x62f7a4)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.run_time_flag"
+va = 0x0050ca4e
+bytes = "814b0c00040000"
+fact = "RUN_TIME sets record flag 0x400"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "parse.run_time_store"
+va = 0x0050ca6a
+bytes = "8b400c898348010000"
+fact = "the RUN_TIME real is stored at record+0x148"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.setup_gate"
+va = 0x004e900f
+bytes = "8a412084c00f850b050000"
+fact = "the executor 0x4e8fa0 runs its setup block only while the byte at instance+0x20 is zero; otherwise it jumps to the per-frame step at 0x4e9525"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.draw_heading"
+va = 0x004e90aa
+bytes = "a16c837200d9048520ce9f004099b9c8000000f7f989156c837200d94624d866208d42"
+fact = "flag 0x8 draw 1: r = table[idx] (200 reals at 0x9fce20), idx = (idx + 1) mod 200 (index at 0x72836c); heading = MIN0 + (MAX0 - MIN0) * r"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.heading_to_radians"
+va = 0x004e913e
+bytes = "dc0de8406000"
+fact = "heading (st0) * the double at 0x6040e8 = pi/180: the first word is degrees"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.elevation_scale"
+va = 0x004e914c
+bytes = "d945fcd80dd48d600083"
+fact = "elevation (the second draw) * the float at 0x608dd4 = 1/90 -> e90, stored at record+0x74 (the vertical direction component)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.horizontal_factor"
+va = 0x004e915b
+bytes = "dc1598336000dfe0f6c401750ad905dc326000d8e1eb08d9c0d805dc326000"
+fact = "T = 1 - e90 for e90 >= 0 and 1 + e90 for e90 < 0 (the float at 0x6032dc is 1.0): a linear, not trigonometric, horizontal share"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.direction_store"
+va = 0x004e917a
+bytes = "d945b08d4658d8c9d955fcd95e70d84db8d95678d945"
+fact = "X = out[0] * T -> record+0x70, Z = out[2] * T -> record+0x78, where out is the heading vector of 0x53c6c0"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.speed_store"
+va = 0x004e9194
+bytes = "d95e40d9c1d84d10d95e44d9c0"
+fact = "record+0x40 = X * speed1, record+0x44 = e90 * speed1, then record+0x48 = Z * speed1 (draw 3 is speed1, draw 4 speed2)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.launch_copy"
+va = 0x004e91be
+bytes = "8b4e4089088b56448950048b4e488948088b464c8d566489028b4e50894a048b465489"
+fact = "record+0x40..0x48 (direction * speed1) is copied to the velocity at record+0x58..0x60 and record+0x4c..0x54 (direction * speed2) to the acceleration at record+0x64..0x6c"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "heading.sin_cos_negated"
+va = 0x0053c6e9
+bytes = "d9c0d9fed919d9ffd91aeb1353ddd88b5d0c8b"
+fact = "0x53c6c0(angle, out): out[0] = sin(angle), out[2] = cos(angle) ..."
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "heading.negate"
+va = 0x0053c708
+bytes = "d901c7410400000000d9e0d919d906d9e0d9"
+fact = "... and then both are negated: out[1] = 0, out[0] = -sin, out[2] = -cos, so heading 0 points to -Z"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.gravity_local"
+va = 0x004e9222
+bytes = "d94618d84668d95e68"
+fact = "GRAVITY LOCAL g (without the COMPLEX token) adds g to the acceleration's second component, record+0x68, once at setup"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.step_dt"
+va = 0x004e9525
+bytes = "8b4e0cf6c50474278b550cd94228d89e48010000dfe0f6c4417514d94228d8a648010000d82da8d19f00d95d10"
+fact = "per frame step: with RUN_TIME set, when the event's elapsed time (event+0x28) exceeds RUN_TIME the step is the frame time minus the overshoot; otherwise the frame time at 0x9fd1a8"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.step_displacement"
+va = 0x004e9573
+bytes = "d95dd8d94510d84e60d95de0d94510d84e5cd9"
+fact = "displacement = step * velocity, per component, velocity at record+0x58 (x), +0x5c (y), +0x60 (z)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.translate_call"
+va = 0x004e98d4
+bytes = "8b55e88b423448741c83e804752f8b45e08b4ddc8b55d8508b45e8515250e85985feffeb158b4de08b55dc8b45d8518b4de8525051e8c28efeff83c41085ff0f"
+fact = "the displacement is added to the node by 0x4d27d0 (node kind 1) or 0x4d1e50 (node kind 5)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.translate_add"
+va = 0x004d2849
+bytes = "8d4114d944240cd800d918d9442410d84004d95804d94424"
+fact = "0x4d27d0 adds the three components to the node's own translation fields (node-data+0x14..), not rotated by the node's orientation"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.velocity_integrate"
+va = 0x004e9bc1
+bytes = "d945108b7de8d84e64d84658d95e58d94510d84e68d8465cd95e5cd94510d84e6cd84660d95e60"
+fact = "velocity += step * acceleration, per component, after the displacement (semi-implicit order: displacement first)"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "exec.run_time_end"
+va = 0x004e9df1
+bytes = "f6c40474188b450cd94028d89e48010000dfe0f6c401b80200000074"
+fact = "with RUN_TIME set the executor reports done (2) once event+0x28 >= RUN_TIME"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "const.pi_over_180"
+va = 0x006040e8
+bytes = "839952a246df913f"
+fact = "f64 pi/180"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "const.one_over_90"
+va = 0x00608dd4
+bytes = "610b363c"
+fact = "f32 1/90"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "const.one"
+va = 0x006032dc
+bytes = "0000803f"
+fact = "f32 1.0"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "table.fill"
+va = 0x004ee410
+bytes = "c7055883720000010038"
+fact = "the 200-entry table at 0x9fce20 is filled from rand() scaled by the float stored at 0x728358 (0x38000100 is 1/32767 as an f32) so every draw is in [0, 1]"
+
+[[object_motion_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "table.fill_loop"
+va = 0x004ee41f
+bytes = "ffd38944240cdb44240c83c60481fe40d19f00d80d58837200d95efc7c"
+fact = "the fill loop: rand(), int->float, * scale, store, until 0x9fd140 (200 entries)"
