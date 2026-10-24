@@ -1559,6 +1559,25 @@ pub struct PendingDamageEvents {
     batches: Vec<DamageTickBatch>,
 }
 
+/// Resource: the hits [`drive_damage_schedule`] accepted, kept for a consumer
+/// that counts raw hit amounts rather than resolved pool changes (the
+/// animation `HEALTH` pools, `crate::mission_animation_health`).
+///
+/// Opt-in: the schedule appends only when the world holds the resource, so a
+/// world with no consumer never accumulates. The consumer drains it with
+/// [`Self::take`].
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct AcceptedHitTap {
+    hits: Vec<HitEvent>,
+}
+
+impl AcceptedHitTap {
+    /// Takes every hit accepted since the last call, oldest first.
+    pub fn take(&mut self) -> Vec<HitEvent> {
+        std::mem::take(&mut self.hits)
+    }
+}
+
 /// One resolution's input and output, published together.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DamageTickBatch {
@@ -2017,6 +2036,11 @@ pub fn drive_damage_schedule(world: &mut World) {
         }
     }
     world.insert_resource(pending);
+
+    // --- the accepted-hit tap: the raw hits, for a consumer that opted in ----
+    if let Some(mut tap) = world.get_resource_mut::<AcceptedHitTap>() {
+        tap.hits.extend(hits.iter().cloned());
+    }
 
     // --- the kill score: this tick's accepted batch, to the session's ledger --
     //

@@ -167,8 +167,11 @@ use super::landings::{LandingLedger, LandingTick, MissionLandings, step_landings
 use super::terminal::{MissionTerminal, MissionTerminalSource};
 use crate::animation::mission::{AnimationNameIndex, MissionAnimationBinding, StartupAnimation};
 use crate::audio::AudioSession;
+use crate::damage::AcceptedHitTap;
 use crate::environment::EnvironmentSession;
+use crate::mission_actors::MissionGroundTargetReport;
 use crate::mission_ai::WakeEnemiesLedger;
+use crate::mission_animation_health::AnimationHealthLedger;
 use crate::mission_animations::{
     ArmedNode, CallAnimationLedger, MissionAnimationPlayer, MissionAnimationStepRefusal,
     PlayerError, TickReport, WakeAnimationLedger, armed_nodes_from_report, step_mission_animations,
@@ -763,6 +766,10 @@ pub struct MissionHost {
     /// Cleared on restart beside `wake` — a fresh generation's calls are its
     /// own.
     calls: CallAnimationLedger,
+    /// The animation `HEALTH` pools of the bound ground targets
+    /// (M01-HYDROGEN-FIRE-HOOK, #2088): armed on the first step that sees the
+    /// targets, cleared on restart beside `calls`.
+    health: Option<AnimationHealthLedger>,
     /// The `WAKEUP_ENEMIES` consumer's ledger (M01-PLAY-AI-WAKE, #1487):
     /// which directive keys were applied, which sleeping scripted aircraft
     /// they released, and every name that woke nothing and why.
@@ -862,6 +869,7 @@ impl MissionHost {
             names,
             wake: WakeAnimationLedger::default(),
             calls: CallAnimationLedger::default(),
+            health: None,
             enemies: WakeEnemiesLedger::default(),
             turrets: TurretWakeLedger::new(&seed.turrets),
             target_flags: TargetFlagLedger::default(),
@@ -990,6 +998,10 @@ impl MissionHost {
             });
         self.wake = WakeAnimationLedger::default();
         self.calls = CallAnimationLedger::default();
+        self.health = None;
+        if let Some(mut tap) = world.get_resource_mut::<AcceptedHitTap>() {
+            drop(tap.take());
+        }
         self.enemies = WakeEnemiesLedger::default();
         self.turrets = TurretWakeLedger::new(&seed.turrets);
         self.target_flags = TargetFlagLedger::default();
@@ -1084,6 +1096,36 @@ impl MissionHost {
             world_despawned,
             world_respawned,
         })
+    }
+
+    /// Stage 3c: counts the accepted hits against the animation `HEALTH`
+    /// pools of the bound ground targets and starts the records whose pool
+    /// reached zero.
+    ///
+    /// The pools are armed on the first step the world holds bound ground
+    /// targets, and the hit tap is installed only then: a mission with no
+    /// target never accumulates hits here.
+    fn consume_animation_health(&mut self, world: &mut World, tick: Tick) {
+        if self.health.is_none() {
+            let Some(report) = world.get_resource::<MissionGroundTargetReport>() else {
+                return;
+            };
+            if report.targets.is_empty() {
+                return;
+            }
+            self.health = Some(AnimationHealthLedger::arm(
+                &self.names,
+                report.targets.iter().map(|target| target.node.as_str()),
+            ));
+            world.init_resource::<AcceptedHitTap>();
+        }
+        let Some(ledger) = &mut self.health else {
+            return;
+        };
+        let hits = world.resource_mut::<AcceptedHitTap>().take();
+        if !hits.is_empty() {
+            ledger.consume(&hits, &self.names, &mut self.animation, tick);
+        }
     }
 
     /// Advances every record this host owns for one committed tick, in the
@@ -1185,6 +1227,13 @@ impl MissionHost {
         //     report `RUNNING` in.
         self.calls
             .consume(&composed.records, &self.names, &mut self.animation, tick);
+
+        // 3c. Animation health: the hits the damage schedule accepted count
+        //     against the health pool of the animation record of the target
+        //     they landed on, and a pool at or below zero starts the record
+        //     (`mission_animation_health`). Started inside the animation
+        //     stage, before the stage-4 observation, like a call.
+        self.consume_animation_health(world, tick);
 
         // 4. World observation: the world's own report for this step —
         //    consumed, so it describes exactly this tick — merged with what
@@ -1550,6 +1599,13 @@ impl MissionHost {
     #[must_use]
     pub const fn target_flags(&self) -> &TargetFlagLedger {
         &self.target_flags
+    }
+
+    /// The animation `HEALTH` pools of the bound ground targets
+    /// (M01-HYDROGEN-FIRE-HOOK, #2088); `None` until a step saw the targets.
+    #[must_use]
+    pub const fn animation_health(&self) -> Option<&AnimationHealthLedger> {
+        self.health.as_ref()
     }
 
     /// The `CALL_ANIMATION` consumer's ledger: every spelled call target a
