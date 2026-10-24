@@ -159,7 +159,7 @@ pub fn smoke_convoy_kill(
     config: Res<SmokeConfig>,
     mut data: ResMut<SmokeData>,
     mut pending: ResMut<PendingPlacement>,
-    mut actions: ResMut<MissionCockpitActions>,
+    actions: Option<ResMut<MissionCockpitActions>>,
     shots: Res<SmokeShots>,
     frames: Res<FlightCheckFrames>,
     mut commands: Commands,
@@ -227,13 +227,17 @@ pub fn smoke_convoy_kill(
         })
         .map(|(node, _)| node.clone())
         .collect();
+    let mut queue = MissionCockpitActions::default();
     let result = step(
         &mut metrics,
         &mut pending,
-        &mut actions,
+        &mut queue,
         frame,
         &destroyed_now,
     );
+    if let Some(mut actions) = actions {
+        actions.actions.append(&mut queue.actions);
+    }
     metrics.in_play_after = TRUCKS
         .iter()
         .filter(|node| metrics.actors.iter().any(|(n, _)| n == *node))
