@@ -113,6 +113,7 @@ mod pane_transform;
 mod paths;
 mod pilot_page;
 pub mod pilot_plane;
+pub mod pilot_progress;
 mod pilot_view;
 pub mod plane_name;
 mod plane_name_view;
