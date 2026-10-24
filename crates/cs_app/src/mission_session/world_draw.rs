@@ -50,13 +50,18 @@ use bevy::asset::{AssetApp, Assets, Handle};
 use bevy::image::Image;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::{
-    Added, App, Camera3d, ChildOf, Color, Commands, Component, Entity, GlobalTransform, Local,
-    Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res, Resource, StandardMaterial, Transform,
-    Update, Vec3, Visibility, With, Without,
+    Added, App, Camera3d, ChildOf, Color, Commands, Component, Entity, GlobalTransform,
+    IntoScheduleConfigs, Local, Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res, ResMut, Resource,
+    StandardMaterial, Transform, Update, Vec3, Visibility, With, Without,
 };
 use cs_content::world::{WorldCollisionRole, WorldDefinition};
 use cs_formats::gamez::GameZMaterials;
+use cs_sim::damage::{DamageNodeKey, PartState};
 use cs_types::content::{ContentId, Resolved};
+
+use crate::mission_actors::MissionGroundTarget;
+use crate::scene::SceneGenerations;
+use crate::weapons::SessionDamageResolver;
 
 use crate::playtest::scene::PlaytestSea;
 use crate::playtest_retail::{
@@ -967,7 +972,14 @@ fn attach_world_scenery(
             continue;
         };
         let node = commands
-            .spawn((placement.global, Visibility::Inherited, ChildOf(root)))
+            .spawn((
+                placement.global,
+                Visibility::Inherited,
+                ChildOf(root),
+                WorldSceneryNode {
+                    node_slot: placement.node_slot,
+                },
+            ))
             .id();
         for part in pieces {
             let child = commands
@@ -1023,6 +1035,158 @@ pub struct WorldSceneryCollider {
     pub node_slot: u32,
 }
 
+/// The drawn entity of one scenery placement
+/// ([`crate::playtest_retail::WorldSceneryPlacement`]): its stored node slot
+/// is what [`apply_ground_target_layout`] toggles `Visibility` on (#2054).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldSceneryNode {
+    /// The stored slot of the node it belongs to.
+    pub node_slot: u32,
+}
+
+/// What [`apply_ground_target_layout`] presented for one bound ground target
+/// on its last run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PresentedLayout {
+    /// The intact presentation — the `healthy` side shown, the `destroyed`
+    /// one hidden: the authored layout while the damage authority keeps the
+    /// target in play.
+    #[default]
+    Intact,
+    /// The authored `destroyed` layout — drawn for a destroyed target while
+    /// its intact presentation is hidden.
+    Destroyed,
+    /// Nothing of the target is drawn: the damage authority destroyed it and
+    /// the record stores no `destroyed` child, so the pass asserts only that
+    /// its intact layout stops drawing. What the original presents for such
+    /// a target (`fueltruck.zrd`'s `bridge_destroy01` fireball for
+    /// `bridge_truck01`) is unmeasured, and no debris is invented —
+    /// `crate::debris` binds only authored debris, which no ground target
+    /// carries.
+    Removed,
+}
+
+/// The drawn-node state one ground target's row carries in a
+/// [`GroundTargetLayoutReport`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroundTargetLayoutRow {
+    /// The container record's stored display name.
+    pub node: String,
+    /// What the pass presented for it.
+    pub presented: PresentedLayout,
+    /// Drawn nodes of the intact presentation the pass keeps visible.
+    pub intact_shown: usize,
+    /// Drawn nodes of the intact presentation the pass hides.
+    pub intact_hidden: usize,
+    /// Drawn nodes of the `destroyed` layout the pass keeps visible.
+    pub destroyed_shown: usize,
+    /// Drawn nodes of the `destroyed` layout the pass hides.
+    pub destroyed_hidden: usize,
+}
+
+/// Resource: the last [`apply_ground_target_layout`] run's record — every
+/// live target's presented state and the drawn-node counts it wrote. The
+/// convoy-kill smoke samples the entities' own effective visibility rather
+/// than trusting this record; it exists for the run's diagnostics and for
+/// headless tests.
+#[derive(Resource, Default)]
+pub struct GroundTargetLayoutReport {
+    /// Every live target's row, keyed by node name.
+    pub rows: BTreeMap<String, GroundTargetLayoutRow>,
+}
+
+/// Presents a bound ground target's authored `destroyed` layout once the
+/// damage authority destroys it, hiding the intact one (#2054).
+///
+/// The pass is state-driven and convergent, the same shape the damage
+/// schedule's own consumers take: every run it derives the whole drawn state
+/// of each live [`MissionGroundTarget`]'s presented slots from
+/// [`SessionDamageResolver::part_state`] — `Destroyed` hides the intact
+/// slots and shows the `destroyed` ones, and every other state asserts the
+/// authored initial layout (intact shown, `destroyed` hidden) — then writes
+/// only what differs, so a stale generation asserts nothing and a restart's
+/// fresh, intact targets restore the intact presentation.
+///
+/// What it asserts is **designed**, never `verified_original`: the
+/// `healthy`/`destroyed` children and the world's damage couplings are
+/// measured, but the coupling semantics that would swap them are not
+/// ([`crate::animation::programs::UnmeasuredFieldFamily::DamageCoupling`]),
+/// and no original animation timing is claimed. A destroyed target whose
+/// record stores no `destroyed` child (`bridge_truck01`, `susp_bridge`,
+/// `craterlake`) is simply left undrawn — the original's wreck presentation
+/// for it is the unmeasured destroy animation itself
+/// ([`PresentedLayout::Removed`]), not a wreck this stage invents.
+pub fn apply_ground_target_layout(
+    resolver: Option<Res<SessionDamageResolver>>,
+    generations: Option<Res<SceneGenerations>>,
+    targets: Query<&MissionGroundTarget>,
+    mut nodes: Query<(&WorldSceneryNode, &mut Visibility)>,
+    mut report: ResMut<GroundTargetLayoutReport>,
+) {
+    let mut desired: BTreeMap<u32, (usize, bool, bool)> = BTreeMap::new();
+    let mut rows: Vec<GroundTargetLayoutRow> = Vec::new();
+    for target in &targets {
+        if generations
+            .as_deref()
+            .is_some_and(|generations| target.generation != generations.latest())
+        {
+            continue;
+        }
+        let destroyed = resolver
+            .as_deref()
+            .and_then(|resolver| {
+                DamageNodeKey::new(&target.node)
+                    .ok()
+                    .and_then(|key| resolver.resolver().part_state(&target.damage_actor, &key))
+            })
+            .is_some_and(|state| state == PartState::Destroyed);
+        let row = rows.len();
+        for slot in &target.intact_slots {
+            desired.insert(*slot, (row, false, !destroyed));
+        }
+        for slot in &target.destroyed_slots {
+            desired.insert(*slot, (row, true, destroyed));
+        }
+        rows.push(GroundTargetLayoutRow {
+            node: target.node.clone(),
+            presented: if destroyed {
+                if target.destroyed_slots.is_empty() {
+                    PresentedLayout::Removed
+                } else {
+                    PresentedLayout::Destroyed
+                }
+            } else {
+                PresentedLayout::Intact
+            },
+            ..GroundTargetLayoutRow::default()
+        });
+    }
+    for (node, mut visibility) in &mut nodes {
+        let Some(&(row, destroyed_set, shown)) = desired.get(&node.node_slot) else {
+            continue;
+        };
+        let want = if shown {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != want {
+            *visibility = want;
+        }
+        let row = &mut rows[row];
+        match (destroyed_set, shown) {
+            (false, true) => row.intact_shown += 1,
+            (false, false) => row.intact_hidden += 1,
+            (true, true) => row.destroyed_shown += 1,
+            (true, false) => row.destroyed_hidden += 1,
+        }
+    }
+    report.rows = rows
+        .into_iter()
+        .map(|row| (row.node.clone(), row))
+        .collect();
+}
+
 /// Marks a drawn child whose material binds the world's water texture
 /// ([`WATER_TEXTURE_NAME`] or [`C3_WATER_TEXTURE_NAME`]): the world's own sea
 /// tiles. The owner-command smoke hides exactly these to measure how much of
@@ -1038,12 +1202,16 @@ pub struct MissionWorldDrawPlugin;
 
 impl Plugin for MissionWorldDrawPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<GroundTargetLayoutReport>().add_systems(
             Update,
             (
                 attach_world_parts,
                 attach_world_scenery,
                 anchor_horizon_to_camera,
+                // Ordered after the spawn so a run where the scenery attaches
+                // this frame already asserts the presented layout: no frame
+                // renders a `destroyed` subtree that belongs hidden.
+                apply_ground_target_layout.after(attach_world_scenery),
             ),
         );
     }
