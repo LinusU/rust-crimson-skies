@@ -368,6 +368,8 @@ fn box_target(node: &str, index: u32, point: [f64; 3], half: [f64; 3]) -> BoundT
         target_half_extents_m: half,
         healthy: None,
         destroyed: None,
+        intact_slots: Vec::new(),
+        destroyed_slots: Vec::new(),
         coupling: DamageCoupling::default(),
         objective: false,
         other_target: false,
