@@ -632,15 +632,33 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
     // takes this process over (Rally #1831). A start-flow smoke leg keeps its
     // own smoke request on the resumed run (#1832).
     match left {
-        Some(end) => crate::ui::front_end::return_to_front_end(
-            &request.cs_path,
-            end,
-            request
-                .smoke_start_flow
-                .then_some(request.smoke.as_ref())
-                .flatten(),
-        )
-        .map_err(|error| MissionLaunchError::ReturnToFrontEnd(error.to_string())),
+        Some(end) => {
+            // The process image carries nothing across, so the pilot's record
+            // goes through the profile store before the front end takes over
+            // (Rally #1973). A write that fails is reported, not hidden, and
+            // the player still gets back to the cabin.
+            if request.from_start_flow
+                && let Err(error) = crate::ui::front_end::pilot_progress::record_mission_end(
+                    request
+                        .smoke
+                        .as_ref()
+                        .map(|smoke| smoke.capture_dir.as_path()),
+                    &request.mission,
+                    end,
+                )
+            {
+                eprintln!("cs: the mission is not on the pilot's record: {error}");
+            }
+            crate::ui::front_end::return_to_front_end(
+                &request.cs_path,
+                end,
+                request
+                    .smoke_start_flow
+                    .then_some(request.smoke.as_ref())
+                    .flatten(),
+            )
+            .map_err(|error| MissionLaunchError::ReturnToFrontEnd(error.to_string()))
+        }
         None => Ok(()),
     }
 }

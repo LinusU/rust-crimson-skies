@@ -4301,11 +4301,30 @@ fn evaluate(
                 run.unhandled
             ));
         }
+        // The pilot crosses the chain's process images through the profile
+        // store (#1973): the first leg created one, and the leg the mission
+        // returned to finds the same pilot with the attempt on its record.
+        match &facts.pilot {
+            None => failures.push("the leg has no selected pilot".to_owned()),
+            Some(pilot) if resumed && (pilot.attempts == 0 || pilot.last.is_none()) => {
+                failures.push(format!(
+                    "the resumed leg's pilot {:?} has no mission attempt on record",
+                    pilot.name
+                ));
+            }
+            Some(_) => {}
+        }
         let mut audio_lines = Vec::new();
         if let Some(note) = &run.audio_note {
             audio_lines.push(format!("no audio output: {note}"));
         }
         audio_lines.push(format!("intro outcomes {:?}", facts.intro));
+        if let Some(pilot) = &facts.pilot {
+            audio_lines.push(format!(
+                "pilot {:?}: completed {} attempts {} last {:?}",
+                pilot.name, pilot.completed, pilot.attempts, pilot.last
+            ));
+        }
         return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
     if smoke.scene == SmokeScene::Flow {
@@ -4602,6 +4621,8 @@ struct FlowFacts {
     audio_accepts: usize,
     /// The committed values (`Debug`), when the run has an Audio page.
     audio_committed: Option<String>,
+    /// The selected pilot's record as the profile store holds it (#1973).
+    pilot: Option<super::pilot_progress::PilotProgress>,
 }
 
 /// Collects the [`FlowFacts`] of the run.
@@ -4631,6 +4652,9 @@ fn flow_facts(state: &ShellResource) -> FlowFacts {
         audio_committed: state
             .audio_page()
             .map(|page| format!("{:?}", page.committed())),
+        pilot: state
+            .pilot_session()
+            .and_then(super::pilot_progress::progress_of),
     }
 }
 
@@ -5001,7 +5025,9 @@ pub const SMOKE_PROFILE_SUBDIR: &str = "profiles";
 /// `~/.crimson-skies`.
 fn profile_base(request: &FrontEndRequest) -> Option<PathBuf> {
     match &request.smoke {
-        Some(smoke) => Some(smoke.capture_dir.join(SMOKE_PROFILE_SUBDIR)),
+        Some(smoke) => Some(super::pilot_progress::chain_profile_base(
+            &smoke.capture_dir,
+        )),
         None => std::env::var_os(PROFILE_DIR_ENV)
             .map(PathBuf::from)
             .or_else(|| {
@@ -5161,25 +5187,12 @@ fn pilot_setup(request: &FrontEndRequest, layout: &super::OriginalLayout) -> Opt
             return None;
         }
     };
-    let catalog = cs_content::save::settings::SettingCatalog::empty();
-    let opened = match &request.smoke {
-        Some(smoke) => {
-            ProfileSession::open_sandbox(&smoke.capture_dir.join(SMOKE_PROFILE_SUBDIR), &catalog)
-        }
-        None => {
-            let base = std::env::var_os(PROFILE_DIR_ENV)
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".crimson-skies"))
-                })?;
-            ProfileSession::open(
-                &base,
-                crate::profile::SessionOrigin::Interactive,
-                cs_types::profile::ProfileKind::Production,
-                &catalog,
-            )
-        }
-    };
+    let opened = super::pilot_progress::open_session(
+        request
+            .smoke
+            .as_ref()
+            .map(|smoke| smoke.capture_dir.as_path()),
+    );
     match opened {
         Ok(session) => Some(PilotSetup { page, session }),
         Err(error) => {

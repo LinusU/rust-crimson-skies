@@ -61,9 +61,9 @@ use super::{
 use super::{FrontEndError, FrontEndRequest, SmokeScene};
 use crate::playtest::SmokeRequest;
 
-/// The mission a new campaign starts on: the first mission, since this flow
-/// keeps no per-pilot progress yet (the original selects "the next one" from
-/// the pilot's completed count; persistence is #1835).
+/// The mission a new campaign starts on: the first mission. The pilot's
+/// completed count is kept ([`super::pilot_progress`], #1973) but the flow does
+/// not yet choose "the next one" from it, as the original does.
 pub const FIRST_MISSION: &str = "M01";
 
 /// How a flight the start flow handed over to ended, when the player chose to
@@ -400,9 +400,12 @@ impl StartFlow {
     /// so the world the flight acquired is released and the machine stands on
     /// the cabin. The mission is the one [`FIRST_MISSION`] names.
     ///
-    /// The pilot-selection page has not landed (#1835), so the walk takes the
-    /// table's `ProfileSelect` rows itself; the requests they ask for
-    /// (`OpenProfile`, `ApplyOutcome` …) are recorded in [`Self::requests`].
+    /// The walk takes the table's `ProfileSelect` rows itself; the requests
+    /// they ask for (`OpenProfile`, `ApplyOutcome` …) are recorded in
+    /// [`Self::requests`] and **not** performed here. The pilot and the
+    /// mission record cross the process images through the profile store
+    /// instead: the mission leg writes them ([`super::pilot_progress`]) and
+    /// the window's profile session reads them back (#1973).
     ///
     /// # Errors
     ///
