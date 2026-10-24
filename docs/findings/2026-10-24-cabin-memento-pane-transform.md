@@ -68,7 +68,7 @@ the 3 degrees is a real turn, not a no-op.
   matches the decoded 72.4x92; the position does not: the decoded top left is 11 px left and 5 px above the
   patch's. Not explained: the measurement is of a screenshot not on the agent machines
   (`private/ref-drydock/cabin/original.png`); the layout row's `X,Y` might be offset by the parent or by `relative`
-  (`AI` is set from `location` only when `!relative`, `0x…` script `CTL.SCRIPT` 10009); the half-pixel bias below
+  (`CTL.SCRIPT` sets `AI` from `location` only when `!relative`); the half-pixel bias below
   is 0.5 px, far too small. Affected content: where #2040 puts the picture. #2040 should compare the decoded box
   with the owner capture before choosing; this task does not settle it.
 * **Layout scale override.** `gui_init` replaces `GK`/`HK` when `$$PK$$ || $$QK$$` from the layout callback are set;
