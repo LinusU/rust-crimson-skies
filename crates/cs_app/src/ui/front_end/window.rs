@@ -3750,8 +3750,9 @@ fn hangar_script() -> Vec<(u32, Step)> {
 /// Campaign, a typed new pilot and Continue (the intro movie starts), three
 /// frames of the movie, Esc to skip it, the cabin, a press on Previous
 /// Missions (the list screen), its Return to Cabin, the Plane Name dialog and the
-/// construction hub its OK opens, and Return to Main Menu. Needs
-/// `--smoke-seconds 21` or more.
+/// construction hub its OK opens, and Return to Main Menu. Then Campaign and
+/// Continue again (the pilot is listed, the intro plays and is skipped), the cabin and Next Mission, whose hand-over ends the run.
+/// Needs `--smoke-seconds 26` or more.
 #[inline(always)]
 fn flow_script() -> Vec<(u32, Step)> {
     let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
@@ -3812,6 +3813,19 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(19.0), Step::Mouse(true)),
         (at(19.2), Step::Mouse(false)),
         (at(19.8), Step::Shot("flow-mainmenu-again")),
+        (at(20.0), Step::HoverButton("MM_B_CAMPAIGN")),
+        (at(20.2), Step::Mouse(true)),
+        (at(20.4), Step::Mouse(false)),
+        (at(21.0), Step::Shot("flow-campaign-again")),
+        (at(21.2), Step::HoverButton("CM_B_START")),
+        (at(21.4), Step::Mouse(true)),
+        (at(21.6), Step::Mouse(false)),
+        (at(23.0), Step::Key(KeyCode::Escape, true)),
+        (at(23.1), Step::Key(KeyCode::Escape, false)),
+        (at(23.8), Step::Shot("flow-cabin-resumed")),
+        (at(24.0), Step::HoverButton("PC_B_NEWMISSION")),
+        (at(24.2), Step::Mouse(true)),
+        (at(24.4), Step::Mouse(false)),
     ]
 }
 
@@ -4090,7 +4104,7 @@ fn step_smoke(world: &mut World, state: &ShellResource, smoke: &mut ShellSmoke) 
     // still in flight lands in the report as missing, named by its label.
     let handed_over = matches!(
         smoke.scene,
-        SmokeScene::StartFlow | SmokeScene::StartFlowResumed
+        SmokeScene::Flow | SmokeScene::StartFlow | SmokeScene::StartFlowResumed
     ) && state
         .flow
         .as_ref()
@@ -4292,21 +4306,30 @@ fn evaluate(
                 "PlaneConstruction",
                 "PassengerCabin",
                 "MainMenu",
+                "Campaign",
+                "PassengerCabin",
             ]
         {
             failures.push(format!(
                 "the flow visited {:?}, expected MainMenu → Campaign → PassengerCabin → \
                  ScrapBook_TOC → PassengerCabin → PlaneName → PlaneConstruction → \
-                 PassengerCabin → MainMenu",
+                 PassengerCabin → MainMenu → Campaign → PassengerCabin",
                 run.visited
             ));
         }
-        if facts.intro.len() != 1 {
+        if facts.intro.len() != 2 {
             failures.push(format!(
-                "the intro ended {} times ({:?}); expected once, by the skip key",
+                "the intro ended {} times ({:?}); expected twice, once per Continue, each by \
+                 the skip key",
                 facts.intro.len(),
                 facts.intro
             ));
+        }
+        match facts.handover.as_deref() {
+            Some(mission) if mission == FIRST_MISSION => {}
+            other => failures.push(format!(
+                "Next Mission handed over to {other:?}; expected Some(\"{FIRST_MISSION}\")"
+            )),
         }
         // The hub opens on the Airframe tab, the script presses Guns, Ready and
         // Purchase Now: all their panels are built (#2043, #2045, #2053), so no

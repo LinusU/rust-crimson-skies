@@ -2,12 +2,14 @@
 //! the whole start flow, framebuffers of the intro movie and the cabin.
 //!
 //! * The synthetic test proves the scene selector (runs in CI).
-//! * The windowed test drives `cs --front-end --smoke-seconds 21` on the flow
+//! * The windowed test drives `cs --front-end --smoke-seconds 26` on the flow
 //!   scene on a GPU: main menu, Campaign, a typed new pilot, the intro movie
 //!   (three frames, then skipped), the cabin, the Previous Missions screen
 //!   (#1956), its Return to Cabin, the Plane Name dialog (#1958) with a typed name and
 //!   its OK, the construction hub (#2042) with its Guns tab, Ready's purchase panel
-//!   (#2053) and Purchase Now, and Return to Main Menu. It is `#[ignore]`d
+//!   (#2053) and Purchase Now, Return to Main Menu, Campaign and Continue again
+//!   (the intro is skipped a second time) and Next Mission (#1965), whose
+//!   hand-over to the first mission ends the run. It is `#[ignore]`d
 //!   because CI has neither the installation nor a GPU. Nothing here is
 //!   `human_play` or `verified_original`.
 
@@ -49,7 +51,7 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
             .map_or_else(|_| PathBuf::from(env!("CARGO_BIN_EXE_cs")), PathBuf::from),
     )
     .args(["--cs-path", &game_dir, "--front-end"])
-    .args(["--smoke-seconds", "21", "--capture-dir"])
+    .args(["--smoke-seconds", "26", "--capture-dir"])
     .arg(&dir)
     .env("CS_CAPABILITIES", capabilities)
     .env(cs_app::ui::front_end::SMOKE_SCENE_ENV, "flow")
@@ -63,7 +65,7 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "the run passed its own checks: {report}\nstderr: {stderr}"
     );
     assert!(
-        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"PassengerCabin\",\"ScrapBook_TOC\",\"PassengerCabin\",\"PlaneName\",\"PlaneConstruction\",\"PassengerCabin\",\"MainMenu\"]"),
+        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"PassengerCabin\",\"ScrapBook_TOC\",\"PassengerCabin\",\"PlaneName\",\"PlaneConstruction\",\"PassengerCabin\",\"MainMenu\",\"Campaign\",\"PassengerCabin\"]"),
         "{report}"
     );
     for label in [
@@ -84,6 +86,8 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "flow-plane-construction-purchased",
         "flow-cabin-again",
         "flow-mainmenu-again",
+        "flow-campaign-again",
+        "flow-cabin-resumed",
     ] {
         assert!(
             dir.join(format!("{label}.png")).is_file(),
