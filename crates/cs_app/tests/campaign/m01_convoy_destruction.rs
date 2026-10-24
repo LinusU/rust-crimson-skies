@@ -315,13 +315,11 @@ fn accept_m01_convoy_destruction_ground_box_overlaps_are_the_recorded_ones() {
     pairs.sort_unstable();
     assert_eq!(
         pairs,
-        [
-            "bridge_truck01 x susp_bridge",
-            "rock_zeppelin x pzhookpoint",
-            "t_truck01 x susp_bridge",
-            "t_truck02 x susp_bridge",
-            "t_truck03 x susp_bridge",
-        ],
+        // None: #2061 gave `susp_bridge` the designed box (it encloses the
+        // trucks), and #2096 seats `rock_zeppelin` and the hook on
+        // `piratezep`'s pose instead of at the container origin, which is
+        // where it used to overlap the `pzhookpoint` part box.
+        Vec::<&str>::new(),
         "the recorded overlaps, and no others: {overlaps:?}"
     );
     teardown(&mut app);
