@@ -2641,7 +2641,7 @@ fn memento_script() -> Vec<(u32, Step)> {
 /// Campaign, a typed new pilot and Continue (the intro movie starts), three
 /// frames of the movie, Esc to skip it, the cabin, a press on Previous
 /// Missions (the list screen), its Return to Cabin, and Return to Main Menu. Needs
-/// `--smoke-seconds 16` or more.
+/// `--smoke-seconds 19` or more.
 #[inline(always)]
 fn flow_script() -> Vec<(u32, Step)> {
     let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
@@ -2670,10 +2670,20 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(12.5), Step::Mouse(true)),
         (at(12.6), Step::Mouse(false)),
         (at(13.0), Step::Shot("flow-cabin-after")),
-        (at(13.2), Step::HoverButton("PC_B_RETURNMM")),
+        (at(13.2), Step::HoverButton("PC_B_PLANEX")),
         (at(13.4), Step::Mouse(true)),
-        (at(13.6), Step::Mouse(false)),
-        (at(14.2), Step::Shot("flow-mainmenu-again")),
+        (at(13.5), Step::Mouse(false)),
+        (at(14.0), Step::Shot("flow-plane-name")),
+        (at(14.1), Step::Type("Skylark")),
+        (at(14.3), Step::Shot("flow-plane-name-typed")),
+        (at(14.5), Step::HoverButton("PN_B_CANCEL")),
+        (at(14.6), Step::Mouse(true)),
+        (at(14.7), Step::Mouse(false)),
+        (at(15.1), Step::Shot("flow-cabin-again")),
+        (at(15.3), Step::HoverButton("PC_B_RETURNMM")),
+        (at(15.5), Step::Mouse(true)),
+        (at(15.7), Step::Mouse(false)),
+        (at(16.3), Step::Shot("flow-mainmenu-again")),
     ]
 }
 
@@ -3129,12 +3139,14 @@ fn evaluate(
                 "PassengerCabin",
                 "ScrapBook_TOC",
                 "PassengerCabin",
+                "PlaneName",
+                "PassengerCabin",
                 "MainMenu",
             ]
         {
             failures.push(format!(
                 "the flow visited {:?}, expected MainMenu → Campaign → PassengerCabin → \
-                 ScrapBook_TOC → PassengerCabin → MainMenu",
+                 ScrapBook_TOC → PassengerCabin → PlaneName → PassengerCabin → MainMenu",
                 run.visited
             ));
         }

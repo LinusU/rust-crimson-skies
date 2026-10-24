@@ -2,10 +2,11 @@
 //! the whole start flow, framebuffers of the intro movie and the cabin.
 //!
 //! * The synthetic test proves the scene selector (runs in CI).
-//! * The windowed test drives `cs --front-end --smoke-seconds 16` on the flow
+//! * The windowed test drives `cs --front-end --smoke-seconds 19` on the flow
 //!   scene on a GPU: main menu, Campaign, a typed new pilot, the intro movie
 //!   (three frames, then skipped), the cabin, the Previous Missions screen
-//!   (#1956), its Return to Cabin, and Return to Main Menu. It is `#[ignore]`d
+//!   (#1956), its Return to Cabin, the Plane Name dialog (#1958) with a typed name and
+//!   its Cancel, and Return to Main Menu. It is `#[ignore]`d
 //!   because CI has neither the installation nor a GPU. Nothing here is
 //!   `human_play` or `verified_original`.
 
@@ -47,7 +48,7 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
             .map_or_else(|_| PathBuf::from(env!("CARGO_BIN_EXE_cs")), PathBuf::from),
     )
     .args(["--cs-path", &game_dir, "--front-end"])
-    .args(["--smoke-seconds", "16", "--capture-dir"])
+    .args(["--smoke-seconds", "19", "--capture-dir"])
     .arg(&dir)
     .env("CS_CAPABILITIES", capabilities)
     .env(cs_app::ui::front_end::SMOKE_SCENE_ENV, "flow")
@@ -61,7 +62,7 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "the run passed its own checks: {report}\nstderr: {stderr}"
     );
     assert!(
-        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"PassengerCabin\",\"ScrapBook_TOC\",\"PassengerCabin\",\"MainMenu\"]"),
+        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"PassengerCabin\",\"ScrapBook_TOC\",\"PassengerCabin\",\"PlaneName\",\"PassengerCabin\",\"MainMenu\"]"),
         "{report}"
     );
     for label in [
@@ -74,6 +75,9 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "flow-cabin",
         "flow-previous-missions",
         "flow-cabin-after",
+        "flow-plane-name",
+        "flow-plane-name-typed",
+        "flow-cabin-again",
         "flow-mainmenu-again",
     ] {
         assert!(
