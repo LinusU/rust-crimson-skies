@@ -956,7 +956,7 @@ impl HubPage {
         if plane.airframe as usize >= construction_stats::AIRFRAMES {
             return None;
         }
-        let art = construction_stats::blueprint_art(plane.airframe);
+        let art = super::construction_hangar::blueprint_art(plane.airframe);
         let extent = *self.stats.extents.get(&art.to_ascii_lowercase())?;
         Some(blueprint_pane(art, extent, self.stats.plane_at?))
     }

@@ -193,13 +193,6 @@ pub fn levels(record: &PlaneRecord) -> Result<[u8; STATS], StatError> {
     Ok([speed, armor, agility, offense])
 }
 
-/// The art name of the airframe's blueprint (`Assets\Graphics\PX_%1d_
-/// Blueprint.tga`, `E 2243` with its flag clear, handler `0x40d54d`).
-#[must_use]
-pub fn blueprint_art(airframe: u32) -> String {
-    format!("PX_{airframe}_Blueprint.tga")
-}
-
 /// The text of one statistic: its head string, a space and the rating
 /// string. `head` and `rating` are the installation's strings with any
 /// `[FONT]` tag already removed.

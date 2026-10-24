@@ -4196,7 +4196,7 @@ pub(super) fn shell_app_with(
     if hub.is_some() {
         // The airframes' blueprints, which no pane row names (#2051).
         for airframe in 0..super::construction_stats::AIRFRAMES as u32 {
-            let name = super::construction_stats::blueprint_art(airframe);
+            let name = super::construction_hangar::blueprint_art(airframe);
             if let Some(artwork) = screens.graphic_artwork(&name) {
                 art.entry(name.to_ascii_lowercase()).or_insert(artwork);
             }
@@ -4455,7 +4455,7 @@ fn construction_hub_setup(
             page.set_blueprint_extents(
                 (0..super::construction_stats::AIRFRAMES as u32)
                     .filter_map(|airframe| {
-                        let art = super::construction_stats::blueprint_art(airframe);
+                        let art = super::construction_hangar::blueprint_art(airframe);
                         let extent = screens.art_extent(&art)?;
                         Some((art.to_ascii_lowercase(), extent))
                     })

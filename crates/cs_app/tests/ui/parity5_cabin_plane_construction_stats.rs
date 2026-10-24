@@ -98,7 +98,7 @@ fn page() -> HubPage {
     page.set_blueprint_extents(
         (0..AIRFRAMES as u32)
             .filter_map(|n| {
-                let art = construction_stats::blueprint_art(n);
+                let art = cs_app::ui::front_end::construction_hangar::blueprint_art(n);
                 let extent = blueprint_extents(&art)?;
                 Some((art.to_ascii_lowercase(), extent))
             })
@@ -369,7 +369,7 @@ fn accept_parity5_cabin_plane_construction_stats_retail_the_installations_string
     )
     .expect("the real hub rows read");
     for airframe in 0..AIRFRAMES as u32 {
-        let art = construction_stats::blueprint_art(airframe);
+        let art = cs_app::ui::front_end::construction_hangar::blueprint_art(airframe);
         let extent = screens.art_extent(&art);
         assert!(
             extent.is_some_and(|(w, h)| w > 0 && h > 0),
