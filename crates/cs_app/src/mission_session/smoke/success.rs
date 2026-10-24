@@ -43,7 +43,7 @@ use cs_sim::damage::ActorId;
 use cs_types::input::{Action, FlightCommand};
 
 use super::super::compose::MissionPlayerBody;
-use super::super::host::{MissionHostReport, MissionWorldObservation};
+use super::super::host::{MissionHost, MissionHostReport, MissionWorldObservation};
 use super::super::observation::mission_world_observation;
 use super::super::weapons::MissionCockpitActions;
 use super::{
@@ -166,6 +166,8 @@ pub struct SuccessMetrics {
     pub landing_at: Option<[f64; 3]>,
     /// Placements made at the drop-off node.
     pub landing_placements: u32,
+    /// The host's landing ledger as last seen during the landing beat.
+    pub landing_diag: String,
     /// The landing node never appeared in the observation.
     pub landing_node_never_found: bool,
     /// The script frame the Kestrel beat began in.
@@ -292,6 +294,43 @@ pub struct SuccessWorld<'w, 's> {
         ),
     >,
     resolver: Option<Res<'w, SessionDamageResolver>>,
+    host: Option<Res<'w, MissionHost>>,
+}
+
+/// What the host's landing path says: the drop-off nodes armed so far, and
+/// the landings and refusals on its ledger.
+fn landing_diagnostic(host: &MissionHost) -> String {
+    let armed: Vec<&str> = host
+        .armed_nodes()
+        .iter()
+        .flat_map(|armed| armed.nodes().iter().map(String::as_str))
+        .filter(|node| node.starts_with("do_approach"))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let ledger = host.landings();
+    format!(
+        "armed drop-off nodes {armed:?}; player refusals {:?}; landings {:?}; refusals {:?}",
+        host.animation()
+            .refused()
+            .filter(|record| record.identity().starts_with("do_approach"))
+            .take(1)
+            .map(|record| format!("{}: {:?}", record.identity(), record.refusals()))
+            .collect::<Vec<_>>(),
+        ledger
+            .activated()
+            .iter()
+            .map(|l| format!(
+                "{} -> {} at tick {:?}: {:?}, calls {:?}",
+                l.node, l.anim, l.at, l.outcome, l.calls
+            ))
+            .collect::<Vec<_>>(),
+        ledger
+            .refused()
+            .iter()
+            .map(|r| format!("{}: {}", r.name, r.reason))
+            .collect::<Vec<_>>()
+    )
 }
 
 /// One Kestrel still standing, as the stage sees it this frame.
@@ -363,6 +402,11 @@ pub fn smoke_success(
                 metrics.completed.push((*block, frame));
             }
         }
+    }
+    if metrics.beat == Beat::Landing
+        && let Some(host) = world.host.as_deref()
+    {
+        metrics.landing_diag = landing_diagnostic(host);
     }
     if metrics.beat == Beat::Landing && metrics.landing_at.is_none() {
         metrics.landing_at = world.node.as_deref().and_then(|row| row.0);
@@ -734,11 +778,12 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             detail: format!(
                 "the player flew {} level pass(es) at {LANDING_SPEED_M_S} m/s through {LANDING_NODE} \
                  at {:?} (test placements) and the host reported block {LANDING_BLOCK} (texdrop \
-                 EXECUTED) completed at {:?}; node never found: {}",
+                 EXECUTED) completed at {:?}; node never found: {}; host: {}",
                 c.landing_placements,
                 c.landing_at,
                 at(LANDING_BLOCK),
-                c.landing_node_never_found
+                c.landing_node_never_found,
+                c.landing_diag
             ),
         },
         Check {
@@ -840,7 +885,7 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
          \"standoff_m\":{STANDOFF_M},\"placements\":{},\"completed\":[{completed}],\
          \"frames_delivered\":{},\"near_permille\":{},\"marked_permille\":{},\
          \"landing_node\":{},\"landing_at_m\":{landing_at},\"landing_placements\":{},\
-         \"landing_node_never_found\":{},\"kestrels\":{},\"fire_presses\":{},\
+         \"landing_node_never_found\":{},\"landing_diag\":{},\"kestrels\":{},\"fire_presses\":{},\
          \"kestrel_placements\":{},\"kestrels_destroyed\":[{destroyed}],\
          \"kestrels_never_woken\":{},\"gave_up_on\":{gave_up},\"landed_permille\":{},\
          \"kestrels_permille\":{}}}",
@@ -854,6 +899,7 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
         json_string(LANDING_NODE),
         c.landing_placements,
         c.landing_node_never_found,
+        json_string(&c.landing_diag),
         c.kestrel_actors.len(),
         c.fire_presses,
         c.kestrel_placements,
