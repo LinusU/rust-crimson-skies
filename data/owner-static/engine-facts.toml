@@ -6285,3 +6285,39 @@ name = "table.fill_loop"
 va = 0x004ee41f
 bytes = "ffd38944240cdb44240c83c60481fe40d19f00d80d58837200d95efc7c"
 fact = "the fill loop: rand(), int->float, * scale, store, until 0x9fd140 (200 entries)"
+=======
+# Material cycle playback (task #1981, finding
+# docs/findings/2026-10-24-m01-sea-material-cycle-static.md). The per-draw
+# material update 0x55b1a0 advances a cycled material's frame position
+# (cycle +0x8, f32) by [0x9ad744] * rate (cycle +0xc, the stored `unk12`), so the
+# stored rate is in FRAMES PER SECOND of the frame delta. [0x9ad744] is the
+# frame delta in seconds: 0x59c0c0 reads a millisecond timer, multiplies by
+# 0.001, by a time scale (1.0) and clamps the result to 0..0.125 s.
+
+[[material_cycle]]
+name = "cycle_ms_to_seconds"
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+va = 0x6075dc
+kind = "f32"
+value = 0.001
+meaning = "0.001f: the frame-delta setter 0x59c0c0 multiplies the millisecond timer difference by it (0x59c0aa, 0x59c0df) to get seconds"
+
+[[material_cycle]]
+name = "cycle_time_scale"
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+va = 0x63b16c
+kind = "f32"
+value = 1.0
+meaning = "1.0f: the global time scale multiplied into the frame delta at 0x59c11b (the delta [0x9ad744] is stored at 0x59c121); its writers were not traced"
+
+[[material_cycle]]
+name = "cycle_delta_max_seconds"
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+va = 0x63b158
+kind = "f32"
+value = 0.125
+meaning = "0.125f: the frame delta [0x9ad744] is clamped to at most this (compare at 0x59c12f, store at 0x59c141); the lower clamp (0x63b15c) is 0.0"
+>>>>>>> ba2c18c24 (Commit the material-cycle engine facts with tests that re-read the image)
