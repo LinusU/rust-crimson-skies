@@ -22,8 +22,11 @@
 //!   [`PendingFlakBursts`] — the `flak_effect` consumer of FLAK-C3 draws the
 //!   flash, the smoke ball and the close-range framebuffer flicker — while
 //!   `snd_missile_flak` plays at the burst point (FLAK-C4). Applying the
-//!   burst's splash to the player is *not* modelled (the falloff and the
-//!   `entity+0x678` factor are unmeasured), and no M01 program wakes such a
+//!   burst's splash reaches the player through the damage authority
+//!   ([`rocket_splash_hits`]): `1 - d^2/r^2` of `ARMOR_DAMAGE` and
+//!   `HEALTH_DAMAGE`, `r` the record's `IMPACT_PROXIMITY` times the round's
+//!   `+0x678` scale (1.0 for a turret round) and `d` the distance to the
+//!   victim's hull surface. No M01 program wakes such a
 //!   turret — the owner-command smoke's flak phase test-wakes one (FLAK-C5).
 //!
 //! The line of sight is a physics ray against the static world
@@ -34,15 +37,17 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use avian3d::prelude::{LinearVelocity, Position, RigidBody, SpatialQuery, SpatialQueryFilter};
+use avian3d::prelude::{
+    LinearVelocity, Position, RigidBody, Rotation, SpatialQuery, SpatialQueryFilter,
+};
 use bevy::prelude::{
     ChildOf, Component, Dir3, Entity, GlobalTransform, Query, Res, ResMut, Resource, Transform,
     Vec3, With, Without, World,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
-use cs_sim::damage::ActorId;
+use cs_sim::damage::{ActorId, DamageNodeKey, HitEvent, HitEventId};
 use cs_sim::targeting::{TargetClass, TargetRecord};
-use cs_sim::weapons::{FireIntent, FireIntentId};
+use cs_sim::weapons::{AreaEffect, FireIntent, FireIntentId, WEAPON_DAMAGE_CHANNELS};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::net::SessionId;
@@ -54,12 +59,14 @@ use super::flak_sound::{FlakSoundSequences, play_flak_burst, play_flak_shot};
 use super::gun_sound::{READER_ARCHIVE, WEAPONS_MEMBER};
 use super::host::MissionHost;
 use super::launch_sound::reader_member;
-use super::player_victim::PlayerVictim;
+use super::player_victim::{DESIGNED_PLAYER_HALF_EXTENTS_M, PlayerVictim};
 use super::weapon_counts::{
     OriginalGunRecord, ammo_limit_from_document, float_from_document, gun_record_from_document,
     record_has_key,
 };
-use super::weapons::{MISSION_FACTION_HOSTILE, MissionWeapons, selected_gun_loadout};
+use super::weapons::{
+    MISSION_FACTION_HOSTILE, MISSION_TARGET_NODE, MissionWeapons, selected_gun_loadout,
+};
 use super::world_draw::WorldSceneryCollider;
 use super::{MissionPlayerBody, MissionStage};
 use crate::audio::{AudioSession, AudioSpatial};
@@ -78,6 +85,19 @@ use crate::weapons::{
 
 /// The producer serial of the turrets' fire intents (the AI's is 205).
 pub const TURRET_FIRE_PRODUCER: u32 = 206;
+
+/// The producer serial of the hits a rocket burst's splash lands on the
+/// player (the crash producer is 206, the turrets' fire intents 206 in their
+/// own id space).
+pub const TURRET_SPLASH_PRODUCER: u32 = 207;
+
+/// The `entity+0x678` blast-and-damage scale of a turret's rocket.
+///
+/// Static trace (`docs/findings/2026-10-18-t1318-blast-unknowns-measured.md`
+/// Q2): the spawn at `0x5af098` copies the global `0xa1e1b0` and resets it to
+/// 1.0, and only a `RANGE_MINIMUM` arming window (`0x5b06c6`) scales it
+/// afterwards. A flak turret's round declares none, so it is 1.0.
+pub const TURRET_ROCKET_BLAST_SCALE: f64 = 1.0;
 
 /// The first serial of the turrets' weapon actors. The scripted actors
 /// allocate upwards from 1 and the player holds `u64::MAX`; a turret takes
@@ -211,9 +231,12 @@ pub struct TurretFireReport {
     pub cannon_orders: u64,
     /// Rocket rounds fired.
     pub rockets_fired: u64,
-    /// Bursts of rocket rounds, with no splash applied — each one is also
+    /// Bursts of rocket rounds — each one is also
     /// published on [`PendingFlakBursts`] for the `flak_effect` presentation.
     pub rocket_bursts: Vec<OrdnanceBurst>,
+    /// Every burst whose splash reached the player's hull and landed hits
+    /// through the damage authority.
+    pub rocket_splashes: Vec<RocketSplash>,
     /// `snd_enemyflak` shot cues the audio router accepted (FLAK-C4/C5).
     pub flak_shot_cues: u64,
     /// `snd_missile_flak` burst cues the audio router accepted (FLAK-C4/C5).
@@ -228,13 +251,99 @@ pub struct TurretFireReport {
     pub unresolved: Vec<&'static str>,
 }
 
+/// One burst's splash on the player.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RocketSplash {
+    /// The tick of the burst.
+    pub tick: Tick,
+    /// Distance from the burst to the player's hull surface, metres.
+    pub surface_distance_m: f64,
+    /// `1 - d^2/r^2`.
+    pub fraction: f64,
+    /// The armor-channel amount landed.
+    pub armor: f64,
+    /// The internal (health) channel amount landed.
+    pub health: f64,
+}
+
+/// Distance from a point to the hull box's surface, metres; zero inside.
+///
+/// `local_m` is the point in the box's own frame (centre at the origin).
+#[must_use]
+pub fn hull_surface_distance_m(local_m: [f64; 3], half_extents_m: [f64; 3]) -> f64 {
+    local_m
+        .iter()
+        .zip(half_extents_m)
+        .map(|(c, h)| (c.abs() - h).max(0.0).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// The hits a rocket burst's splash lands on one victim, scaled by the
+/// measured falloff `1 - d^2/r^2` (`0x5acb37`), `d` being `surface_distance_m`
+/// and `r` the burst's `IMPACT_PROXIMITY`.
+///
+/// The original's apply loop (`0x5acb56..0x5acb66`) multiplies `ARMOR_DAMAGE`
+/// (`weapon+0x4c`) and `HEALTH_DAMAGE` (`weapon+0x50`) by the falloff and the
+/// round's `+0x678` scale ([`TURRET_ROCKET_BLAST_SCALE`]) and subtracts them
+/// from the victim's `+0x670`/`+0x674` pools with no conversion, so the
+/// amounts keep the record's own unit and ride the same two channels the gun
+/// path uses ([`WEAPON_DAMAGE_CHANNELS`]: armor, then internal). A burst with
+/// no `IMPACT_PROXIMITY` runs no query (`0x5b0718`) and lands nothing.
+///
+/// `sequence` is the next hit serial of this tick and is advanced.
+#[must_use]
+pub fn rocket_splash_hits(
+    burst: &OrdnanceBurst,
+    surface_distance_m: f64,
+    victim: ActorId,
+    session: SessionId,
+    sequence: &mut u32,
+) -> Vec<(HitEvent, f64)> {
+    if burst.splash_radius_m <= 0.0 {
+        return Vec::new();
+    }
+    let Ok(area) = AreaEffect::try_new(burst.splash_radius_m, 1) else {
+        return Vec::new();
+    };
+    let Some(fraction) = area.blast_fraction(surface_distance_m) else {
+        return Vec::new();
+    };
+    if fraction <= 0.0 {
+        return Vec::new();
+    }
+    let node = DamageNodeKey::new(MISSION_TARGET_NODE).expect("the hull key is valid");
+    let mut hits = Vec::new();
+    for channel in WEAPON_DAMAGE_CHANNELS {
+        let declared = match channel {
+            cs_sim::damage::DamageChannel::Armor => burst.armor_damage,
+            cs_sim::damage::DamageChannel::Internal => burst.health_damage,
+        };
+        let amount = declared * TURRET_ROCKET_BLAST_SCALE * fraction;
+        if amount <= 0.0 {
+            continue;
+        }
+        let id = HitEventId {
+            session,
+            tick: burst.at,
+            producer: TURRET_SPLASH_PRODUCER,
+            sequence: *sequence,
+        };
+        *sequence += 1;
+        if let Ok(hit) = HitEvent::try_new(id, None, victim, node.clone(), channel, amount) {
+            hits.push((hit, fraction));
+        }
+    }
+    hits
+}
+
 /// The unknowns every shot depends on.
 pub const UNRESOLVED: [&str; 5] = [
     "PARTS firepoint offsets: the muzzle is the mount node's origin",
     "the mount's yaw/frame convention and the PITCH/YAW travel: the aim is the intent's direction",
     "weapon flag 0x40 (lead aiming): the direction is target minus muzzle plus the INACCURACY cone",
     "CANNON_SPREAD unit and shape: the gun keeps the mission's designed spread cone",
-    "the HEALTH unit and rocket splash falloff: rocket bursts apply no damage",
+    "the victim's bounding extent: a burst's surface distance is measured to the designed hull box",
 ];
 
 struct Slot {
@@ -535,11 +644,11 @@ pub fn step_mission_turrets(
     stage: Option<Res<MissionStage>>,
     ledger: Option<Res<PhysicsTickLedger>>,
     spatial: SpatialQuery,
-    players: Query<(Entity, &Position), With<MissionPlayerBody>>,
+    players: Query<(Entity, &Position, &Rotation), With<MissionPlayerBody>>,
     bodies: Query<&RigidBody, Without<WorldSceneryCollider>>,
     mut turret_bodies: Query<(&mut Transform, &mut GlobalTransform), With<TurretBody>>,
     mut mounts: Query<(&ChildOf, &mut NodeVisualTransform)>,
-    damage: Option<Res<SessionDamageResolver>>,
+    mut damage: Option<ResMut<SessionDamageResolver>>,
     victim: Option<Res<PlayerVictim>>,
     mut pending_flak: Option<ResMut<PendingFlakBursts>>,
     mut audio: Option<ResMut<AudioSession>>,
@@ -550,7 +659,7 @@ pub fn step_mission_turrets(
     else {
         return;
     };
-    let Some((player_entity, player_position)) = players.iter().next() else {
+    let Some((player_entity, player_position, player_rotation)) = players.iter().next() else {
         return;
     };
     let Some(team) = player_team(&stage) else {
@@ -703,6 +812,57 @@ pub fn step_mission_turrets(
             }
             FlakStep::SilentEnd => false,
         });
+    let mut splash_sequence = 0_u32;
+    let mut splash_hits = Vec::new();
+    for burst in &bursts {
+        if let (true, Some(victim)) = (player_alive, victim.as_deref()) {
+            let local = player_rotation.0.inverse()
+                * (Vec3::new(
+                    burst.position_m[0] as f32,
+                    burst.position_m[1] as f32,
+                    burst.position_m[2] as f32,
+                ) - player_position.0);
+            let distance = hull_surface_distance_m(
+                [f64::from(local.x), f64::from(local.y), f64::from(local.z)],
+                DESIGNED_PLAYER_HALF_EXTENTS_M,
+            );
+            let landed = rocket_splash_hits(
+                burst,
+                distance,
+                victim.actor,
+                fire.session,
+                &mut splash_sequence,
+            );
+            if let Some((_, fraction)) = landed.first() {
+                let amount = |channel| {
+                    landed
+                        .iter()
+                        .filter(|(hit, _)| hit.channel == channel)
+                        .map(|(hit, _)| hit.damage)
+                        .sum::<f64>()
+                };
+                fire.report.rocket_splashes.push(RocketSplash {
+                    tick: burst.at,
+                    surface_distance_m: distance,
+                    fraction: *fraction,
+                    armor: amount(cs_sim::damage::DamageChannel::Armor),
+                    health: amount(cs_sim::damage::DamageChannel::Internal),
+                });
+            }
+            splash_hits.extend(landed.into_iter().map(|(hit, _)| hit));
+        }
+    }
+    if !splash_hits.is_empty()
+        && let Some(damage) = damage.as_deref_mut()
+        && damage
+            .resolver_mut()
+            .resolve(Tick(tick), &splash_hits)
+            .is_err()
+    {
+        fire.report
+            .refusals
+            .push("rocket splash: the damage authority refused the burst's hits".to_owned());
+    }
     for burst in bursts {
         // The `flak_effect` presentation (FLAK-C3) draws what the runtime
         // publishes; the `snd_missile_flak` cue sounds at the burst point.
@@ -1040,5 +1200,71 @@ mod tests {
             WeaponOrder::Fire(intent) => assert_eq!(intent.id.sequence, 2),
             other => panic!("only fire orders: {other:?}"),
         }
+    }
+
+    fn burst_with(radius: f64, armor: f64, health: f64) -> OrdnanceBurst {
+        OrdnanceBurst {
+            at: Tick(9),
+            position_m: [0.0; 3],
+            cause: super::super::flak_round::BurstCause::RangeEnd,
+            splash_radius_m: radius,
+            armor_damage: armor,
+            health_damage: health,
+            impact_row: 0,
+        }
+    }
+
+    #[test]
+    fn accept_rocket_splash_surface_distance_is_zero_inside_and_euclidean_outside() {
+        let half = [6.0, 1.0, 5.0];
+        assert_eq!(hull_surface_distance_m([0.0; 3], half), 0.0);
+        assert_eq!(hull_surface_distance_m([5.0, -0.5, 4.0], half), 0.0);
+        assert_eq!(hull_surface_distance_m([6.0 + 3.0, 0.0, 0.0], half), 3.0);
+        // 3-4-5 off one edge: x past by 3, z past by 4.
+        assert_eq!(hull_surface_distance_m([-9.0, 0.0, 9.0], half), 5.0);
+    }
+
+    #[test]
+    fn accept_rocket_splash_hits_scale_both_channels_by_one_minus_d_squared_over_r_squared() {
+        let session = SessionId::new(7).expect("nonzero");
+        let victim = ActorId {
+            session,
+            serial: u64::MAX,
+        };
+        let burst = burst_with(20.0, 10.0, 8.0);
+        let mut sequence = 0;
+        // d = 10, r = 20: 1 - 0.25 = 0.75.
+        let hits = rocket_splash_hits(&burst, 10.0, victim, session, &mut sequence);
+        assert_eq!(sequence, 2, "one serial per channel");
+        let by_channel = |channel| {
+            hits.iter()
+                .find(|(hit, _)| hit.channel == channel)
+                .map(|(hit, _)| hit.damage)
+        };
+        assert_eq!(by_channel(cs_sim::damage::DamageChannel::Armor), Some(7.5));
+        assert_eq!(
+            by_channel(cs_sim::damage::DamageChannel::Internal),
+            Some(6.0)
+        );
+        assert!(hits.iter().all(|(hit, f)| *f == 0.75
+            && hit.id.producer == TURRET_SPLASH_PRODUCER
+            && hit.id.tick == Tick(9)
+            && hit.target == victim));
+        // Inside the hull the centre takes the full amount.
+        let full = rocket_splash_hits(&burst, 0.0, victim, session, &mut sequence);
+        assert_eq!(full[0].0.damage, 10.0);
+        // At and beyond the radius nothing lands.
+        assert!(rocket_splash_hits(&burst, 20.0, victim, session, &mut sequence).is_empty());
+        assert!(rocket_splash_hits(&burst, 35.0, victim, session, &mut sequence).is_empty());
+    }
+
+    #[test]
+    fn accept_rocket_splash_without_impact_proximity_lands_nothing() {
+        let session = SessionId::new(7).expect("nonzero");
+        let victim = ActorId { session, serial: 1 };
+        let mut sequence = 0;
+        let burst = burst_with(0.0, 10.0, 10.0);
+        assert!(rocket_splash_hits(&burst, 0.0, victim, session, &mut sequence).is_empty());
+        assert_eq!(sequence, 0);
     }
 }

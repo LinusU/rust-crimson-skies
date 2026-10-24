@@ -216,8 +216,8 @@ pub struct OrdnanceBurst {
     pub position_m: [f64; 3],
     /// Why it burst.
     pub cause: BurstCause,
-    /// `IMPACT_PROXIMITY`, metres, unscaled (the `entity+0x678` factor is
-    /// unmeasured).
+    /// `IMPACT_PROXIMITY`, metres, unscaled (a turret round's `entity+0x678`
+    /// scale is 1.0, `docs/findings/2026-10-24-rocket-splash-damage.md`).
     pub splash_radius_m: f64,
     /// `ARMOR_DAMAGE` at the centre.
     pub armor_damage: f64,

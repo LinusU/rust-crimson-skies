@@ -259,6 +259,7 @@ mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;
 mod accept_parity_m01_player_view_c1;
 mod accept_parity_m01_player_view_c2;
+mod accept_rocket_splash_player;
 mod accept_t1222_per_actor_disconnect_abort;
 mod accept_t1317_blast_recipients;
 mod accept_t1424_collision_topology;
