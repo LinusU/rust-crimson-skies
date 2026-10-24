@@ -458,8 +458,8 @@ fn accept_flak_c_retail_a_test_woken_aagun_fires_bursts_presents_and_sounds() {
         "the burst stood inside the stored 100 m gate"
     );
     assert!(
-        fx.trails_undrawn >= 1,
-        "the trails stay undrawn (unmeasured)"
+        fx.trails_thrown >= 1 && fx.trails_undrawn == 0,
+        "the burst threw its call_flak_trails puff trails (FLAK-C3-TRAILS, #1925)"
     );
     assert!(
         report.flak_shot_cues >= 1 && report.flak_burst_cues >= 1,
