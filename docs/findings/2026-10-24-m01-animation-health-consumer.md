@@ -75,9 +75,11 @@ same dispatch.
 
 | Gap | Affects | Resolver |
 | --- | --- | --- |
-| **The record player refuses `hydrobombboom<N>`** (`PlayRefusal::Undeclared`): the join resolves an animation through `ANIMATION_NAME`, and the group damage definition spells the records only as the wildcard state name `hydrobombboom*` in `NAME1`. So the start is asked for and refused; `hydrogen_fire` does not run. | the win of "The Lost Treasure" (#2083); also every `destroy_*` / group damage record | follow-up: declare wildcard `NAME1` state names in the animation join |
-| **The tanks are not where the zeppelin is.** `hydrogentank1..4` bind as ground targets at their composed position in the static container (`(15, -67, -70)` for tank 1), not under `cargozep1` (placed at `(-6288, 300, -7701)`). Nothing the player flies at can hit them. | the same | follow-up: world-actor child targets follow the actor's pose |
+| **The record player refuses `hydrobombboom<N>`** (`PlayRefusal::Undeclared`): the join resolves an animation through `ANIMATION_NAME`, and the group damage definition spells the records only as the wildcard state name `hydrobombboom*` in `NAME1`. So the start is asked for and refused; `hydrogen_fire` does not run. | the win of "The Lost Treasure" (#2083); also every `destroy_*` / group damage record | #2095: declare wildcard `NAME1` state names in the animation join |
+| **The tanks are not where the zeppelin is.** `hydrogentank1..4` bind as ground targets at their composed position in the static container (`(15, -67, -70)` for tank 1), not under `cargozep1` (placed at `(-6288, 300, -7701)`). Nothing the player flies at can hit them. | the same | #2096: world-actor child targets follow the actor's pose |
 | Repeat starts after the pool is empty (the engine calls `0x4ed730` on every later hit; whether `0x4ed8c0` restarts a finished object is not traced) | a second hit after `hydrobombboomN` ends | trace `0x4ed8c0` |
 | `ARMOR` is taken as 0; the definition reader does not surface it | definitions that state `ARMOR` | add the field to the reader when one is armed |
 | `DAMAGE_SEQUENCE` (`0x4e71e0`), collide activations (`0x4e7150`), the `FREEZE` weapon filter | other definitions | out of this slice |
 | Zeppelin part records (`destroy_*`, `HEALTH 40`) share the shape but the parts are not ground targets | zeppelin parts | separate consumer |
+
+Unrelated, found on the way: `accept_m01_convoy_destruction_ground_box_overlaps_are_the_recorded_ones` fails on `main` as well (#2097).
