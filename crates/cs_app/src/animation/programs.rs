@@ -1228,6 +1228,15 @@ impl StartupAnimationBinding {
 /// order is the *reporting* order, and preferring the mission archive over the
 /// shared one would be a rule this measurement does not support.
 ///
+/// A definition that states **no** `ANIMATION_NAME` declares, when it names
+/// exactly one literal object, the animation spelled like that object. Measured
+/// over every mission scope of the installation (C3/M01's `do_approach1..6` are
+/// such definitions): each such definition that has a record in the scope's
+/// carriers has one whose `anim_name` and `object_name` both equal the `NAME`
+/// (`docs/findings/2026-10-24-m01-do-approach-declaration.md`). The fallback
+/// applies only when no definition states the name explicitly, and the join's
+/// own object-name and sequence-name agreements still guard the match.
+///
 /// It is public so the mission layer can resolve a name a directive spells
 /// through the same rule the startup identities use
 /// (`crate::animation::mission::join_named_animation`), instead of a second,
@@ -1237,10 +1246,17 @@ pub fn resolve_animation(
     animation: &str,
     declarations: &[AnimationDefinitionSite],
 ) -> BindingResolution {
-    let mut hits = declarations
+    let explicit = declarations
         .iter()
-        .filter(|site| site.animation_name() == Some(animation))
-        .cloned();
+        .filter(|site| site.animation_name() == Some(animation));
+    let mut hits: Vec<&AnimationDefinitionSite> = explicit.collect();
+    if hits.is_empty() {
+        hits = declarations
+            .iter()
+            .filter(|site| site.animation_name().is_none() && names_only(site, animation))
+            .collect();
+    }
+    let mut hits = hits.into_iter().cloned();
     let Some(first) = hits.next() else {
         return BindingResolution::Unresolved;
     };
@@ -1250,6 +1266,15 @@ pub fn resolve_animation(
     let mut sites = vec![first, second];
     sites.extend(hits);
     BindingResolution::Ambiguous(sites)
+}
+
+/// Whether the definition's only object is the literal `name`.
+fn names_only(site: &AnimationDefinitionSite, name: &str) -> bool {
+    let mut selectors = site.objects().selectors();
+    matches!(
+        (selectors.next(), selectors.next()),
+        (Some(only), None) if !only.has_wildcard() && only.stored() == name
+    ) && matches!(site.objects(), DefinitionObjects::Names(_))
 }
 
 /// What one mission scope's reader archives bind, measured.

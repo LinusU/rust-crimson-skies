@@ -1204,15 +1204,15 @@ fn accept_m01_play_triggers_anims_land_a_retail_landing_runs_the_row_and_the_gat
                     && call.caller() == "wv_initiate_hookup"),
             "the measured call chain started wv_hookup_player: {calls:?}"
         );
-        // `letterbox` matches a carrier record but no member declares it:
-        // the call ledger refuses the name, by name.
+        // `letterbox` is declared by a definition that states no
+        // `ANIMATION_NAME` and names the one object `letterbox`
+        // (`docs/findings/2026-10-24-m01-do-approach-declaration.md`), so the
+        // call ledger binds and starts it instead of refusing it.
         assert!(
-            host.call_animations()
-                .refused()
-                .iter()
-                .any(|refusal| refusal.name() == "letterbox"
-                    && refusal.caller() == "wv_initiate_hookup"),
-            "the chain's undeclared name is refused by name: {:?}",
+            calls.iter().any(|call| call.name() == "letterbox"
+                && call.caller() == "wv_initiate_hookup"
+                && call.outcome() == ActivationOutcome::Started),
+            "the chain's letterbox call started: {calls:?} / {:?}",
             host.call_animations().refused()
         );
         assert!(
