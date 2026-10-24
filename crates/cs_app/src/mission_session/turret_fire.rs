@@ -37,7 +37,7 @@ use std::path::Path;
 use avian3d::prelude::{LinearVelocity, Position, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::{
     ChildOf, Component, Dir3, Entity, GlobalTransform, Query, Res, ResMut, Resource, Transform,
-    Vec3, With, World,
+    Vec3, With, Without, World,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_sim::damage::ActorId;
@@ -60,6 +60,7 @@ use super::weapon_counts::{
     record_has_key,
 };
 use super::weapons::{MISSION_FACTION_HOSTILE, MissionWeapons, selected_gun_loadout};
+use super::world_draw::WorldSceneryCollider;
 use super::{MissionPlayerBody, MissionStage};
 use crate::audio::{AudioSession, AudioSpatial};
 use crate::mission_turret_update::{
@@ -535,7 +536,7 @@ pub fn step_mission_turrets(
     ledger: Option<Res<PhysicsTickLedger>>,
     spatial: SpatialQuery,
     players: Query<(Entity, &Position), With<MissionPlayerBody>>,
-    bodies: Query<&RigidBody>,
+    bodies: Query<&RigidBody, Without<WorldSceneryCollider>>,
     mut turret_bodies: Query<(&mut Transform, &mut GlobalTransform), With<TurretBody>>,
     mut mounts: Query<(&ChildOf, &mut NodeVisualTransform)>,
     damage: Option<Res<SessionDamageResolver>>,
@@ -810,10 +811,15 @@ fn take_shot(
 }
 
 /// The ray from a turret's muzzle to the player: blocked by a static body
-/// that does not enclose the muzzle.
+/// that does not enclose the muzzle. The solid scenery nodes
+/// ([`WorldSceneryCollider`], #1814) do not block it: a turret stands on or
+/// inside such a node, whose trimesh does not "enclose" the muzzle, so the
+/// ray would hit the turret's own mount (M01's `aagun99` never saw the
+/// player, #2033). Whether the original's sight ray tests scenery is
+/// unmeasured; this keeps the pre-#1814 answer.
 fn line_of_sight(
     spatial: &SpatialQuery,
-    bodies: &Query<&RigidBody>,
+    bodies: &Query<&RigidBody, Without<WorldSceneryCollider>>,
     player: Entity,
     from: [f64; 3],
     to: [f64; 3],
