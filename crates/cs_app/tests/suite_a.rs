@@ -34,6 +34,7 @@ mod campaign {
     mod m01_convoy_rocket;
     mod m01_destroyed_layout;
     mod m01_do_approach_declaration;
+    mod m01_hit_dispatch_team;
     mod m01_hostile_engage;
     mod m01_hydrogen_fire_hook;
     mod m01_hydrogen_fire_trigger;

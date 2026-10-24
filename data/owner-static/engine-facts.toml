@@ -7155,3 +7155,63 @@ name = "anim.start_at_zero"
 va = 0x004e727f
 bytes = "d81dc832600083c404dfe0f6"
 fact = "after every counted hit, whether or not it did damage, current health +0xb8 is compared with 0.0f (0x6032c8): at or below zero the object is started through 0x4ed730(object, ten zero arguments) (0x4e729f..0x4e72a4), which starts its default (unnamed) sequence; the handler returns 0"
+
+# Hit dispatcher 0x5abcf0 and the gun-round path: what admits a hit (#2102).
+# Static reads of the owner's decrypted image; provenance `static`, nothing here
+# is `verified_original`. Finding: docs/findings/2026-10-25-m01-hit-dispatch-team-trace.md.
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.dispatch_entry"
+va = 0x005abd1c
+bytes = "8b46243bc30f84450200008bb8bc0000003bfb0f84"
+fact = "0x5abcf0 entry: the only gates before a handler call are record+0x24 (the hit node) non-null and [node+0xbc] (the node's registered handler) non-null; otherwise it returns 0 (0x5abf6c). No team, side or owner value is read from the weapon, the node or the hit record"
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.dispatch_call"
+va = 0x005abe62
+bytes = "8b0753565550ff5704"
+fact = "the single indirect call [handler+4]([handler], weapon, record, damage pair); the dispatcher passes the same arguments for every shooter, and its result is returned without a team test"
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.surface_index_is_not_team"
+va = 0x005abf16
+bytes = "8b4424148b955c0100008d04808d0c80"
+fact = "[record+0x20][+0x20], the only owner-like value the dispatcher loads (0x5abdef), is used solely to index the weapon's per-surface effect table [weapon+0x15c] at stride 100 (0x5abf16..0x5abf26) for the impact effect; it is never compared with a shooter value"
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.gun_round_mask"
+va = 0x005acf7d
+bytes = "6800000400e899a6f1ff"
+fact = "the gun-round path 0x5acf60 sets the database-query node-flag mask [0x71e8b4] to 0x40000 (call 0x4c7620) before its ray query 0x4c8ec0; the mask is tested against node flag words at 0x4c9a24 and 0x4cad27: admission is by node flag, not by the shooter's team"
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.best_contact_filter"
+va = 0x005ad367
+bytes = "8b42203bc50f84ac0000008b402083f8010f85a0"
+fact = "0x5ad330 picks the nearest contact of the ray query; the only exclusion is a contact whose node has [node+0x20] equal to 1 (0x5ad3ed). Nothing compares the shooter with the node"
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.gun_round_dispatch"
+va = 0x005acfe3
+bytes = "8b56248b82bc00000085c074338d44"
+fact = "0x5acf60 hands the picked contact to 0x5abcf0 when the node's handler [node+0xbc] is non-zero (0x5acfe6..0x5acfee, call at 0x5ad01b); a team-0 animated node with a registered weapon-hit handler is therefore dispatched exactly like any other"
+
+[[hit_dispatch_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "hit.damage_pair_weapon_only"
+va = 0x005ad1c0
+bytes = "8b542404f6427404568b74240c750df6864c01000002740433c05ec3"
+fact = "0x5ad1c0 builds the damage pair from the weapon record (+0x4c, +0x50, +0x70, +0x34) alone; its only other inputs are weapon flag bit 0x4 and a per-round already-hit bit (+0x14c bit 0x2): no shooter or target team"
