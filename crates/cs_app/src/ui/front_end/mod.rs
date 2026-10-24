@@ -101,6 +101,7 @@ mod machine;
 mod memento;
 mod movie;
 mod notice_view;
+pub mod ordinance_layout;
 mod original;
 mod pane_transform;
 mod paths;

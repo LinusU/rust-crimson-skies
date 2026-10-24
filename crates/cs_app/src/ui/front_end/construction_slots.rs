@@ -586,7 +586,7 @@ fn find<'a>(section: &'a Section, id: &str) -> Result<&'a Row, SlotError> {
         .ok_or_else(|| SlotError::RowMissing(id.to_owned()))
 }
 
-fn rect_row(section: &Section, id: &str) -> Result<ShellRect, SlotError> {
+pub(super) fn rect_row(section: &Section, id: &str) -> Result<ShellRect, SlotError> {
     let row = find(section, id)?;
     let number = |index: usize| {
         row.fields
