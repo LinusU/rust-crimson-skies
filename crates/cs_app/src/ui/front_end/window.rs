@@ -233,6 +233,11 @@ struct HubState {
     base_panes: Option<Vec<super::shell::ShellPane>>,
     /// The panel section whose panes the hub section now carries.
     panes_of: Option<&'static str>,
+    /// The levels and blueprint the hub section now carries.
+    stats_of: Option<(
+        Option<[u8; super::construction_stats::STATS]>,
+        Option<String>,
+    )>,
 }
 
 /// The Plane Name page's live state.
@@ -875,6 +880,7 @@ impl Plugin for FrontEndShellPlugin {
                     drawn_surface: (0, 0),
                     base_panes: None,
                     panes_of: None,
+                    stats_of: None,
                 }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
@@ -2101,7 +2107,9 @@ fn sync_hub_scene(world: &mut World, state: &mut ShellResource) {
             super::construction_hub::SELL_BUTTON,
             hub.page.sell_enabled(),
         );
-        install_panel_panes(&mut state.shell, hub);
+        if install_panel_panes(&mut state.shell, hub) {
+            state.redraw = true;
+        }
     }
     if !state.visuals {
         return;
@@ -2141,10 +2149,13 @@ fn sync_hub_scene(world: &mut World, state: &mut ShellResource) {
 /// hub's own: the panel's rows are nested sections of the layout, which the
 /// shell presents on their own. The decal sheet is only a source the script
 /// blits from (`deactivate(CLA)`), so it is left out.
-fn install_panel_panes(shell: &mut MenuShell, hub: &mut HubState) {
+fn install_panel_panes(shell: &mut MenuShell, hub: &mut HubState) -> bool {
     let wanted = hub.page.panel_section();
-    if hub.panes_of == wanted && hub.base_panes.is_some() {
-        return;
+    let levels = hub.page.stat_levels();
+    let blueprint = hub.page.blueprint();
+    let stats = (levels, blueprint.as_ref().map(|pane| pane.art.clone()));
+    if hub.panes_of == wanted && hub.base_panes.is_some() && hub.stats_of.as_ref() == Some(&stats) {
+        return false;
     }
     let extra: Vec<super::shell::ShellPane> = wanted
         .and_then(|name| shell.sections().get(&name.to_ascii_uppercase()))
@@ -2162,12 +2173,29 @@ fn install_panel_panes(shell: &mut MenuShell, hub: &mut HubState) {
         })
         .unwrap_or_default();
     let Some(section) = shell.section_mut(HUB_SECTION) else {
-        return;
+        return false;
     };
     let base = hub.base_panes.get_or_insert_with(|| section.panes.clone());
-    section.panes = base.iter().cloned().chain(extra).collect();
+    let mut panes = base.clone();
+    // The blueprint sits over the backdrop, under everything else.
+    if let Some(blueprint) = blueprint {
+        let at = panes
+            .iter()
+            .position(|pane| pane.id.eq_ignore_ascii_case("PX_P_BACKGROUND"))
+            .map_or(0, |background| background + 1);
+        panes.insert(at, blueprint);
+    }
+    if let Some(levels) = levels {
+        panes.extend(super::construction_hub::lit_bars(
+            &section.held_panes,
+            levels,
+        ));
+    }
+    section.panes = panes.into_iter().chain(extra).collect();
     hub.panes_of = wanted;
+    hub.stats_of = Some(stats);
     hub.page.mark_dirty();
+    true
 }
 
 /// Keeps the not-implemented notice drawn while the flow has one up.
@@ -2912,9 +2940,25 @@ enum Step {
     /// Typed text, as one `KeyboardInput` press per character (the message
     /// the OS text input writes), for the pilot page's edit box.
     Type(&'static str),
+    /// Feeds the Plane Construction hub a [`SMOKE_PLANE`] (#2051).
+    HubPlane,
     /// A framebuffer screenshot.
     Shot(&'static str),
 }
+
+/// The plane record the flow smoke feeds the hub so the statistics, the bar
+/// graphs and the blueprint are on screen. It is a harness value chosen for
+/// the picture, not a plane of the original: the start flow keeps no
+/// per-pilot plane yet (task #2052).
+const SMOKE_PLANE: super::construction_stats::PlaneRecord =
+    super::construction_stats::PlaneRecord {
+        airframe: 1,
+        engine: 2,
+        armor: [20, 20, 15, 15],
+        hardpoints: [2, 1],
+        guns: [5, 5, 5, 1],
+        gun_pairs: 0,
+    };
 
 /// The deterministic pass the smoke drives over `MainMenu` (FE-MENU-2):
 ///
@@ -3156,6 +3200,7 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(14.5), Step::HoverButton("PN_B_OK")),
         (at(14.6), Step::Mouse(true)),
         (at(14.7), Step::Mouse(false)),
+        (at(15.0), Step::HubPlane),
         (at(15.2), Step::Shot("flow-plane-construction")),
         (at(15.4), Step::HoverButton("PX_B_GUNS")),
         (at(15.5), Step::Mouse(true)),
@@ -3394,6 +3439,12 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
                         window,
                     });
                 }
+            }
+            Step::HubPlane => {
+                state.set_hub_feed(super::construction_hub::HubFeed {
+                    plane: Some(SMOKE_PLANE),
+                    ..super::construction_hub::HubFeed::default()
+                });
             }
             Step::Shot(label) => {
                 smoke.shots_requested += 1;
@@ -4108,6 +4159,7 @@ pub(super) fn shell_app_with(
         for element in section
             .panes
             .iter()
+            .chain(&section.held_panes)
             .map(|pane| &pane.art)
             .chain(section.buttons.iter().map(|button| &button.art))
         {
@@ -4141,6 +4193,15 @@ pub(super) fn shell_app_with(
     let previous = previous_missions_setup(request, &screens, &layout);
     let plane = plane_name_setup(request, &screens, &layout);
     let hub = construction_hub_setup(request, &screens, &layout);
+    if hub.is_some() {
+        // The airframes' blueprints, which no pane row names (#2051).
+        for airframe in 0..super::construction_stats::AIRFRAMES as u32 {
+            let name = super::construction_stats::blueprint_art(airframe);
+            if let Some(artwork) = screens.graphic_artwork(&name) {
+                art.entry(name.to_ascii_lowercase()).or_insert(artwork);
+            }
+        }
+    }
     if previous.is_some()
         && let Some(artwork) = screens.graphic_artwork(super::previous_missions::ICON_ART)
     {
@@ -4388,7 +4449,20 @@ fn construction_hub_setup(
         &|name: &str| strings.resolve_tagged(name),
         &|id: u32| strings.resolve_id_tagged(id),
     ) {
-        Ok(page) => Some(page),
+        Ok(mut page) => {
+            // The blueprints (#2051): measured here, decoded with the rest of
+            // the art by the caller.
+            page.set_blueprint_extents(
+                (0..super::construction_stats::AIRFRAMES as u32)
+                    .filter_map(|airframe| {
+                        let art = super::construction_stats::blueprint_art(airframe);
+                        let extent = screens.art_extent(&art)?;
+                        Some((art.to_ascii_lowercase(), extent))
+                    })
+                    .collect(),
+            );
+            Some(page)
+        }
         Err(error) => {
             eprintln!("cs: no construction hub: {error}");
             None

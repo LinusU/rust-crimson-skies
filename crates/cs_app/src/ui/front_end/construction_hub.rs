@@ -56,10 +56,11 @@
 //!
 //! # What is *not* known, and so not claimed
 //!
-//! * **The statistics.** `PX_T_TOPSPEED`, `_AGILITY`, `_ARMOR` and `_OFFENSE`
-//!   are filled by `E 2015(25, 0x20, ..)` (handler `0x409685`, tables
-//!   unread), and the 20 bar graphs are shown from `E 2015(25, 0x40, ..)`:
-//!   nothing is drawn for them and the bars are not presented.
+//! * **The statistics** (task #2051, [`super::construction_stats`]):
+//!   `PX_T_TOPSPEED`, `_AGILITY`, `_ARMOR` and `_OFFENSE` and the 20 bar
+//!   graphs follow a [`PlaneRecord`] in the feed; without one nothing is drawn
+//!   for them. What a draft's choices map to in the record is task #2052's.
+//!   The airframe's blueprint on `PX_P_PLANE0` is drawn with them.
 //! * **`E 2230`** (handler `0x40d473`) and **`E 2507`** (the `A` callback
 //!   class) are unread.
 //! * **The cash and cost figures' unit.** The strings say pounds (*lbs.*) and
@@ -74,6 +75,7 @@
 //!   `[FONT]` tag names; the caption faces and the cash row's face (the
 //!   `callback($$NB$$, 91, ..)` prefix) are stand-ins.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use cs_content::construction::BudgetQuantity;
@@ -86,10 +88,11 @@ use super::construction_armor_paint::{
 use super::construction_hangar::{HangarPage, SavedPlane, SlotIcons};
 use super::construction_panels::{ChoiceKind, ChoiceOption, ChoicePanel, ChoicePress};
 use super::construction_slots::{SlotKind, SlotOption, SlotPanel, SlotPress};
+use super::construction_stats::{self, PlaneRecord};
 use super::original::{OriginalLayout, Section};
 use super::pilot_page::EditBox;
 use super::previous_missions::{colour, split_tag};
-use super::shell::{ShellRect, ShellSection};
+use super::shell::{ShellPane, ShellRect, ShellSection};
 use super::start_flow::NotImplemented;
 use crate::construction::ConstructionView;
 
@@ -135,11 +138,10 @@ const STATISTIC_ROWS: [&str; 4] = [
     "PX_T_OFFENSE",
 ];
 
-/// Panes the engine shows from runtime state this project has not read: the
-/// statistics' bar graphs (`E 2015(25, 0x40, ..)`), the small icons and the
-/// other three plane slots. They are not presented.
+/// Panes the engine shows from the plane record: the statistics' bar graphs
+/// (`E 2015(25, 0x40, ..)`), the small icons and the plane slots. The shell
+/// holds them back until a record is fed ([`prepare_section`]).
 const RUNTIME_PANES: [&str; 2] = ["PX_P_SMALLICONS", "PX_P_PLANE"];
-const BAR_PREFIXES: [&str; 4] = ["PX_P_OS", "PX_P_AD", "PX_P_SI", "PX_P_OC"];
 
 /// The six tab buttons: the panel each selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -303,6 +305,11 @@ pub struct HubFeed {
     /// How many planes the pilot has saved (`E 2018`); Sell needs
     /// [`SELL_MIN_PLANES`].
     pub saved_planes: Option<u32>,
+    /// The working plane record the statistics read (`E 2015(25, ..)`);
+    /// nothing is drawn for them without one. The draft does not name the
+    /// engine's fields, so [`Self::from_view`] leaves it to the caller
+    /// (task #2052).
+    pub plane: Option<PlaneRecord>,
 }
 
 impl HubFeed {
@@ -459,6 +466,7 @@ pub struct HubPage {
     selected: Panel,
     feed: HubFeed,
     unread: Vec<String>,
+    stats: StatsRows,
     airframe: Option<ChoicePanel>,
     engine: Option<ChoicePanel>,
     guns: Option<SlotPanel>,
@@ -585,6 +593,7 @@ impl HubPage {
             selected: Panel::Airframe,
             feed: HubFeed::default(),
             unread,
+            stats: StatsRows::from_layout(section, id),
             // A layout without a panel's rows leaves that tab on the marked
             // notice (rule 5: a missing screen blocks, it never passes).
             airframe: ChoicePanel::from_layout(layout, ChoiceKind::Airframe, name).ok(),
@@ -919,11 +928,43 @@ impl HubPage {
         &self.feed
     }
 
-    /// The statistics rows the engine fills from tables this project has not
-    /// read: nothing is drawn for them.
+    /// The statistics rows nobody has fed a plane record: nothing is drawn
+    /// for them.
     #[must_use]
     pub fn unread_rows(&self) -> &[String] {
-        &self.unread
+        if self.feed.plane.is_some() {
+            &[]
+        } else {
+            &self.unread
+        }
+    }
+
+    /// The four levels (speed, armor, agility, offense) the fed plane
+    /// record gives, `None` without one or when its tables have no row.
+    #[must_use]
+    pub fn stat_levels(&self) -> Option<[u8; construction_stats::STATS]> {
+        construction_stats::levels(&self.feed.plane?).ok()
+    }
+
+    /// The airframe's blueprint pane (`E 2243` with its flag clear), at
+    /// the `PX_P_PLANE0` row's position; `None` without a fed airframe the
+    /// tables cover or without its measured art
+    /// ([`Self::set_blueprint_extents`]).
+    #[must_use]
+    pub(super) fn blueprint(&self) -> Option<ShellPane> {
+        let plane = self.feed.plane?;
+        if plane.airframe as usize >= construction_stats::AIRFRAMES {
+            return None;
+        }
+        let art = construction_stats::blueprint_art(plane.airframe);
+        let extent = *self.stats.extents.get(&art.to_ascii_lowercase())?;
+        Some(blueprint_pane(art, extent, self.stats.plane_at?))
+    }
+
+    /// Hands the page the measured extents of the blueprint arts, by
+    /// lower-cased name.
+    pub fn set_blueprint_extents(&mut self, extents: BTreeMap<String, (u32, u32)>) {
+        self.stats.extents = extents;
     }
 
     /// The cancel prompt's text, while it is up.
@@ -1162,6 +1203,7 @@ impl HubPage {
                 justify: label.justify,
             });
         }
+        out.extend(self.stats.texts(self.stat_levels()));
         match self.selected {
             Panel::Armor => out.extend(self.armor.iter().flat_map(ArmorPanel::texts)),
             Panel::Paint => out.extend(self.paint.iter().flat_map(PaintPanel::texts)),
@@ -1336,14 +1378,149 @@ fn read_tabs(section: &Section, name: &dyn Fn(&str) -> Option<String>) -> Vec<Ta
         .collect()
 }
 
-/// Leaves out of the presented `PlaneConstruction` section the panes the
-/// engine shows from runtime state this project has not read (see the module
-/// docs): the bar graphs, the small icons and the plane slots.
+/// The statistics' rows: where each text sits and the strings that fill it,
+/// and where the blueprint goes (task #2051).
+#[derive(Clone, Debug, Default)]
+struct StatsRows {
+    /// The text rows by statistic.
+    rows: [Option<HubLabel>; construction_stats::STATS],
+    /// The head strings by statistic, `[FONT]` tag stripped.
+    heads: [Option<String>; construction_stats::STATS],
+    /// The five rating strings, `[FONT]` tag stripped.
+    ratings: Vec<Option<String>>,
+    /// The `PX_P_PLANE0` row's position.
+    plane_at: Option<(i32, i32)>,
+    /// The blueprint arts' measured extents, by lower-cased name.
+    extents: BTreeMap<String, (u32, u32)>,
+}
+
+impl StatsRows {
+    fn from_layout(section: &Section, id: &dyn Fn(u32) -> Option<String>) -> Self {
+        let string = |n: u32| id(n).map(|raw| split_tag(&raw).1.to_owned());
+        let rows = construction_stats::TEXT_ROWS.map(|name| {
+            let row = section
+                .other
+                .iter()
+                .find(|row| row.id.eq_ignore_ascii_case(name))?;
+            Some(HubLabel {
+                id: name.to_owned(),
+                template: String::new(),
+                size: None,
+                rect: row_rect(row).ok()?,
+                color: row.fields.get(6).and_then(|value| colour(value))?,
+                justify: row.fields.get(7)?.trim().parse().ok()?,
+            })
+        });
+        let plane_at = section
+            .panes
+            .iter()
+            .find(|row| row.id.eq_ignore_ascii_case("PX_P_PLANE0"))
+            .filter(|row| row.unresolved.is_empty())
+            .and_then(|row| {
+                let number = |index: usize| row.fields.get(index)?.trim().parse::<i32>().ok();
+                Some((number(1)?, number(2)?))
+            });
+        Self {
+            rows,
+            heads: construction_stats::HEAD_STRINGS.map(id),
+            ratings: (0..construction_stats::BARS as u32)
+                .map(|level| string(construction_stats::RATING_STRING + level))
+                .collect(),
+            plane_at,
+            extents: BTreeMap::new(),
+        }
+    }
+
+    /// The four lines for `levels`; nothing without them or without the
+    /// installation's strings.
+    fn texts(&self, levels: Option<[u8; construction_stats::STATS]>) -> Vec<HubText> {
+        let Some(levels) = levels else {
+            return Vec::new();
+        };
+        (0..construction_stats::STATS)
+            .filter_map(|stat| {
+                let row = self.rows[stat].as_ref()?;
+                let (size, head) = split_tag(self.heads[stat].as_deref()?);
+                let rating = self.ratings.get(usize::from(levels[stat]))?.as_deref()?;
+                Some(HubText {
+                    id: row.id.clone(),
+                    text: construction_stats::caption(head, rating),
+                    size,
+                    rect: row.rect,
+                    color: row.color,
+                    justify: row.justify,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Takes out of the presented `PlaneConstruction` section the panes the
+/// engine shows from the plane record (the bar graphs, the small icons and
+/// the plane slots) and holds them in [`ShellSection::held_panes`], where the
+/// hub lights them from a fed record.
 pub(super) fn prepare_section(section: &mut ShellSection) {
-    section.panes.retain(|pane| {
-        let id = pane.id.to_ascii_uppercase();
-        !(id == RUNTIME_PANES[0]
-            || id.starts_with(RUNTIME_PANES[1])
-            || BAR_PREFIXES.iter().any(|prefix| id.starts_with(prefix)))
-    });
+    let (held, shown) = std::mem::take(&mut section.panes)
+        .into_iter()
+        .partition(|pane| is_stats_pane(&pane.id));
+    section.panes = shown;
+    section.held_panes = held;
+}
+
+/// Whether `id` names a pane the hub shows from the plane record: a bar of
+/// one of the four groups, the small icons or one of the plane slots.
+fn is_stats_pane(id: &str) -> bool {
+    let id = id.to_ascii_uppercase();
+    id == RUNTIME_PANES[0]
+        || id.starts_with(RUNTIME_PANES[1])
+        || construction_stats::BAR_GROUPS
+            .iter()
+            .any(|group| id.starts_with(group))
+}
+
+/// The bar panes of `pool` the levels light: bar `r` of a group when
+/// `r <= level`, as the script's `12000` handler activates them. The small
+/// icons and the three other plane slots stay hidden: the script shows them
+/// only from state the hub does not have.
+#[must_use]
+pub(super) fn lit_bars(
+    pool: &[ShellPane],
+    levels: [u8; construction_stats::STATS],
+) -> Vec<ShellPane> {
+    let mut out = Vec::new();
+    for (group, level) in construction_stats::BAR_GROUPS.iter().zip(levels) {
+        out.extend(
+            pool.iter()
+                .filter(|pane| {
+                    pane.id
+                        .to_ascii_uppercase()
+                        .strip_prefix(group)
+                        .and_then(|bar| bar.parse::<u8>().ok())
+                        .is_some_and(|bar| bar <= level)
+                })
+                .cloned(),
+        );
+    }
+    out
+}
+
+/// The blueprint pane: the airframe's art at the `PX_P_PLANE0` position,
+/// whose extent the caller measured.
+#[must_use]
+pub(super) fn blueprint_pane(art: String, extent: (u32, u32), at: (i32, i32)) -> ShellPane {
+    ShellPane {
+        id: "PX_P_PLANE0".to_owned(),
+        art,
+        rect: ShellRect {
+            x: at.0,
+            y: at.1,
+            width: extent.0,
+            height: extent.1,
+        },
+        frames: 1,
+        frame: 0,
+        is_region: false,
+        color_keyed: false,
+        transform: None,
+    }
 }

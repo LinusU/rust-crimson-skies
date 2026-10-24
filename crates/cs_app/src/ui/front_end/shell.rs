@@ -367,6 +367,10 @@ pub struct ShellSection {
     pub movies: Vec<ShellMovie>,
     /// The `P` rows in declaration (draw) order.
     pub panes: Vec<ShellPane>,
+    /// `P` rows a screen shows only from run-time state, taken out of
+    /// [`Self::panes`] and kept for the screen to put back (the Plane
+    /// Construction hub's bar graphs, #2051).
+    pub held_panes: Vec<ShellPane>,
     /// The `B` rows in declaration (focus) order.
     pub buttons: Vec<ShellButton>,
     /// The `P`/`B`/`M` rows not drawn, in declaration order with reasons.
@@ -1242,6 +1246,7 @@ fn present_section(
         name: section.name.clone(),
         movies,
         panes,
+        held_panes: Vec::new(),
         buttons,
         skipped,
         other_rows,
