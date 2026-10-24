@@ -21,10 +21,13 @@ target's subtree (the convoy's trucks ride inside `susp_bridge`, so the
 bridge's destruction cannot hide a truck that is still in play).
 
 Run on the implementing commit (release build, retail, gpu): 5 checks, 0
-failed, 2692 frames.
+failed, 2692 frames. Re-run in review on the rebased-and-reviewed commit
+(the same command, `private/evidence/T2054-CONVOY-KILL-review`): 5 checks,
+0 failed, 2693 frames / 5382 ticks.
 
-- `convoy_destroyed_by_fire_key`: 77 guns-key presses; destroyed at frames
-  2526, 2550, 2574, 2598 per the damage authority.
+- `convoy_destroyed_by_fire_key`: 78 guns-key presses; destroyed at frames
+  2527, 2551, 2575, 2599 per the damage authority (77 presses / frames
+  2526, 2550, 2574, 2598 in the implementing-commit run).
 - `convoy_observation_follows`: all four rows `in_play` before the first
   shot, all four `no_longer_in_play` at the end.
 - `convoy_layout_swaps`: every truck began intact 3-4/3-4 shown, destroyed
@@ -36,9 +39,24 @@ failed, 2692 frames.
 
 Screenshots (private, not committed):
 `private/evidence/T2054-CONVOY-KILL/frame_ck02501_convoy_intact.png`,
-`private/evidence/T2054-CONVOY-KILL/frame_ck02688_convoy_destroyed.png`;
-`report.json` beside them carries the per-node `layout_before` /
+`private/evidence/T2054-CONVOY-KILL/frame_ck02688_convoy_destroyed.png`
+and, from the review run,
+`private/evidence/T2054-CONVOY-KILL-review/frame_ck02501_convoy_intact.png`,
+`private/evidence/T2054-CONVOY-KILL-review/frame_ck02689_convoy_destroyed.png`;
+each `report.json` beside them carries the per-node `layout_before` /
 `layout_after` rows.
+
+## The review fix: read the lifecycle, not the tick's publication
+
+The stage's kill detection first read `DamageScheduleReport.destroyed` —
+the publication of *one* tick, which `begin_tick` clears on the next. The
+windowed run ticks twice per frame (2693 frames / 5382 ticks), so a kill
+resolved in a frame's first tick never reaches the `Last` read: on the
+rebased code the review run destroyed `t_truck01` (the observation row
+left play and its wreck drew) while the stage saw no kill, fired 4751
+presses at the dead truck and gave up. `destroyed_now` now reads
+`SessionDamageResolver::is_destroyed` — the authority's recorded
+lifecycle, the same read the headless gun-hit tests use.
 
 ## What the screenshots show
 

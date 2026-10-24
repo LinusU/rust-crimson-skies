@@ -39,10 +39,10 @@ use super::{
     SmokeData, SmokeMeasurements, SmokeShots, clear_colour_encodings, json_string,
     non_black_permille, request_screenshot, yaw_toward,
 };
-use crate::damage::DamageScheduleReport;
 use crate::mission_actors::{
     MissionGroundTarget, MissionGroundTargetReport, MissionGroundTargetSweep,
 };
+use crate::weapons::SessionDamageResolver;
 use crate::world_facts::member_chain;
 
 /// The convoy, by world node name: the three trucks OBJECTIVE6 wakes and the
@@ -116,7 +116,7 @@ pub struct ConvoyWorld<'w, 's> {
     player: Query<'w, 's, (), With<MissionPlayerBody>>,
     targets: Option<Res<'w, MissionGroundTargetReport>>,
     sweeps: Query<'w, 's, &'static MissionGroundTargetSweep>,
-    damage: Option<Res<'w, DamageScheduleReport>>,
+    resolver: Option<Res<'w, SessionDamageResolver>>,
     observation: Option<Res<'w, ConvoyObservationRows>>,
     layout: Option<Res<'w, ConvoyLayoutRows>>,
 }
@@ -317,14 +317,18 @@ pub fn smoke_convoy_kill(
             .as_deref()
             .map_or_else(Vec::new, |rows| rows.0.clone());
     }
+    // The authority's recorded lifecycle, not the schedule's one-tick
+    // `destroyed` publication, which a later tick of the same frame
+    // overwrites: a kill that lands in an earlier tick would be lost and the
+    // stage would keep firing at a dead truck.
     let destroyed_now: Vec<String> = metrics
         .actors
         .iter()
         .filter(|(_, actor)| {
             world
-                .damage
+                .resolver
                 .as_deref()
-                .is_some_and(|report| report.destroyed.contains(actor))
+                .is_some_and(|resolver| resolver.resolver().is_destroyed(actor))
         })
         .map(|(node, _)| node.clone())
         .collect();
