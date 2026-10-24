@@ -242,7 +242,7 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
         .collect();
     assert_eq!(
         nested.len(),
-        14,
+        17,
         "the sites M01 spells with a nested list argument: {:?}",
         nested
     );
