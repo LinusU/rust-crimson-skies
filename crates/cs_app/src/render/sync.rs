@@ -1090,14 +1090,6 @@ pub fn sync_frame(
         ..FrameSync::default()
     };
     let mut live = BTreeMap::new();
-    // One texture per paint upload, not one per batch: two batches that
-    // share a variant *and* addressing (different phases or non-consecutive
-    // items) bind the same texels, so they bind the same handle. The key is
-    // the upload's fingerprint — variant, extent, addressing and texels —
-    // not the variant alone: a paint sampled under two different address
-    // modes is two textures.
-    let mut paint_handles = BTreeMap::<[u8; 32], Handle<Image>>::new();
-
     for (key, digest, batch, upload, paint) in prepared {
         // The composed visibility verdict decides what is drawn, once per row,
         // from the records the world holds right now. It is read before the
@@ -1155,24 +1147,19 @@ pub fn sync_frame(
             (Some(_), _, true) => world
                 .get::<BatchDraw>(entity)
                 .and_then(|draw| draw.image.clone()),
-            (Some(paint), _, false) => Some(
-                paint_handles
-                    .entry(*paint.fingerprint().as_bytes())
-                    .or_insert_with(|| {
-                        world
-                            .resource_mut::<Assets<Image>>()
-                            .add(paint.image().clone())
-                    })
-                    .clone(),
-            ),
+            (Some(paint), _, false) => Some(stored_image(
+                world,
+                ImageContent::Paint(*paint.fingerprint().as_bytes()),
+                paint.image(),
+            )),
             (None, Some(_), true) => world
                 .get::<BatchDraw>(entity)
                 .and_then(|draw| draw.image.clone()),
-            (None, Some(source), false) => Some(
-                world
-                    .resource_mut::<Assets<Image>>()
-                    .add(source.image().clone()),
-            ),
+            (None, Some(source), false) => Some(stored_image(
+                world,
+                ImageContent::Canonical(*source.fingerprint().as_bytes()),
+                source.image(),
+            )),
             (None, None, _) => None,
         };
         report.painted += usize::from(paint.is_some());
@@ -1248,6 +1235,55 @@ pub fn sync_frame(
     world.insert_resource(BatchEntities(live));
     report.presentation = apply_presentation(world, presentation, msaa);
     Ok(report)
+}
+
+/// What identifies an image a spawn is about to add: the upload's own digest,
+/// tagged by which path produced it so the two digests never stand in for each
+/// other.
+///
+/// A paint upload's fingerprint covers variant, extent, addressing and every
+/// texel; a canonical upload's covers the texel bytes, the format and the
+/// sampler state. Equal digests on one path mean equal content.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ImageContent {
+    Paint([u8; 32]),
+    Canonical([u8; 32]),
+}
+
+/// The images this module added to `Assets<Image>` and is still able to hand
+/// out again, by content.
+///
+/// A spawn looks here before adding, so one texture is one entry however many
+/// batches bind it — within a frame (what `paint_handles` used to do) and
+/// across frames, which is the case a batch respawned while another live batch
+/// still holds the same texture used to duplicate. Ownership is still recorded
+/// per spawn in [`BatchAssetRefs`], so a shared-by-lookup entry is released
+/// exactly like any other shared one. An entry is dropped from here when its
+/// image leaves the store.
+#[derive(Resource, Default)]
+struct ImageContents(BTreeMap<ImageContent, Handle<Image>>);
+
+/// The handle for `image`, reusing the entry already in the store with the same
+/// content and adding one only when there is none.
+fn stored_image(world: &mut World, content: ImageContent, image: &Image) -> Handle<Image> {
+    let known = world
+        .get_resource::<ImageContents>()
+        .and_then(|contents| contents.0.get(&content))
+        .filter(|handle| {
+            world
+                .get_resource::<Assets<Image>>()
+                .is_some_and(|images| images.contains(handle.id()))
+        })
+        .cloned();
+    if let Some(handle) = known {
+        return handle;
+    }
+    let handle = world.resource_mut::<Assets<Image>>().add(image.clone());
+    world
+        .get_resource_or_insert_with(ImageContents::default)
+        .0
+        .insert(content, handle.clone());
+    handle
 }
 
 /// The rows of `batch` the composed visibility verdict draws, counted.
@@ -1504,6 +1540,9 @@ fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAsse
         && let Some(mut images) = world.get_resource_mut::<Assets<Image>>()
     {
         reclaimed.images = usize::from(images.remove(image).is_some());
+        if let Some(mut contents) = world.get_resource_mut::<ImageContents>() {
+            contents.0.retain(|_, handle| handle.id() != image);
+        }
     }
     reclaimed
 }

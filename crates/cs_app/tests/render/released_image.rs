@@ -360,9 +360,10 @@ fn accept_t514_an_image_shared_with_another_live_batch_stays_in_the_store() {
     );
     every_handle_resolves(&world);
 
-    // The wing comes back. Its spawn binds the paint again, and the dedup is
-    // per call, so the store holds the tail's original and the wing's own — two,
-    // both owned, neither accumulating across cycles.
+    // The wing comes back. Its spawn binds the paint again and finds the tail's
+    // texture in the store with the same content (Rally #728), so it takes that
+    // handle: one entry, owned by both batches. Until #728 the dedup was per
+    // call, and this pinned `2` — the tail's original and the wing's own.
     let respawn = sync_frame(
         &mut world,
         &scene.drawn_submitted(),
@@ -373,7 +374,11 @@ fn accept_t514_an_image_shared_with_another_live_batch_stays_in_the_store() {
     .expect("the drawn frame syncs again");
     assert_eq!(respawn.spawned, 1, "the wing's batch comes back");
     assert_eq!(respawn.reused, 1);
-    assert_eq!(images(&world), 2, "each live batch binds a texture it owns");
+    assert_eq!(images(&world), 1, "both live batches bind the one texture");
+    assert_eq!(
+        bound_image(&world, batch_entity(&world, RenderPhase::Masked)),
+        shared
+    );
 
     // And a frame that reuses every batch still adds nothing.
     let reused = images(&world);
@@ -397,9 +402,9 @@ fn accept_t514_an_image_shared_with_another_live_batch_stays_in_the_store() {
         "a frame that reuses every batch adds no image"
     );
 
-    // The wing is released again — and this time its texture is its own, since
-    // the respawn added one the tail does not sample. The count comes back down
-    // instead of climbing.
+    // The wing is released again — its texture is still the tail's, so it stays
+    // (before #728 it was the wing's own and went back). The store does not
+    // climb.
     let released = sync_frame(
         &mut world,
         &scene.partial_submitted(),
@@ -413,7 +418,7 @@ fn accept_t514_an_image_shared_with_another_live_batch_stays_in_the_store() {
     assert_eq!(
         images(&world),
         1,
-        "the store is back to the tail's own texture — no growth per cycle"
+        "the store still holds only the shared texture — no growth per cycle"
     );
     assert_eq!(
         released.reclaimed,
@@ -421,9 +426,9 @@ fn accept_t514_an_image_shared_with_another_live_batch_stays_in_the_store() {
             meshes: 1,
             materials: 1,
             additive_materials: 0,
-            images: 1,
+            images: 0,
         },
-        "this cycle's texture has no live batch and no live material left"
+        "the tail still owns the texture the wing shared"
     );
     every_handle_resolves(&world);
 
@@ -472,6 +477,56 @@ fn accept_t514_an_image_shared_with_another_live_batch_stays_in_the_store() {
         },
         "the shared texture is handed back once, by the last release to end"
     );
+}
+
+/// A batch respawned while another live batch holds the same texture reuses
+/// that entry: the store holds one texture for the two identical batches while
+/// both are live, and grows by nothing over repeated release/respawn cycles.
+///
+/// Against the per-call dedup it replaced, the first respawn leaves two entries
+/// (the tail's and a copy the wing added).
+#[test]
+fn accept_t728_a_respawned_batch_reuses_the_identical_texture_in_the_store() {
+    let scene = shared_scene();
+    let mut world = open_world();
+    let sync = |world: &mut World, submitted: Vec<SubmittedDraw<'_>>, frame: &BatchedFrame| {
+        sync_frame(world, &submitted, frame, SESSION, &scene.runtime).expect("the frame syncs")
+    };
+    sync(&mut world, scene.drawn_submitted(), &scene.drawn_frame);
+    assert_eq!(images(&world), 1);
+    let tail = batch_entity(&world, RenderPhase::Opaque);
+    let shared = bound_image(&world, tail);
+
+    for cycle in 0..4 {
+        let released = sync(&mut world, scene.partial_submitted(), &scene.partial_frame);
+        assert_eq!(released.released, 1, "cycle {cycle}");
+        assert_eq!(images(&world), 1, "cycle {cycle}: the tail keeps it");
+        assert_eq!(released.reclaimed.images, 0, "cycle {cycle}");
+        let back = sync(&mut world, scene.drawn_submitted(), &scene.drawn_frame);
+        assert_eq!(back.spawned, 1, "cycle {cycle}");
+        assert_eq!(
+            images(&world),
+            1,
+            "cycle {cycle}: two identical batches, one stored texture"
+        );
+        let wing = batch_entity(&world, RenderPhase::Masked);
+        assert_eq!(bound_image(&world, wing), shared, "cycle {cycle}");
+        every_handle_resolves(&world);
+    }
+
+    // Releasing everything still hands the one texture back, once.
+    let last = sync(
+        &mut world,
+        scene.withheld_submitted(),
+        &scene.withheld_frame,
+    );
+    assert_eq!(images(&world), 0);
+    assert_eq!(last.reclaimed.images, 1);
+    // And a new spawn after the store emptied adds a fresh entry (the lookup
+    // does not hand out a handle that left the store).
+    sync(&mut world, scene.drawn_submitted(), &scene.drawn_frame);
+    assert_eq!(images(&world), 1);
+    every_handle_resolves(&world);
 }
 
 // ---------------------------------------------------------------------------
