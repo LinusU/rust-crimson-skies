@@ -994,3 +994,65 @@ fn snapshot(root: &Path) -> Vec<(PathBuf, u64)> {
     rows.sort();
     rows
 }
+
+// --- second review (F15-B-INDEP): startup bound and record sequence --------
+
+/// A store reopened under a smaller budget than the one it was written
+/// under holds no more than the new budget allows once it has opened.
+#[test]
+fn accept_f15_b_startup_enforces_a_smaller_budget() {
+    let fixture = Fixture::new("f15-b-startup-budget");
+    let mut store = fixture.store(8, 1 << 20);
+    for key in [key_a(), key_b(), key_ab()] {
+        store
+            .commit(sealed(&store, &key, &payload(128)))
+            .expect("the write commits");
+    }
+    drop(store);
+
+    let store = fixture.reopen(2, 1 << 20);
+    assert!(
+        store.usage().entries <= 2,
+        "startup left {} entries under a budget of 2",
+        store.usage().entries
+    );
+    let store = fixture.reopen(8, 200);
+    assert!(
+        store.usage().bytes <= 200,
+        "startup left {} bytes under a budget of 200",
+        store.usage().bytes
+    );
+}
+
+/// A record whose write sequence is the largest representable one is a
+/// well-formed record; opening a store over it must not panic.
+#[test]
+fn accept_f15_b_a_maximal_write_sequence_does_not_panic_startup() {
+    let fixture = Fixture::new("f15-b-max-sequence");
+    let mut store = fixture.store(8, 1 << 20);
+    store
+        .commit(sealed(&store, &key_a(), &payload(128)))
+        .expect("the write commits");
+    drop(store);
+    let header = fixture
+        .entries()
+        .join(key_a().digest().to_hex())
+        .join(HEADER_FILE);
+    let text = fs::read_to_string(&header).expect("the record is readable");
+    let edited: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("sequence ") {
+                format!("sequence {}\n", u64::MAX)
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    fs::write(&header, edited).expect("the record is edited");
+
+    let mut store = fixture.reopen(8, 1 << 20);
+    store
+        .commit(sealed(&store, &key_b(), &payload(128)))
+        .expect("a later write still commits");
+}

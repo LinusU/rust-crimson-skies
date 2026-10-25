@@ -359,6 +359,10 @@ pub struct RecoveryReport {
     /// Entries below `entries/` that are not this store's own bookkeeping
     /// and were therefore left untouched.
     pub kept_unknown: usize,
+    /// Entries dropped, oldest write first, because the store held more
+    /// than its budget allows (the budget was lowered since they were
+    /// written).
+    pub evicted_over_budget: usize,
     /// What the store holds after recovery.
     pub usage: StoreUsage,
 }
@@ -368,11 +372,12 @@ impl fmt::Display for RecoveryReport {
         write!(
             f,
             "swept {} interrupted write(s), dropped {} uncommitted and {} corrupt \
-             entries, kept {} unrecognized entries; {} entries totalling {} bytes \
-             remain",
+             entries, evicted {} over budget, kept {} unrecognized entries; {} \
+             entries totalling {} bytes remain",
             self.swept_staging,
             self.dropped_uncommitted,
             self.dropped_corrupt,
+            self.evicted_over_budget,
             self.kept_unknown,
             self.usage.entries,
             self.usage.bytes
@@ -865,6 +870,7 @@ impl CacheStore {
         };
         store.sweep_staging(&staging_root)?;
         store.scan_entries(&entries_root)?;
+        store.enforce_budget()?;
         store.recovery.usage = store.usage();
         Ok(store)
     }
@@ -1222,6 +1228,28 @@ impl CacheStore {
         })
     }
 
+    /// Evicts, lowest write sequence first, until what recovery indexed
+    /// fits the budget: a store opened under a smaller budget than it was
+    /// written under is bounded from the first moment, not from its next
+    /// commit.
+    fn enforce_budget(&mut self) -> Result<(), StoreError> {
+        while self
+            .budget
+            .check(self.entries.len() as u64, self.bytes)
+            .is_err()
+        {
+            let Some(victim) = self.oldest_entry(None) else {
+                break;
+            };
+            remove_entry(&self.entries_root().join(&victim))?;
+            if let Some(removed) = self.entries.remove(&victim) {
+                self.bytes = self.bytes.saturating_sub(removed.payload_len);
+            }
+            self.recovery.evicted_over_budget += 1;
+        }
+        Ok(())
+    }
+
     /// Evicts committed entries, lowest write sequence first, until an
     /// entry of `payload_len` bytes fits without displacing itself.
     fn make_room(
@@ -1406,7 +1434,7 @@ impl CacheStore {
             return Err(Unusable::Corrupt);
         }
         self.bytes += payload_len;
-        self.next_sequence = self.next_sequence.max(stored.sequence + 1);
+        self.next_sequence = self.next_sequence.max(stored.sequence.saturating_add(1));
         self.entries.insert(
             name.to_owned(),
             IndexedEntry {
@@ -1610,7 +1638,13 @@ fn read_header(path: &Path) -> Result<StoredHeader, StoreError> {
         state,
         key: rebuilt,
         sequence: match field("sequence") {
-            Some(value) => number(path, "sequence", Some(value))?,
+            // `u64::MAX` is a sequence the store cannot have assigned (it
+            // would take 2^64 writes) and one it could not number a later
+            // write after: not a record it wrote, so not one it keeps.
+            Some(value) => match number(path, "sequence", Some(value))? {
+                u64::MAX => return Err(corrupt(path, "the write sequence is out of range")),
+                sequence => sequence,
+            },
             None => 0,
         },
     })
