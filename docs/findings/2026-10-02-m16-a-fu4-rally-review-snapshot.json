@@ -32,6 +32,22 @@
       "note": "The report already named both agents and said the review is not independent; only the Rally facts were missing. Read with the `rally` MCP server (get_task for #485) from the activity log."
     },
     {
+      "task_key": "F09-PALETTE",
+      "rally_task": 385,
+      "added_under": "EVID-SNAPSHOT-BACKLOG-2 (#2114)",
+      "added_by": "sonnet-1/sonnet-1",
+      "read_at": "2026-10-25T07:30:00Z",
+      "note": "The report named the implementer and reviewer deepseek-1 and said the review is not independent, but not devin-1's earlier implement claim, which preceded deepseek-1's resume and expired without a submission. Decision: the claim is recorded with that honest outcome, and the report's `review.identity` and its harness literal in crates/cs_content/src/livery.rs were corrected together to name it. Read with the `rally` MCP server (get_task for #385) from the activity log."
+    },
+    {
+      "task_key": "F09-PREFIX",
+      "rally_task": 386,
+      "added_under": "EVID-SNAPSHOT-BACKLOG-2 (#2114)",
+      "added_by": "sonnet-1/sonnet-1",
+      "read_at": "2026-10-25T07:30:00Z",
+      "note": "The report named only the reviewing round and never said outright that the review is not independent (it said the different-instance preference could not be satisfied). Its `review.identity` was corrected to say so and to name claude-2/claude-1's earlier implement claim, which blocked on #392. Read with the `rally` MCP server (get_task for #386) from the activity log."
+    },
+    {
       "task_key": "F14-D.7",
       "rally_task": 490,
       "added_under": "F14-D.7-SNAPSHOT (#578)",
@@ -443,6 +459,78 @@
       },
       "report_written_by": "implementer",
       "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F09-PALETTE",
+      "rally_task": 385,
+      "evidence_report": "docs/findings/evidence/F09-PALETTE.json",
+      "merged_sha": "b5521e3b8b30dd76a5ec715f78270824314142ac",
+      "implementer": {
+        "actor": "deepseek-1",
+        "rally_actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-02T06:23:13Z",
+        "submitted": "2026-10-02T07:51:27Z",
+        "earlier_implement_claims": [
+          {
+            "actor": "devin-1",
+            "rally_actor": "Jakob - Devin SWE-2/devin-1",
+            "claim_started": "2026-10-02T03:20:16Z",
+            "outcome": "no submission: devin-1 recorded survey progress notes only, asked for work again at 2026-10-02T04:13:06Z (claim.resumed), and the implement lease expired on 2026-10-02T06:14:09Z; deepseek-1 resumed the stage"
+          }
+        ]
+      },
+      "reviewer": {
+        "actor": "deepseek-1",
+        "rally_actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-10-02T07:51:48Z",
+        "merge_event": {
+          "type": "task.merged",
+          "actor": "rally",
+          "at": "2026-10-02T08:29:47Z"
+        },
+        "approval_event": {
+          "type": "task.approved",
+          "actor": "deepseek-1/deepseek-1",
+          "at": "2026-10-02T08:23:15Z"
+        }
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the check requires the report to keep saying so.",
+      "notes": "The report's `created_at` (2026-10-02T08:15:29Z) is inside the review claim, so the copy on main is the reviewer's regeneration on candidate tree be435217; the branch landed through Rally's landing queue, so `merge_event` is the system `task.merged` and `approval_event` is the reviewer's own `task.approved`. devin-1's earlier implement claim (the snag filed under #2114) is recorded with its honest outcome, and the report's `review.identity` and its harness literal now name it, byte-equal; `claim_started` is the `task.resumed` event, per `claim_started_source`. The reviewer's notes record that the --require-pass rejection of a nonempty `unknowns` array is expected and documented. See `actor_spelling` for why `actor` is the agent-instance name."
+    },
+    {
+      "task_key": "F09-PREFIX",
+      "rally_task": 386,
+      "evidence_report": "docs/findings/evidence/F09-PREFIX.json",
+      "merged_sha": "f61321ee57af7882ffeef69b14cfc3fdf411346e",
+      "implementer": {
+        "actor": "bunny-alpha-1",
+        "rally_actor": "bunny-alpha-1/bunny-alpha-1",
+        "claim_started": "2026-10-13T21:33:51Z",
+        "submitted": "2026-10-13T22:58:07Z",
+        "earlier_implement_claims": [
+          {
+            "actor": "claude-2/claude-1",
+            "claim_started": "2026-10-02T03:59:51Z",
+            "outcome": "blocked at 2026-10-02T04:00:42Z on #392 (GameZ node array reader) with no code changed and nothing pushed; the owner moved the task back to todo on 2026-10-05"
+          }
+        ]
+      },
+      "reviewer": {
+        "actor": "bunny-alpha-1",
+        "rally_actor": "bunny-alpha-1/bunny-alpha-1",
+        "review_claim_started": "2026-10-13T22:58:34Z",
+        "merge_event": {
+          "type": "task.merged",
+          "actor": "bunny-alpha-1/bunny-alpha-1",
+          "at": "2026-10-14T00:07:03Z"
+        }
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer's context was fresh (a new session with no implementation memory).",
+      "notes": "The report's `created_at` (2026-10-13T23:40:15Z) is inside the review claim, so the copy on main is the reviewer's regeneration on the rebased tree; the branch fast-forwarded directly, so `merge_event` is the reviewer's own `task.merged`. The report's `review.identity` now says outright that the review is not independent and names the earlier claude-2/claude-1 claim; the harness reads the identity at run time (CS_EVIDENCE_REVIEW), so there is no literal to keep in step. See `actor_spelling` for why `actor` is the agent-instance name."
     },
     {
       "task_key": "F09-PAINTSHOP",

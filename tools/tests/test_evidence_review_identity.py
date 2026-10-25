@@ -1384,6 +1384,45 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                     for problem in
                                     review_problems(self.snapshots, self.harnesses, quiet)[0]))
 
+    # -- EVID-SNAPSHOT-BACKLOG-2 (#2114): F09-PALETTE and F09-PREFIX, stages with an earlier claim ---
+
+    BACKLOG_2114 = {'F09-PALETTE': (385, 'deepseek-1', 'devin-1'),
+                    'F09-PREFIX': (386, 'bunny-alpha-1', 'claude-2/claude-1')}
+
+    def test_accept_evid_snapshot_backlog_2114_stages_are_recorded_with_their_earlier_claims(self):
+        problems, unrecorded = review_problems(self.snapshots, self.harnesses, self.reports)
+        for key, (number, agent, earlier) in self.BACKLOG_2114.items():
+            with self.subTest(key):
+                self.assertNotIn(key, unrecorded, f'{key} is still an advisory')
+                recorded = self.non_campaign_by_key()[key]
+                self.assertEqual(recorded['rally_task'], number)
+                self.assertEqual(recorded['implementer']['actor'], agent)
+                self.assertEqual(recorded['reviewer']['actor'], agent)
+                claims = recorded['implementer']['earlier_implement_claims']
+                self.assertEqual(len(claims), 1)
+                self.assertIn(earlier, claims[0]['actor'])
+                self.assertTrue(claims[0]['outcome'])
+                self.assertLess(claims[0]['claim_started'], recorded['implementer']['claim_started'])
+                identity = self.reports[key]['review']['identity']
+                self.assertIn(claims[0]['actor'], identity)
+                self.assertIn('not independent', identity.lower())
+                created = self.reports[key]['created_at']
+                self.assertLessEqual(recorded['reviewer']['review_claim_started'], created)
+                self.assertLessEqual(created, recorded['reviewer']['merge_event']['at'])
+        self.assertEqual([problem for problem in problems
+                          if any(key in problem for key in self.BACKLOG_2114)], [])
+
+    def test_accept_evid_snapshot_backlog_2114_detects_an_unnamed_earlier_claim(self):
+        for key, (_, _, earlier) in self.BACKLOG_2114.items():
+            with self.subTest(key):
+                reports = copy_reports(self.reports)
+                reports[key]['review']['identity'] = reports[key]['review']['identity'].replace(
+                    earlier.split('/')[0], 'agent-9')
+                self.assertTrue(any('does not name the implementer' in problem for problem in
+                                    review_problems(self.snapshots, self.harnesses, reports)[0]))
+                self.assertIn(key, review_problems(drop_task(self.snapshots, key),
+                                                   self.harnesses, self.reports)[1])
+
     # -- M16-A-FU6 (#523): harnesses whose identity or task id is filled in at run time ---
 
     def test_accept_m16_a_fu6_a_json_encoder_reads_as_a_jstr_encoder(self):
