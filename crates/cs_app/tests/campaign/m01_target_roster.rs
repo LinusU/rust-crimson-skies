@@ -155,7 +155,7 @@ fn accept_m01_target_roster_the_composed_mission_rosters_the_convoy() {
         assert_eq!(record.class, TargetClass::WorldObject);
         assert_eq!(roster.faction_of(bound.actor), Some(&record.faction));
     }
-    // The wreck is neutral: rostered, and no hostility is declared for it.
+    // The wreck is neutral: rostered `Neutral`, and no hostility is declared for it.
     let wreck = targets.target("shipwreck").expect("the wreck spawned");
     let record = store.record(&wreck.actor).expect("the wreck is rostered");
     assert_eq!(record.faction.key(), "neutral");
@@ -165,8 +165,8 @@ fn accept_m01_target_roster_the_composed_mission_rosters_the_convoy() {
             .iter()
             .find(|(actor, ..)| *actor == wreck.actor)
             .map(|(_, _, allegiance)| *allegiance),
-        Some(None),
-        "no relation is invented for a neutral node"
+        Some(Some(Allegiance::Neutral)),
+        "a neutral node is declared Neutral, never hostile"
     );
 }
 
@@ -189,11 +189,11 @@ fn accept_m01_target_roster_decision_follows_the_measured_team() {
         Some(Allegiance::Friendly)
     );
 
-    // Neutral: rostered, but no hostility is invented.
+    // Neutral: rostered `Neutral`, no hostility is invented (#2099).
     let (roster, _) = ground_target_roster(&target_with(measured(0), false), Some(1));
     let roster = roster.unwrap();
     assert_eq!(roster.faction.key(), "neutral");
-    assert_eq!(roster.player_allegiance, None);
+    assert_eq!(roster.player_allegiance, Some(Allegiance::Neutral));
 
     // An unread player team states no side.
     let (roster, _) = ground_target_roster(&target_with(measured(2), false), None);

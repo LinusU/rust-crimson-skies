@@ -598,8 +598,11 @@ pub fn measured_team(faction: &ContentId) -> Option<u32> {
 /// subtree (`0x4bf080` → `0x4bef90`, measured by #1155/#1177), spelled in the
 /// loader's vocabulary. The relation is the designed reading of
 /// [`declared_player_allegiance`], except that a `neutral` (team 0) node is
-/// rostered with **no** relation: nothing measured says the player's flight is
-/// opposed to a neutral node, and hostility is not invented for one.
+/// rostered with the `Neutral` relation: nothing measured says the player's
+/// flight is opposed to a neutral node, so hostility is not invented for one.
+/// Whether a gun round may damage it is the gun's `FriendlyFireRule`
+/// (`NonFriendly` admits neutral; #2099, `2026-10-25-m01-hit-dispatch-team-trace.md`
+/// found no team compare in the original's hit path).
 pub fn ground_target_roster(
     target: &crate::mission_targets::BoundTarget,
     player_team: Option<u32>,
@@ -632,7 +635,7 @@ pub fn ground_target_roster(
         }
     };
     let player_allegiance = if team == 0 {
-        None
+        Some(Allegiance::Neutral)
     } else {
         declared_player_allegiance(&faction, player_team)
     };

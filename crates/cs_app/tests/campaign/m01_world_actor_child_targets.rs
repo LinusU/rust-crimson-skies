@@ -17,14 +17,10 @@ use cs_app::mission_actors::{
     MissionGroundTarget, MissionGroundTargetReport, MissionGroundTargetSweep, MissionZeppelinActor,
 };
 use cs_app::mission_launch::plan_mission_launch;
-use cs_app::mission_session::MISSION_FACTION_PLAYER;
 use cs_app::mission_session::{build_headless, stage_for};
 use cs_app::mission_targets::TargetFrame;
-use cs_app::targeting::TargetingSession;
 use cs_app::world_actors::WorldActorBinding;
 use cs_content::scene::CanonicalTransform;
-use cs_sim::targeting::Allegiance;
-use cs_types::content::{ContentId, ContentKind};
 
 use crate::campaign::common::label;
 use crate::campaign::m01_convoy_gun_hits::{
@@ -130,20 +126,8 @@ fn accept_m01_world_actor_child_targets_gun_burst_destroys_hydrogentank1() {
         .expect("tank spawned")
         .actor;
     let point = sweep_centre(&app, "hydrogentank1");
-    // The resolver answers `neutral` for the tanks and a neutral node is
-    // rostered with no relation (`2026-10-18-m01-target-roster.md`), which the
-    // weapon step does not admit under `HostileOnly`. Whether the original
-    // opposes the player to the tanks is unmeasured, so this test declares the
-    // relation itself: it pins that the *geometry* reaches the damage node.
-    {
-        let player =
-            ContentId::from_source(ContentKind::Faction, MISSION_FACTION_PLAYER).expect("faction");
-        let neutral = ContentId::from_source(ContentKind::Faction, "neutral").expect("faction");
-        let mut targeting = app.world_mut().resource_mut::<TargetingSession>();
-        let store = targeting.store_mut();
-        store.set_allegiance(player.clone(), neutral.clone(), Allegiance::Hostile);
-        store.set_allegiance(neutral, player, Allegiance::Hostile);
-    }
+    // No relation is declared here: the roster declares the tanks `Neutral`
+    // toward the player and the designed M01 gun admits that (#2099).
     for _ in 0..MAX_FRAMES {
         aim_player_at(&mut app, point, Vec3::new(1.0, 0.15, 0.3));
         fire(&mut app);

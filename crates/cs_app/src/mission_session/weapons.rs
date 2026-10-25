@@ -324,13 +324,16 @@ pub fn designed_ammunition() -> DeclaredAmmunition {
 
 /// The designed interaction rules every M01 gun runs under.
 ///
-/// Self-hit excluded and friendly fire limited to declared hostiles: design,
-/// not measurement (F27 non-negotiable 4).
+/// Self-hit excluded and friendly fire limited to declared hostile or neutral
+/// relations (an ally is never hit): design, not measurement (F27
+/// non-negotiable 4). The original's hit path compares no team
+/// (`2026-10-25-m01-hit-dispatch-team-trace.md`, #2099), so neutral world
+/// targets such as `hydrogentank1..4` are not refused by relation.
 #[must_use]
 pub fn designed_interaction_rules() -> InteractionRules {
     InteractionRules {
         self_hit: known(DeclaredSelfHitRule::Excluded),
-        friendly_fire: known(DeclaredFriendlyFireRule::HostileOnly),
+        friendly_fire: known(DeclaredFriendlyFireRule::NonFriendly),
         penetration: known(false),
         ricochet: known(false),
         ammo_switching: known(false),
