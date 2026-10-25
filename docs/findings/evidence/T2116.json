@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T2116",
+ "candidate_tree": "a4cceabb5aaa85b21a5d76952aac08839d767f0f",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-25T07:37:23Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t2116_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t2116_projectile_target_writers::accept_t2116_image_pins_the_target_writers", "status": "pass", "evidence": ["cargo-test.log", "target-writers.json"]}, {"id": "accept_t2116_projectile_target_writers::accept_t2116_only_wep_11_declares_beeper_seeker", "status": "pass", "evidence": ["cargo-test.log", "target-writers.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "7cd94fbfc0555a4ac06e6a4ca02a891a13ff0ba92e3e8e5cc803d7a7c24975e0", "kind": "log"}, {"path": "target-writers.json", "sha256": "e245d444ea42cd4f71f28db391bbf28504c7ae2628042ba352f9f486295cb545", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer, not independent)", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR and CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second record, target-writers.json, holding the engine image digest, the resolution and the limitations. MEASURED by static analysis of the owner-supplied decrypted executable (byte windows and a closed inventory of the 65 register-based [reg+0x70] stores pinned in the acceptance test): the launch 0x5aef40 has six direct callers and no other reference, none of which stores a target; the only writers of projectile +0x70/+0x74 are the launch zeroing (0x5af610), the removed-object sweep clear (0x5ac0f1) and the BEEPER_SEEKER callback 0x441780, installed into slot +0x688 by 0x441830 and run every step, which assigns and re-assigns the target from the beeper search 0x4b8b50; of the twelve guided records only wep_11 declares BEEPER_SEEKER. STILL UNMEASURED (none claimed): see the limitations array of target-writers.json - how the eleven other guided records obtain a target. The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
