@@ -2406,6 +2406,9 @@ pub struct OriginalRocketBlast {
     pub health_damage: Option<f64>,
     /// `LOCK_ON`, the first value.
     pub lock_on: Option<f64>,
+    /// `RANGE`, the first value: the distance at which the projectile's
+    /// flight ends, metres (task #454).
+    pub range: Option<f64>,
     /// `RANGE_MINIMUM`, the first value: the arming distance, metres. Measured
     /// (task #1318): an impact or detonation inside it is governed by
     /// [`Self::range_minimum_blast_scale`].
@@ -2416,6 +2419,61 @@ pub struct OriginalRocketBlast {
     pub range_minimum_blast_scale: Option<f64>,
     /// Every key the record declares, at its top level, sorted.
     pub keys: BTreeSet<String>,
+}
+
+/// What a locked-on rocket does at the end of its `RANGE` after it lost its
+/// target, read from the weapon flags (task #454).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OriginalRangeEnd {
+    /// The projectile detonates: locked-on and no `EXPIRES` key.
+    Detonates,
+    /// `EXPIRES` is declared: it detonates only with `DETONATE_AT_RANGE`.
+    DetonatesOnlyWithDetonateAtRange,
+}
+
+/// What one retail guided rocket does once its target pointer is zero.
+///
+/// **Measured** (task #454,
+/// `docs/findings/2026-10-25-f28-guidance-loss-per-weapon-audit.md`): a lost
+/// target is a zero pointer at projectile offset `+0x70`; the steering call
+/// (`0x5af7f9`) and the proximity branch (`0x5b021b`) both skip on it, so the
+/// rocket keeps its last heading and only the timer and the end of `RANGE` can
+/// detonate it. Nothing re-acquires.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalLostTargetRule {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// `DETONATION_DISTANCE`, metres: the proximity trigger a lost target no
+    /// longer reaches.
+    pub proximity_trigger_lost_m: Option<f64>,
+    /// `DETONATION_TIME`, seconds, when positive: the surviving timer trigger.
+    pub timer_s: Option<f64>,
+    /// `RANGE`, metres: where the flight ends.
+    pub range_m: Option<f64>,
+    /// What the end of `RANGE` does.
+    pub range_end: OriginalRangeEnd,
+}
+
+impl OriginalRocketBlast {
+    /// The lost-target rule of a guided (`LOCK_ON`) rocket; `None` for an
+    /// unguided one, which has no target to lose.
+    #[must_use]
+    pub fn lost_target_rule(&self) -> Option<OriginalLostTargetRule> {
+        self.lock_on?;
+        let range_end = if !self.keys.contains("EXPIRES") || self.keys.contains("DETONATE_AT_RANGE")
+        {
+            OriginalRangeEnd::Detonates
+        } else {
+            OriginalRangeEnd::DetonatesOnlyWithDetonateAtRange
+        };
+        Some(OriginalLostTargetRule {
+            record: self.record.clone(),
+            proximity_trigger_lost_m: self.detonation_distance.filter(|d| *d > 0.0),
+            timer_s: self.detonation_time_s.filter(|t| *t > 0.0),
+            range_m: self.range,
+            range_end,
+        })
+    }
 }
 
 /// Reads every `ROCKET` record of the installation's `weapons.zrd`.
@@ -2546,6 +2604,7 @@ fn rocket_blast(
         armor_damage: number("ARMOR_DAMAGE"),
         health_damage: number("HEALTH_DAMAGE"),
         lock_on: number("LOCK_ON"),
+        range: number("RANGE"),
         range_minimum: number("RANGE_MINIMUM"),
         range_minimum_blast_scale: second.get("RANGE_MINIMUM").copied(),
         keys,
