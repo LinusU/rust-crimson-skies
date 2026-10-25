@@ -31,6 +31,7 @@ mod accept_f38_d2_differential_host_identity;
 mod accept_m01_lc_lowering_conditions;
 mod accept_m01_lc_lowering_signatures;
 mod accept_m10_b_fu1_travelers_counting;
+mod accept_m14_b_fu1_travelers_int_radius;
 mod accept_t583_rng_state_record;
 mod accept_test_bin_rest_script;
 mod accept_wake_repeat;

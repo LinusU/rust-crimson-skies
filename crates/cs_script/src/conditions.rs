@@ -1023,15 +1023,22 @@ fn travelers(
             });
         }
     };
-    let Value::Float(radius) = &args[3] else {
-        return Err(ConditionRefusal::BadOperands {
-            block: block.to_owned(),
-            key: directive.key.clone(),
-            detail: format!(
-                "the radius is a float and this site spells {}",
-                value_label(&args[3])
-            ),
-        });
+    // Measured (parse at `0x467a70`): child3 is read by type tag — a real
+    // copies its bits and an int converts with `fild dword; fstp dword`
+    // (`0x467cb6`-`0x467cbe`), i.e. i32 -> f32; text and a list are refused.
+    let radius = &match &args[3] {
+        Value::Float(radius) => *radius,
+        Value::Int(radius) => f64::from(*radius as f32),
+        other => {
+            return Err(ConditionRefusal::BadOperands {
+                block: block.to_owned(),
+                key: directive.key.clone(),
+                detail: format!(
+                    "the radius is a real (int or float) and this site spells {}",
+                    value_label(other)
+                ),
+            });
+        }
     };
     if !radius.is_finite() {
         return Err(ConditionRefusal::BadOperands {
