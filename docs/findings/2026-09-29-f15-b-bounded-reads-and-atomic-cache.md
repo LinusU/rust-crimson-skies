@@ -341,3 +341,38 @@ No original data, no evidence report and no `verified_original` claim:
 this stage's capabilities are ordinary build/test only, and F15-D still
 owes the cold/warm/restart run on real content.
 
+
+## Second review (2026-10-25, agent `sonnet-2`, task F15-B-INDEP #394)
+
+**Independence:** implementer `bunny-2`; reviewer `sonnet-2`, a different
+agent instance that read the store, codec and finding with a **fresh
+context** (no implementation reasoning). Not `verified_original`; the
+layout stays new-engine design.
+
+Agreed with the first review: the commit is the rename and publish-by-copy
+is not catchable from userspace. Nothing else has that shape: `seal`'s
+header rewrite and `commit`'s sequence rewrite both happen on scratch.
+
+Two defects found, each with a test that fails without the fix:
+
+1. **Startup did not enforce the budget.** `open` indexed whatever was on
+   disk, so a store reopened under a smaller `CacheBudget` held more than
+   its bound until the next commit. `enforce_budget` now evicts lowest
+   write sequence first before `open` returns and counts them in
+   `RecoveryReport::evicted_over_budget`. Test:
+   `accept_f15_b_startup_enforces_a_smaller_budget`.
+2. **A record with `sequence 18446744073709551615` panicked `open`.** The
+   sequence is not covered by the key digest, so a well-formed record could
+   carry it, and `index_entry` computed `sequence + 1`. `read_header` now
+   refuses that value (the store cannot have assigned it) and the index
+   uses `saturating_add`. Test:
+   `accept_f15_b_a_maximal_write_sequence_does_not_panic_startup`.
+
+Mutation checks run by this reviewer (each reverted): removing the new
+`enforce_budget` call fails defect-1's test; restoring `sequence + 1` fails
+defect-2's test (overflow panic observed before the fix). Not re-run: the
+first review's matrix, apart from the new tests.
+
+Left as recorded, not fixed: `commit` evicts before the rename, so a rename
+failure after eviction costs the evicted entries (cache loss only, never
+wrong bytes); a committed record with no `sequence` line decodes as 0.
