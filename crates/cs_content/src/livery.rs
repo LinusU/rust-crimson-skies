@@ -7255,7 +7255,8 @@ mod evidence {
             artifact_array(&artifacts),
             str_array(&unknowns),
             jstr(
-                "implemented by deepseek-1 (Rally #385); reviewed and regenerated on the rebased \
+                "implemented by deepseek-1 (Rally #385) after an earlier implement claim by Jakob - \
+                 Devin SWE-2/devin-1 expired without a submission; reviewed and regenerated on the rebased \
                  commit by deepseek-1 in a fresh session. The same agent identity implemented and \
                  reviewed this task, so this is not independent evidence in the owner directive's \
                  sense, and no agent review replaces the owner's human approval."
