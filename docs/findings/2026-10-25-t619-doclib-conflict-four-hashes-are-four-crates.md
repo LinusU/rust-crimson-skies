@@ -29,7 +29,7 @@ why the finding in #617 saw several multi-hash names.
 
 Not by design, but harmless as a naming collision. It is already gone: the
 2026-10-17 tasks (`1195581c2` cs_content, `e54eb6a93` cs_formats, `1d3a8af5b`
-cs_sim, and the earlier cs_app consolidation) set `autotests = false` and made
+cs_sim; cs_app likewise declares five `[[test]]` suites) set `autotests = false` and made
 each former file a `mod` of the crate's `tests/main.rs`.
 
 Current state, from `cargo metadata --no-deps --locked`: 14 integration-test
