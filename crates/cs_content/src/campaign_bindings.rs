@@ -2480,9 +2480,26 @@ pub struct SourceContext {
     /// archive's own data declares — never by directory digits, which are
     /// storage coordinates only.
     campaign: Vec<CampaignMission>,
+    /// The owner-ruled guide titles, consulted only when a declared title is
+    /// carried by no row.
+    title_rulings: TitleRulings,
 }
 
 impl SourceContext {
+    /// Replaces the owner-ruled title table this context binds with.
+    ///
+    /// [`SourceContext::read`] starts from the committed
+    /// `missions/bindings/title-rulings.tsv`.
+    pub fn with_title_rulings(mut self, title_rulings: TitleRulings) -> Self {
+        self.title_rulings = title_rulings;
+        self
+    }
+
+    /// The owner-ruled title table this context binds with.
+    pub fn title_rulings(&self) -> &TitleRulings {
+        &self.title_rulings
+    }
+
     /// Fingerprints `install_root`, reads its campaign directory layout and
     /// its localized UI string table.
     ///
@@ -2541,6 +2558,7 @@ impl SourceContext {
             string_asset_sha256,
             strings,
             campaign,
+            title_rulings: TitleRulings::committed(),
         })
     }
 
@@ -2598,7 +2616,23 @@ impl SourceContext {
         // Verbatim and region-prefixed long-name rows are two display forms of
         // one fact (see `SourceContext::confirm_title`); the record keeps the
         // row, not the form, and only the form decides which refusal applies.
-        let confirmation = self.confirm_title(discovery_title);
+        let mut confirmation = self.confirm_title(discovery_title);
+        // An owner-ruled guide title is consulted only where the declared
+        // title is carried by no row, and it is confirmed exactly too.
+        let mut ruling_used = None;
+        let mut ruling_refusal = None;
+        if confirmation == TitleConfirmation::Uncarried
+            && let Some(ruling) = self.title_rulings.for_label(&label)
+            && ruling.declared_title == discovery_title
+        {
+            match self.confirm_ruling(ruling) {
+                Ok(ruled) => {
+                    confirmation = ruled;
+                    ruling_used = Some(ruling);
+                }
+                Err(reason) => ruling_refusal = Some(reason),
+            }
+        }
         let title_row = confirmation.confirmed().map(|(row_id, _)| {
             self.strings
                 .rows()
@@ -2606,7 +2640,7 @@ impl SourceContext {
                 .find(|row| row.id == row_id)
                 .expect("a confirmed row is one of the table's rows")
         });
-        let title_reason = confirmation.refusal();
+        let title_reason = ruling_refusal.or(confirmation.refusal());
 
         let mut title_source = None;
         let mut title_enclosure = None;
@@ -2725,7 +2759,11 @@ impl SourceContext {
                     Some(source) => DependencyState::resolved(
                         Provenance::new(
                             id.claim(&label)?,
-                            ClaimStatus::ObservedTool,
+                            if ruling_used.is_some() {
+                                ClaimStatus::Inferred
+                            } else {
+                                ClaimStatus::ObservedTool
+                            },
                             Some(source.clone()),
                         )
                         .map_err(map_provenance)?,
@@ -2852,6 +2890,16 @@ impl SourceContext {
             }
         }
 
+        if let Some(ruling) = ruling_used {
+            unknowns.push(format!(
+                "title ruling: the declared title {:?} is carried by no localized row; the owner \
+                 ruled (Rally #470, 2026-10-25) that this work order names the mission whose \
+                 short name is {:?} (row {}, long-name row {}) — an inferred join, not an \
+                 original observation",
+                ruling.declared_title, ruling.retail_short_name, ruling.short_row, ruling.long_row
+            ));
+        }
+
         // A confirmed title whose own bytes could not be located inside its
         // decoded block is cited by the enclosing block; the record says so
         // rather than implying the block is the row.
@@ -2940,6 +2988,36 @@ impl SourceContext {
                     .then_some(row.id)
             })
             .collect()
+    }
+
+    /// Confirms an owner-ruled retail spelling, exactly.
+    ///
+    /// The ruled short name must be carried verbatim by exactly the ruled
+    /// short-name row, and the ruled long-name row must sit at the same
+    /// campaign position in the other campaign-length block.
+    fn confirm_ruling(&self, ruling: &TitleRuling) -> Result<TitleConfirmation, &'static str> {
+        let confirmed = self.confirm_title(&ruling.retail_short_name);
+        let TitleConfirmation::Confirmed {
+            row_id,
+            form: TitleForm::Verbatim,
+        } = confirmed
+        else {
+            return Err(RULED_TITLE_NOT_CARRIED_REFUSAL);
+        };
+        if row_id != ruling.short_row {
+            return Err(RULED_TITLE_NOT_CARRIED_REFUSAL);
+        }
+        let agreement = self.join_agreement();
+        let position = campaign_position_for(Some(row_id), &agreement)
+            .map_err(|_| RULED_TITLE_NOT_CARRIED_REFUSAL)?;
+        if !self
+            .other_spellings(position, row_id)
+            .iter()
+            .any(|(id, _)| *id == ruling.long_row)
+        {
+            return Err(RULED_TITLE_NOT_CARRIED_REFUSAL);
+        }
+        Ok(confirmed)
     }
 
     /// Confirms one discovery title against the localized table.
@@ -3224,6 +3302,114 @@ pub const UNCARRIED_TITLE_REFUSAL: &str = "no localized string carries the disco
 /// no single row names a mission and therefore no single campaign position.
 pub const AMBIGUOUS_TITLE_REFUSAL: &str = "several localized strings carry the discovery title, so \
      no single row names a mission and no campaign position was derived from the title";
+
+/// Why an owner-ruled title selects no localized row: the ruled retail
+/// spelling is not carried exactly at the ruled rows.
+pub const RULED_TITLE_NOT_CARRIED_REFUSAL: &str = "the owner-ruled retail spelling of the declared \
+     title is not carried exactly at the ruled localized rows, so no ruling joins this work order";
+
+/// One owner-ruled guide title (Rally #470).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleRuling {
+    /// The work order the ruling covers.
+    pub label: MissionLabel,
+    /// The declared title, which must equal the inventory's.
+    pub declared_title: String,
+    /// The exact retail short name the owner ruled to be the mission's.
+    pub retail_short_name: String,
+    /// The row that carries the short name.
+    pub short_row: u32,
+    /// The region-prefixed long-name row of the same campaign position.
+    pub long_row: u32,
+}
+
+/// The owner-ruled guide titles, read from
+/// `missions/bindings/title-rulings.tsv`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleRulings {
+    rulings: Vec<TitleRuling>,
+}
+
+/// Why a title-ruling table was rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleRulingError {
+    /// The 1-based line number.
+    pub line: usize,
+    /// What was wrong with the line.
+    pub reason: String,
+}
+
+impl TitleRulings {
+    /// No rulings: every declared title stands or falls on its own.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// The committed table.
+    ///
+    /// # Panics
+    ///
+    /// When the committed file is malformed, which a test catches.
+    pub fn committed() -> Self {
+        Self::parse(include_str!("../../../missions/bindings/title-rulings.tsv"))
+            .expect("the committed title-rulings table parses")
+    }
+
+    /// Parses the table: five tab-separated fields per line, `#` comments.
+    ///
+    /// # Errors
+    ///
+    /// [`TitleRulingError`] for a malformed or repeated line.
+    pub fn parse(text: &str) -> Result<Self, TitleRulingError> {
+        let mut rulings: Vec<TitleRuling> = Vec::new();
+        for (index, raw) in text.lines().enumerate() {
+            let line = index + 1;
+            let raw = raw.strip_suffix('\r').unwrap_or(raw);
+            if raw.trim().is_empty() || raw.starts_with(INVENTORY_COMMENT) {
+                continue;
+            }
+            let error = |reason: &str| TitleRulingError {
+                line,
+                reason: reason.to_owned(),
+            };
+            let fields: Vec<&str> = raw.split(INVENTORY_DELIMITER).collect();
+            let [label, declared, short, short_row, long_row] = fields.as_slice() else {
+                return Err(error("expected exactly five tab-separated fields"));
+            };
+            let label = MissionLabel::new(label).map_err(|_| error("malformed label"))?;
+            if declared.trim().is_empty() || short.trim().is_empty() {
+                return Err(error("empty title"));
+            }
+            let short_row = short_row
+                .parse()
+                .map_err(|_| error("malformed short row id"))?;
+            let long_row = long_row
+                .parse()
+                .map_err(|_| error("malformed long row id"))?;
+            if rulings.iter().any(|ruling| ruling.label == label) {
+                return Err(error("repeated label"));
+            }
+            rulings.push(TitleRuling {
+                label,
+                declared_title: (*declared).to_owned(),
+                retail_short_name: (*short).to_owned(),
+                short_row,
+                long_row,
+            });
+        }
+        Ok(Self { rulings })
+    }
+
+    /// The ruling for `label`, when there is one.
+    pub fn for_label(&self, label: &MissionLabel) -> Option<&TitleRuling> {
+        self.rulings.iter().find(|ruling| &ruling.label == label)
+    }
+
+    /// Every ruling, in file order.
+    pub fn iter(&self) -> impl Iterator<Item = &TitleRuling> {
+        self.rulings.iter()
+    }
+}
 
 /// Which display form of a localized string row carried a discovery title.
 ///

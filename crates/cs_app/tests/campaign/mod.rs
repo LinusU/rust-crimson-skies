@@ -313,6 +313,7 @@ mod m03_b;
 mod m04_a;
 mod m04_b;
 mod m05_a;
+mod m05_a_guide_titles;
 mod m05_b;
 mod m06_a;
 mod m06_b;

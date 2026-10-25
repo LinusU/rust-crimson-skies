@@ -1,0 +1,16 @@
+# Owner-ruled guide titles (Rally #470, ruling 2026-10-25, task note 22711).
+#
+# Seven work orders declare a title the installation spells differently. The owner
+# ruled that each names the retail mission whose rows are listed here. The ruling is
+# recorded as ClaimStatus::Inferred, never verified_original; the retail spelling is
+# still confirmed EXACTLY at bind time and a row that is not carried refuses.
+#
+# Columns, tab separated: label, declared title (must equal the inventory), exact
+# retail short name, short-name row id, region-prefixed long-name row id.
+M09	Perils for Blake	Peril for Blake	3488	3458
+M11	The Stolen Scarlet	The Stolen Starlet	3490	3460
+M14	Clash of the Dreadnaughts	Clash of Dreadnaughts	3493	3463
+M15	The Fight for the Figaro	Fight for the FIGAROA	3494	3464
+M20	Unholy Alliance	The Unholy Alliance	3499	3469
+M22	Runaway Witness	The Runaway Witness	3501	3471
+M23	Criminal Exodus	The Criminal Exodus	3502	3472
