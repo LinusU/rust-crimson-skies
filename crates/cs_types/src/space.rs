@@ -272,6 +272,13 @@ impl UnitVec3 {
         z: 0.0,
     };
 
+    /// The canonical right axis: +X.
+    pub const RIGHT: Self = Self {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
     /// Validates a direction or normal.
     ///
     /// The input is neither normalized nor clamped: a non-unit vector is
@@ -473,6 +480,16 @@ mod tests {
         );
         assert!(UnitVec3::try_new([0.0, 1.0, 0.0]).is_ok());
         assert!(Quaternion::IDENTITY.rotate(UnitVec3::UP).is_ok());
+    }
+
+    /// The three canonical axes are named constants and form the
+    /// right-handed basis: right +X, up +Y, forward -Z.
+    #[test]
+    fn canonical_axes_are_right_x_up_y_forward_negative_z() {
+        assert_eq!(UnitVec3::RIGHT.to_array(), [1.0, 0.0, 0.0]);
+        assert_eq!(UnitVec3::UP.to_array(), [0.0, 1.0, 0.0]);
+        assert_eq!(UnitVec3::FORWARD.to_array(), [0.0, 0.0, -1.0]);
+        assert_eq!(UnitVec3::try_new([1.0, 0.0, 0.0]), Ok(UnitVec3::RIGHT));
     }
 
     /// The canonical convention itself: right-handed, +Y up, forward -Z, so

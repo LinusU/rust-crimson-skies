@@ -101,17 +101,8 @@ pub fn rotate_vector(rotation: Quaternion, value: [f64; 3]) -> Result<[f64; 3], 
 /// validated angles cannot produce.
 pub fn yaw_pitch(yaw: Radians, pitch: Radians) -> Result<Quaternion, SpaceError> {
     let about_up = Quaternion::from_axis_angle(UnitVec3::UP, yaw)?;
-    let about_right = Quaternion::from_axis_angle(canonical_right(), pitch)?;
+    let about_right = Quaternion::from_axis_angle(UnitVec3::RIGHT, pitch)?;
     compose(about_up, about_right)
-}
-
-/// The canonical right axis, `+X`.
-///
-/// `cs_types::space` names the canonical forward and up axes as constants and
-/// leaves the right axis as the one component a caller states itself; this is
-/// that statement, in one place.
-fn canonical_right() -> UnitVec3 {
-    UnitVec3::try_new([1.0, 0.0, 0.0]).expect("+X is a unit vector")
 }
 
 /// The rotation whose forward axis (`-Z`) points from `eye` to `target`,
