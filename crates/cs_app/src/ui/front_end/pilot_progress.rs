@@ -32,7 +32,6 @@
 
 use std::path::{Path, PathBuf};
 
-use cs_content::save::settings::SettingCatalog;
 use cs_types::profile::{ProfileKind, RecordEntry};
 
 use super::intro::{
@@ -160,7 +159,7 @@ pub fn chain_profile_base(capture_dir: &Path) -> PathBuf {
 /// [`ProgressError::NoBase`] without a place to keep pilots,
 /// [`ProgressError::Open`] when the population cannot open.
 pub fn open_session(smoke_dir: Option<&Path>) -> Result<ProfileSession, ProgressError> {
-    let catalog = SettingCatalog::empty();
+    let catalog = cs_content::settings::engine_catalog();
     let opened = match smoke_dir {
         Some(dir) => ProfileSession::open_sandbox(&chain_profile_base(dir), &catalog),
         None => {

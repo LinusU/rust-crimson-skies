@@ -351,7 +351,7 @@ impl FlowSetup {
             base,
             origin: SessionOrigin::Interactive,
             kind: ProfileKind::Production,
-            catalog: SettingCatalog::empty(),
+            catalog: cs_content::settings::engine_catalog(),
             new_profile: "Pilot".to_owned(),
             existing: None,
             graph,

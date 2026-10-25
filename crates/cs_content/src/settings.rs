@@ -29,6 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::audio::{AudioBus, AudioLevel, AudioLevelError};
+use crate::save::settings::{SettingCatalog, SettingRule, ValueRule};
+use cs_types::profile::SettingApply;
 
 /// Smallest UI scale, in percent.
 pub const MIN_UI_SCALE_PERCENT: u16 = 100;
@@ -253,6 +255,106 @@ impl FidelityLabel {
             ("assists".to_owned(), names.join(",")),
         ]
     }
+}
+
+const BOOL: ValueRule = ValueRule::Choice(&["false", "true"]);
+
+/// The profile-stored settings the engine declares for F52-A's options, in a
+/// stable order. Every key, range and default is **engine-designed** (see
+/// [`Settings::designed`]); none is an original-game setting. The `apply`
+/// label and its reason are recorded in
+/// `docs/findings/2026-10-25-f48-c-followup-settings-catalog-keys.md`.
+///
+/// Not declared: the per-bus audio levels (a fractional gain does not fit an
+/// integer or label rule) and `fov_degrees` (an optional integer). Both stay
+/// in the [`Settings`] file only; they are unknown keys to a profile session.
+pub const ENGINE_SETTING_RULES: [SettingRule; 10] = [
+    SettingRule {
+        key: "accessibility.ui_scale_percent",
+        apply: SettingApply::Live,
+        value: ValueRule::Integer {
+            min: MIN_UI_SCALE_PERCENT as i64,
+            max: MAX_UI_SCALE_PERCENT as i64,
+        },
+        default: "100",
+    },
+    SettingRule {
+        key: "accessibility.subtitles",
+        apply: SettingApply::Live,
+        value: BOOL,
+        default: "false",
+    },
+    SettingRule {
+        key: "accessibility.colour_filter",
+        apply: SettingApply::Live,
+        value: ValueRule::Choice(&[
+            "off",
+            "protanopia",
+            "deuteranopia",
+            "tritanopia",
+            "monochrome",
+        ]),
+        default: "off",
+    },
+    SettingRule {
+        key: "accessibility.reduce_shake",
+        apply: SettingApply::Live,
+        value: BOOL,
+        default: "false",
+    },
+    SettingRule {
+        key: "accessibility.reduce_flash",
+        apply: SettingApply::Live,
+        value: BOOL,
+        default: "false",
+    },
+    SettingRule {
+        key: "display.width",
+        apply: SettingApply::RestartRequired,
+        value: ValueRule::Integer {
+            min: MIN_SURFACE_SIDE as i64,
+            max: MAX_SURFACE_SIDE as i64,
+        },
+        default: "1280",
+    },
+    SettingRule {
+        key: "display.height",
+        apply: SettingApply::RestartRequired,
+        value: ValueRule::Integer {
+            min: MIN_SURFACE_SIDE as i64,
+            max: MAX_SURFACE_SIDE as i64,
+        },
+        default: "720",
+    },
+    SettingRule {
+        key: "modern.profile",
+        apply: SettingApply::RestartRequired,
+        value: ValueRule::Choice(&["original-rules", "modern-assist"]),
+        default: "original-rules",
+    },
+    SettingRule {
+        key: "modern.mouse_flight",
+        apply: SettingApply::Live,
+        value: BOOL,
+        default: "false",
+    },
+    SettingRule {
+        key: "modern.controller_flight",
+        apply: SettingApply::Live,
+        value: BOOL,
+        default: "false",
+    },
+];
+
+/// The catalog a runtime profile session opens with: [`ENGINE_SETTING_RULES`].
+///
+/// # Panics
+///
+/// Never in a correct build; `accept_f48_c_followup_` pins that the
+/// declaration holds together.
+#[must_use]
+pub fn engine_catalog() -> SettingCatalog {
+    SettingCatalog::new(ENGINE_SETTING_RULES).expect("the engine catalog is a valid declaration")
 }
 
 /// Why a settings value was refused.
