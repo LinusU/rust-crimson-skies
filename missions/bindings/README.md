@@ -143,6 +143,14 @@ directory is original game data — no assets, scripts or extracted bytes.
   rows away. It shares `world/c3` with M12, which is the whole chapter (see
   `docs/findings/2026-10-02-m13-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M14.json` — the M14 binding output (stage M14-A), generated and pinned by
+  `accept_m14_a_the_committed_record_is_what_the_installation_derives`. Its
+  declared title is carried by no retail row, so the title join is the owner's
+  ruling in `title-rulings.tsv` (Rally #470): the ruled retail short name is
+  confirmed exactly, the title dependency is `Inferred`, and the record carries
+  a `title ruling:` unknown. All five critical dependencies are resolved; the
+  record stays unverified (see
+  `docs/findings/2026-10-25-m14-a-source-binding.md`).
 - `M16.json` — the M16 binding output (stage M16-A), generated and pinned the
   same way by `accept_m16_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M16 is the sixteenth campaign
