@@ -607,6 +607,7 @@ const FINDING_M03_FU1: &str = "2026-10-18-m03-b-fu1-wakeup-objective-spelling";
 /// `zbd/c4/m01` (#2134), and the parser finding whose exact-lookup reading it
 /// applies.
 const FINDING_C4_M01_FU: &str = "2026-10-25-c4-m01-fu-stray-phrase";
+const FINDING_C5_M04_FU: &str = "2026-10-25-c5-m04-fu-truncated-set-ai";
 const FINDING_PARSER: &str = "2026-10-06-m01-lc-directive-a-objective-directive-parser";
 const FINDING_C: &str = "2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives";
 const FINDING_D: &str = "2026-10-06-m01-lc-directive-d-sound-help-timer-directives";
@@ -968,6 +969,16 @@ pub fn ignored_directive(key: &str) -> Option<IgnoredDirective> {
                       objective parser reaches keys by exact lookup, no lookup site spells it, \
                       so the word is read by the document walk and has no effect",
             evidence: &[FINDING_C4_M01_FU, FINDING_PARSER],
+        }),
+        // `zbd/c5/m04` objective 19 spells `SET_AI_` (no suffix) before a list of
+        // `[actor, node]` pairs. The three `SET_AI_*` keys the parser looks up
+        // are `SET_AI_TEAM`, `SET_AI_ATTACK_RADIUS` and `SET_AI_NET`, each by
+        // whole-string compare, so the truncated key matches none (task #2135).
+        "SET_AI_" => Some(IgnoredDirective {
+            summary: "the truncated key `SET_AI_`: the objective parser reaches keys by \
+                      whole-string lookup and none of `SET_AI_TEAM`, `SET_AI_ATTACK_RADIUS` or \
+                      `SET_AI_NET` equals it, so the site and its argument list have no effect",
+            evidence: &[FINDING_C5_M04_FU, FINDING_PARSER],
         }),
         _ => None,
     }
