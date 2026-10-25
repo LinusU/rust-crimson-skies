@@ -27,6 +27,7 @@
 //! named `accept_f52_d_*`, and `#[ignore]`d so the task selection never picks
 //! it up as an acceptance test.
 
+mod catalog;
 mod cues;
 mod evidence;
 mod fidelity;
