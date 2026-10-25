@@ -32,9 +32,31 @@
 //! `CS_GAME_DIR` selects an installation, both commands build the complete
 //! private baseline inventory with
 //! [`cs_content::catalog::baseline::retail_baseline`] and write the
-//! production baseline report — one row per inventoried file, one row per
-//! campaign mission program, one declared launchable row per campaign
-//! mission, and the reachable/unreachable coverage accounting. Without an
+//! production baseline report. The report has the following shape; it is
+//! described by kind of content so that a new collection does not make it
+//! stale:
+//!
+//! - the F14-D baseline: one row per inventoried file, one row per campaign
+//!   mission program, one declared launchable row per campaign mission, the
+//!   reachable/unreachable coverage accounting and the reader-archive
+//!   directories no campaign mission claims;
+//! - the source-derived collections: rows each producing stage reads with its
+//!   own parser from the installation file it names (F14-D.2 onward; the
+//!   multiplayer mode table is the first, one `multiplayer_rules` row per mode
+//!   the installation's string image names);
+//! - `collection_status`: one record per source-derived collection saying which
+//!   file the rows come from, the language when the source has one, how many
+//!   rows the collection holds, the gaps the parser kept (entries it read but
+//!   could not turn into a complete row, each under its own label) and, when
+//!   the collection holds no rows, the diagnostic that says why (the source
+//!   is absent from the inventory or the producing parser refused its bytes).
+//!
+//! A collection never silently holds nothing: a collection without rows still
+//! has its `collection_status` record and a diagnostic, because an empty
+//! collection without one cannot be told from a family that was never read.
+//! Which collections exist and what each one's parser reads is recorded in
+//! `cs_content::catalog::baseline` (`retail_baseline` and `CollectionStatus`),
+//! not repeated here. Without an
 //! installation the commands keep the F14-C behavior and report the
 //! synthetic fixture with `"source":"synthetic-fixture"` and
 //! `"retail":false`, so a synthetic row is never presented as a retail

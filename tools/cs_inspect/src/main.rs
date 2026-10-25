@@ -207,7 +207,13 @@ COMMANDS
         inventoried file, one row per campaign mission program, one declared
         launchable row per campaign mission, plus the reachable/unreachable
         coverage accounting and the reader-archive directories no campaign
-        mission claims. Without an installation the rows are the validated
+        mission claims. The report also holds the source-derived collections,
+        each read by its producing stage's own parser from the installation
+        file it names (for example one multiplayer_rules row per mode the
+        string image names), and a collection_status array with one record per
+        collection: its source file, language, row count, the gaps the parser
+        kept and, when it holds no rows, the diagnostic saying why. A
+        collection never silently holds nothing. Without an installation the rows are the validated
         synthetic catalog fixture, whose report names its source and is never
         retail-ready, so a synthetic row is never presented as a retail
         catalog entry. Exits 0 when the report is written, 2 on invalid
