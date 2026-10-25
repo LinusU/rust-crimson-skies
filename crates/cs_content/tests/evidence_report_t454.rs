@@ -337,7 +337,12 @@ fn parse_suite(log: &str) -> Suite {
             let Some(separator) = after.find(" ... ") else {
                 break;
             };
-            let name = after[..separator].to_owned();
+            // The suite is a module of `tests/main.rs`: drop the module path.
+            let name = after[..separator]
+                .rsplit("::")
+                .next()
+                .unwrap_or_default()
+                .to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
             if !name.starts_with("accept_t454_") {
