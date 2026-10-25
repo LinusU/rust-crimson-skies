@@ -17,7 +17,7 @@ for the whole session. Per-observer selections are **not** implemented.
   mission AI, not in `TargetSelection`.
 - Making the session a map keyed by `ActorId` would change every entry point's
   signature (`TargetingSession::selection`, the consumer pass, the HUD/spyglass/weapon
-  guidance consumers and about 25 test files) for content that does not exist.
+  guidance consumers and the 36 files that name `TargetingSession`) for content that does not exist.
 - The existing behaviour is deliberate and tested: a consumer pass for a different
   `(session, observer)` rebinds the published views and clears the selection
   (`ConsumerReport::rebound`), so one aircraft's selection never leaks to another.
