@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T2121",
+ "candidate_tree": "4f42e448b06ef915beea24666a6ccd235e60a710",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-25T08:31:21Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t2121_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t2121_beeper_target_values::accept_t2121_image_pins_the_beeper_target_values_and_their_consumers", "status": "pass", "evidence": ["cargo-test.log", "target-values.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ad5db4100dca7a7a0f23a3a6c6ea5e64c01299a75762059f6ba7c669963c2a19", "kind": "log"}, {"path": "target-values.json", "sha256": "bfc42760c24a0c5a4e39c2d70a72d479ce0dc34d56596837dcbaace978ba25fc", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer; not an independent review)", "method": "Acceptance suite run locally with the retail capability (CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second record, target-values.json, holding the engine image digest, the resolution and the limitations. MEASURED by static analysis of the owner-supplied decrypted executable (13 byte windows and the three vtables whose slots 0/1 are lea eax,[ecx+N]; ret, pinned in the acceptance test): the BEEPER_SEEKER callback 0x441780 stores virtual slot 0 and slot 1 of the found beeper object into projectile +0x70/+0x74; slot 0 is a pointer to a 3-float position (the beeper search 0x4b8b50 dereferences it as one); the steering routine 0x5af960 calls 0x538ca0(&proj+0x48, [proj+0x70]) which computes normalize(*[+0x70] - proj position), and, with [+0x74] non-zero, the solver 0x53e56d with [+0x70] and [+0x74] as target position and second vector (read as target velocity). STILL UNMEASURED (none claimed): see the limitations array of target-values.json. The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
