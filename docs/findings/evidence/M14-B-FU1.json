@@ -1,0 +1,110 @@
+{
+ "schema_version": 1,
+ "task_id": "M14-B-FU1",
+ "candidate_tree": "74f5fb72d73be211c062a74bcaea4b95979e645a",
+ "engine": {
+  "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "bevy": "0.20.0",
+  "avian": "0.8.0"
+ },
+ "created_at": "2026-10-25T12:07:04Z",
+ "command": {
+  "argv": [
+   "cargo",
+   "test",
+   "--locked",
+   "-p",
+   "cs_app",
+   "-p",
+   "cs_script",
+   "--",
+   "accept_m14_b_fu1_",
+   "--include-ignored"
+  ],
+  "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1",
+  "exit_code": 0
+ },
+ "source": {
+  "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+  "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
+ },
+ "seed": 0,
+ "ticks": {
+  "start": 0,
+  "end": 0
+ },
+ "overrides": [],
+ "capabilities": [
+  "retail",
+  "synthetic"
+ ],
+ "tests": {
+  "discovered": 6,
+  "executed": 6,
+  "passed": 6,
+  "failed": 0,
+  "ignored": 0
+ },
+ "assertions": [
+  {
+   "id": "accept_m14_b_fu1_other_incomplete_rows_do_not_fail_on_the_int_radius",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  },
+  {
+   "id": "accept_m14_b_fu1_block_25_lowers_and_the_m14_row_is_complete",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  },
+  {
+   "id": "accept_m14_b_fu1_an_int_radius_lowers_in_subject_mode",
+   "status": "pass",
+   "evidence": [
+    "cargo-test-script.log"
+   ]
+  },
+  {
+   "id": "accept_m14_b_fu1_an_int_radius_lowers_in_counting_mode",
+   "status": "pass",
+   "evidence": [
+    "cargo-test-script.log"
+   ]
+  },
+  {
+   "id": "accept_m14_b_fu1_text_list_and_non_finite_radii_are_still_refused",
+   "status": "pass",
+   "evidence": [
+    "cargo-test-script.log"
+   ]
+  },
+  {
+   "id": "accept_m14_b_fu1_an_int_radius_equals_the_float_of_the_same_value",
+   "status": "pass",
+   "evidence": [
+    "cargo-test-script.log"
+   ]
+  }
+ ],
+ "artifacts": [
+  {
+   "path": "cargo-test.log",
+   "sha256": "b913692892b637891261ac67589952e8ca3838a73ed15829b66a3a9ed14ed5a0",
+   "kind": "log"
+  },
+  {
+   "path": "cargo-test-script.log",
+   "sha256": "4a589381c3533965c0a4a89f0e047a35c7f7daff635f06f7242cdc95621bb538",
+   "kind": "log"
+  }
+ ],
+ "unknowns": [],
+ "review": {
+  "identity": "implementer and reviewer are both sonnet-1 (same agent; not independent). Not original-reference evidence and replaces no human approval",
+  "method": "retail tests run locally with CS_GAME_DIR by the implementer and re-run by the reviewing session; fields derived from the recorded logs. candidate_tree is the tree the suite ran on; the only later delta is this report's own copy under docs/findings/evidence/"
+ },
+ "claim": "implemented"
+}
