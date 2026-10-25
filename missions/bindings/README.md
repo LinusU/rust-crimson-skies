@@ -117,6 +117,15 @@ directory is original game data — no assets, scripts or extracted bytes.
   structures must place it strictly inside a group. It shares `world/c2` with
   M06 (see `docs/findings/2026-10-02-m08-a-source-binding.md`). Same five
   resolved critical dependencies, same unverified status.
+- `M09.json` — the M09 binding output (stage M09-A), generated and pinned the
+  same way by `accept_m09_a_the_committed_record_is_what_the_installation_derives`
+  (`CS_REGENERATE_M09_BINDING=1` rewrites it). No production code changed for
+  it: it is the first record whose declared title the installation does not
+  carry in either display form, so its `TitleString` dependency is `Inferred`
+  through the owner ruling of Rally #470 (`title-rulings.tsv`) rather than
+  observed, and the record's last `unknowns` entry says so. Same five
+  resolved critical dependencies, same unverified status (see
+  `docs/findings/2026-10-25-m09-a-source-binding.md`).
 - `M10.json` — the M10 binding output (stage M10-A), generated and pinned the
   same way by `accept_m10_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M10 is the tenth campaign position
@@ -278,16 +287,17 @@ contract those consumers drive.
 
 ## What is not here yet
 
-- `M09.json`, `M11.json`, `M14.json`, `M15.json`, `M20.json`,
+- `M11.json`, `M14.json`, `M15.json`, `M20.json`,
   `M22.json` and `M23.json` — the per-mission binding outputs of
-  M09-A, M11-A, M14-A, M15-A, M20-A, M22-A and M23-A, created from
+  M11-A, M14-A, M15-A, M20-A, M22-A and M23-A, created from
   original data the same way. Every one of them starts unresolved. (Listed
   one by one rather than as ranges, because M19, M21 and M24 are bound while
   M20, M22 and M23 are not.)
-- Titles the installation spells differently again — M09, M11, M14, M15, M20,
-  M22 and M23 — match neither display form and stay `Uncarried`. Which retail
-  mission they name is not established here; see
-  `docs/findings/2026-10-01-m05-a-source-binding.md`.
+- Titles the installation spells differently — M09, M11, M14, M15, M20, M22
+  and M23 — match neither display form. The owner ruling of Rally #470
+  (`title-rulings.tsv`, `docs/findings/2026-10-25-owner-ruling-guide-titles.md`)
+  joins each to its retail rows as an inferred claim; M09 is the first of
+  them bound here, the other six wait for their own stages.
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,

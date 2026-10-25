@@ -1,5 +1,5 @@
 //! Evidence-report harnesses for the per-mission binding stages M01-A,
-//! M02-A, M03-A, M04-A, M05-A, M06-A, M07-A, M08-A, M10-A, M12-A, M13-A, M16-A,
+//! M02-A, M03-A, M04-A, M05-A, M06-A, M07-A, M08-A, M09-A, M10-A, M12-A, M13-A, M16-A,
 //! M17-A, M18-A, M19-A, M21-A, M24-A, for the mission-compatibility stages
 //! M02-B, M03-B, M04-B, M06-B, M08-B, M10-B, M12-B, M13-B, M16-B, M17-B,
 //! M18-B, M19-B and M24-B, for the whole-campaign binding stage
@@ -165,6 +165,7 @@ mod m07_b;
 mod m07_b_fu1;
 mod m08_a;
 mod m08_b;
+mod m09_a;
 mod m10_a;
 mod m10_b;
 mod m12_a;
