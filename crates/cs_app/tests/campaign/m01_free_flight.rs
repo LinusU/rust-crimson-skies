@@ -9,7 +9,6 @@
 //! `docs/findings/2026-10-21-m01-hand-over-pose.md` with one task per cause.
 use std::path::PathBuf;
 
-use bevy::prelude::With;
 use cs_app::mission_actors::MissionAircraftRoster;
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::stage_for;
@@ -329,15 +328,15 @@ fn accept_parity4_m01_sea_contact_a_low_body_skims_the_sea() {
     teardown(&mut app);
 }
 
-/// #1845: the composed M01 body spawns at the hand-over's release state
-/// (velocity zero, actual throttle zero; `2026-10-23-m01-handover-dynamics-
-/// step.md` section 3), not at the declared 55 m/s, and the law spools it up
-/// from there: the first second moves it about a dozen metres (the
-/// original's 3.3 m: the law has no lift at rest, a recorded divergence), and the speed has grown several-fold by t = 5 s.
+/// #2109: the composed M01 body spawns at the declared start, so a player who
+/// gives no input after the hand-over is still airborne at t = 10 s (the
+/// release-state spawn of #1845 made the law fall into the sea within 3-9 s,
+/// which left M01 unplayable). Flown by the production law from the recipe's
+/// own state, with the declared cruise throttle as the command.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_parity4_m01_spawn_is_the_release_state_and_spools_up() {
-    use cs_app::mission_session::{MissionPlayerBody, MissionPlayerStart, build_headless};
+fn accept_parity4_m01_idle_player_is_still_airborne_at_ten_seconds() {
+    use cs_app::mission_session::{MissionPlayerStart, build_headless, teardown};
 
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plan");
@@ -345,25 +344,17 @@ fn accept_parity4_m01_spawn_is_the_release_state_and_spools_up() {
     let mut app = build_headless(&stage).expect("M01 composes headlessly");
     app.update();
     let recipe = app.world().resource::<MissionPlayerStart>().clone();
-    assert_eq!(recipe.velocity_m_s, [0.0; 3], "release state, never 55 m/s");
-    assert_eq!(recipe.start_throttle, 0.0);
-    assert_eq!(recipe.position_m, [-1426.0, 150.0, -1813.0]);
-    let world = app.world_mut();
-    assert_eq!(
-        world
-            .query_filtered::<(), With<MissionPlayerBody>>()
-            .iter(world)
-            .count(),
-        1
+    let speed = |v: [f32; 3]| v.iter().map(|c| c * c).sum::<f32>().sqrt();
+    assert!(
+        speed(recipe.velocity_m_s) > 1.0,
+        "the declared start moves the body, never the release state"
     );
-
-    // Flown by the production law from the recipe's own state.
     let mut state = OriginalState {
         position_m: recipe.position_m.map(f64::from),
         velocity_mps: recipe.velocity_m_s.map(f64::from),
         orientation: recipe.orientation,
         angular_momentum_world: [0.0; 3],
-        throttle: recipe.start_throttle,
+        throttle: f64::from(cs_app::playtest::command::CRUISE_THROTTLE),
         fuel: recipe.fuel,
         level_off: false,
     };
@@ -371,16 +362,12 @@ fn accept_parity4_m01_spawn_is_the_release_state_and_spools_up() {
         throttle: f64::from(cs_app::playtest::command::CRUISE_THROTTLE),
         ..OriginalInput::default()
     };
-    let speed = |s: &OriginalState| s.velocity_mps.iter().map(|v| v * v).sum::<f64>().sqrt();
-    let mut at_1s = 0.0_f64;
-    for tick in 1..=5 * 60 {
+    let mut lowest = f64::MAX;
+    for _ in 0..10 * 60 {
         recipe.flight.step(&mut state, input, DT).expect("steps");
-        if tick == 60 {
-            at_1s = distance(state.position_m, recipe.position_m.map(f64::from));
-        }
+        lowest = lowest.min(state.position_m[1]);
     }
-    let at_5s = speed(&state);
-    println!("moved {at_1s:.2} m in 1 s, {at_5s:.1} m/s at 5 s");
-    assert!(at_1s < 15.0, "moved {at_1s} m in the first second");
-    assert!(at_5s > 40.0, "{at_5s} m/s at 5 s");
+    println!("lowest altitude in the first 10 s: {lowest:.1} m");
+    assert!(lowest > 20.0, "fell to {lowest} m within 10 s");
+    teardown(&mut app);
 }

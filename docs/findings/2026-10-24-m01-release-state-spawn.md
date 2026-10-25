@@ -40,3 +40,14 @@ pins the spawn state and the spool-up from the production recipe.
 Tests that placed a body at speed through its physics velocity only (`m01_scenery_colliders`, the wing-fire
 test) now also reset the law's own throttle and angular momentum, which the hand-over no longer leaves at
 cruise values.
+
+## Rolled back on main (#2109, 2026-10-25)
+
+The release-state spawn reached main through #1798's branch, which was built on `rally/1845`, although #1845 was
+blocked by the owner. With no lift at rest the player crashed 3-9 s after hand-over, so M01 was unplayable. Main is
+back at the declared development start (`RETAIL_START_SPEED_M_S` along the nose, declared cruise throttle; not
+measured). The pins moved back with it: `accept_parity4_m01_collision_no_input_trajectory_is_pinned`,
+`vs_m01_rt_window` wording, and the wing-fire and scenery-collider helpers; the spool-up test is gone.
+`accept_parity4_m01_idle_player_is_still_airborne_at_ten_seconds` pins that an idle-input player is airborne at
+t = 10 s. #1845 stays blocked pending the owner's hand-over capture (#1938, #1843, #1844); everything above
+describes that unmerged work.

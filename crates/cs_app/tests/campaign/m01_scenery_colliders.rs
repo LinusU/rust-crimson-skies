@@ -142,14 +142,6 @@ fn fly(
         *e.get_mut::<Transform>().unwrap() = Transform::from_translation(start).with_rotation(rot);
         *e.get_mut::<Rotation>().unwrap() = Rotation(rot);
         *e.get_mut::<LinearVelocity>().unwrap() = LinearVelocity(dir * speed);
-        // The law keeps its own throttle and angular momentum between ticks:
-        // a standstill hand-over (#1845) spools the throttle up from 0 and
-        // pitches the body in the setup frames, neither of which a placed
-        // body at speed carries.
-        if let Some(mut record) = e.get_mut::<cs_app::playtest::scene::PlaytestOriginalFlight>() {
-            record.state.throttle = record.command.throttle;
-            record.state.angular_momentum_world = [0.0; 3];
-        }
         if let Some(mut w) = e.get_mut::<AngularVelocity>() {
             *w = AngularVelocity(Vec3::ZERO);
         }

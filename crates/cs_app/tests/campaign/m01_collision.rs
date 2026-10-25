@@ -130,27 +130,64 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
     println!("{report}");
     let at = |t: usize| &s[t];
 
-    // The hand-over is the measured pose and, since #1845, the release state
-    // of the engine's hand-over: the body is nearly at rest (the original
-    // moves 3.3 m in its first second; the 111.8 m/s of the capture's first
-    // row is not a velocity, `2026-10-23-m01-handover-dynamics-step.md`).
+    // The hand-over is the measured pose (within the first tick's motion), but
+    // not the measured speed: main starts at the declared 55 m/s development
+    // value, the original at 111.8 m/s (#1746 spawn speed; unmet).
     assert!((at(0).p.y - 150.0).abs() < 0.1, "{report}");
-    assert!(at(0).speed < 1.5, "{report}");
-    // Divergence kept (the law has no lift at rest, the `sink-at-rest`
-    // unknown): with no input the body falls instead of accelerating level,
-    // meets the sea and, with the contact judged, spends the designed hull
-    // pool and crashes well before the original's t=28 sea skim. The
-    // original is 102.6 m up at t=10 at 113.6 m/s. Same heading, though.
-    let crash_at = s.iter().position(|x| x.crashed).expect(&report);
+    assert!((at(0).speed - 55.5).abs() < 1.5, "{report}");
     assert!(
-        (3..=9).contains(&crash_at),
-        "crashed at {crash_at}: {report}"
+        (at(0).speed - 111.8).abs() > 40.0,
+        "spawn speed now matches the original: move this pin and the finding"
     );
-    assert_eq!(at(SECONDS).judged, 2, "{report}");
-    assert!((at(SECONDS).hull_damage - 1688.0).abs() < 1.0, "{report}");
-    assert!(at(10).p.y < 5.0, "{report}");
-    assert!(at(10).p.y + 100.0 < 102.6 + 5.0, "{report}");
-    assert!(at(SECONDS).resets == 0, "{report}");
+    // Free flight: main flies level at 150 m and 100.5 m/s for 22 s; the
+    // original sinks 5.6 m/s to 46.3 m at t=20 at 113.6 m/s (#1746 sink and
+    // thrust; unmet). Same heading though: x and z are in the same direction.
+    for t in 5..=20 {
+        assert!((at(t).p.y - 150.0).abs() < 0.5, "t={t}: {report}");
+        assert!((at(t).speed - 100.5).abs() < 1.5, "t={t}: {report}");
+    }
+    assert!(at(20).p.y - 46.3 > 100.0, "{report}");
+    // The original is on the sea at t=28; main is 148 m up. Main flies into
+    // the island's hillside at t=40..42 instead (#1814: the scenery below the
+    // world's grouping nodes is solid now; before, nothing there collided and
+    // the flight went on to dive onto the sea at t=55). The original has its
+    // own beach impact at t=34..36 (110 -> 78 m/s).
+    assert!(at(28).p.y > 140.0, "{report}");
+    assert_eq!(
+        (at(40).judged, at(41).judged, at(42).judged),
+        (0, 1, 2),
+        "{report}"
+    );
+    assert!(at(40).speed > 99.0 && at(42).speed < 70.0, "{report}");
+    // The bounce throws main up and it keeps climbing; it is never reset.
+    assert!(at(SECONDS).resets == 0 && at(41).resets == 0, "{report}");
+    assert!(
+        at(60).p.y > at(42).p.y && at(SECONDS).p.y > at(60).p.y,
+        "{report}"
+    );
+    assert!(at(SECONDS).judged > 0, "no judged contact at all: {report}");
+    // After the hillside the original reaches 1925 m at t=70 (the 60 degree
+    // throw is unmet: the response is a normal impulse); main climbs to 567 m.
+    let ceiling = s.iter().map(|x| x.p.y).fold(f32::MIN, f32::max);
+    assert!(ceiling < 1000.0, "ceiling {ceiling}: {report}");
+    assert!(at(70).speed > 80.0, "{report}");
+    for (t, m, _) in MEASURED.iter().filter(|(t, ..)| *t >= 60) {
+        assert!(
+            (at(*t).p.y as f64 - m[1]).abs() > 900.0,
+            "t={t} now agrees with the measured altitude: {report}"
+        );
+    }
+    // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage. Two
+    // episodes at the hillside (t=41, 42) spend 455 of the designed 1200 hull
+    // (the designed crash-to-hull curve, #2005) and nothing after; the pool
+    // holds, so the flight is never crashed.
+    assert_eq!(
+        (at(60).judged, at(70).judged, at(SECONDS).judged),
+        (2, 2, 2),
+        "{report}"
+    );
+    assert!((at(SECONDS).hull_damage - 455.0).abs() < 1.0, "{report}");
+    assert!(s.iter().all(|x| !x.crashed), "{report}");
 }
 
 /// PARITY4-CRASH-E.01 (#1983): in the composed mission the aircraft's terrain

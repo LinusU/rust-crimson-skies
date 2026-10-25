@@ -371,26 +371,6 @@ fn accept_crash_d_03_retail_m01_wing_hit_burns_at_the_drawn_pdp3_part() {
     for _ in 0..3 {
         app.update();
     }
-    // The hand-over is a standstill (#1845) and the fire's puffs are
-    // distance-driven, so this test puts the body in flight, as any moving
-    // aircraft would be: 55 m/s along the nose, a value of this test only.
-    {
-        use avian3d::prelude::LinearVelocity;
-        use bevy::prelude::Vec3;
-        let world = app.world_mut();
-        let mut bodies = world.query_filtered::<(
-            &mut LinearVelocity,
-            &mut cs_app::playtest::scene::PlaytestOriginalFlight,
-            &avian3d::prelude::Rotation,
-        ), bevy::prelude::With<cs_app::mission_session::MissionPlayerBody>>(
-        );
-        for (mut v, mut record, rotation) in bodies.iter_mut(world) {
-            let nose: Vec3 = rotation.0 * Vec3::NEG_Z * 55.0;
-            v.0 = nose;
-            record.state.velocity_mps = nose.to_array().map(f64::from);
-            record.state.throttle = record.command.throttle;
-        }
-    }
     let actor = app.world().resource::<PlayerVictim>().actor;
     let nodes: Vec<String> = {
         let world = app.world_mut();
