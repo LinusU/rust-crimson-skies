@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T454",
+ "candidate_tree": "d244fae7159f3873cf36e3d0dda1f9ef11947f58",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-25T07:20:55Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--test", "cs_content_tests", "--", "accept_t454_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t454_image_has_no_target_store_in_the_projectile_module", "status": "pass", "evidence": ["cargo-test.log", "lost-target-rule.json"]}, {"id": "accept_t454_a_guided_rocket_keeps_only_the_timer_and_the_range_end", "status": "pass", "evidence": ["cargo-test.log", "lost-target-rule.json"]}, {"id": "accept_t454_retail_guided_rockets_lose_the_proximity_trigger_and_nothing_else", "status": "pass", "evidence": ["cargo-test.log", "lost-target-rule.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "248de226c1317e5ad1f40593168ed8d40ecb7c906ac903a8a496414a76edb60c", "kind": "log"}, {"path": "lost-target-rule.json", "sha256": "e56824fe6dd44df90e343a77fa20ae7b36887b23dcd6d0b60d281bf807fe8291", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-2 (implementer; self-run, not independent review)", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR and CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second production pass recorded in lost-target-rule.json. MEASURED: the twelve guided (LOCK_ON) ROCKET records of ZBD/zrdr.zbd weapons.zrd through cs_content::ordnance::read_original_rocket_blasts and OriginalRocketBlast::lost_target_rule (a lost target loses the DETONATION_DISTANCE proximity trigger; eleven keep only the end of RANGE, the flare wep_15 keeps only its 2 s DETONATION_TIME; no guided record declares EXPIRES so each detonates at the end of RANGE); and a byte scan of the owner-supplied decrypted executable (sha-256 recorded) showing the only stores to a projectile target pointer (+0x70) in the projectile module are the launch zeroing and the removed-object sweep clear, plus byte pins of the steering guard. The rule is per projectile (each projectile holds its own pointer; the sweep clears every matching one), the loss is terminal inside the module (no re-acquisition code there), and the first assignment of a target was not located. FIDELITY LIMITATIONS (unmeasured, none claimed): see the limitations array of lost-target-rule.json. The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
