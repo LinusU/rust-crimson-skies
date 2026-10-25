@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T2120",
+ "candidate_tree": "37af16685991b1d647369effd9c1df22caddc308",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-25T08:00:16Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t2120_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t2120_lock_on_target_source::accept_t2120_image_pins_the_launch_time_target_hand_over", "status": "pass", "evidence": ["cargo-test.log", "target-source.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "76770b6ea345fbae79fa5eb55032fa6857ea643eb6c8059492471c395fd9f2c2", "kind": "log"}, {"path": "target-source.json", "sha256": "f1075759453134ba48a00bd288610b82bdb315a798902ea0afd986aa0ae73dbd", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer, not independent)", "method": "Acceptance suite run locally with the retail capability (CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second record, target-source.json, holding the engine image digest, the resolution and the limitations. MEASURED by static analysis of the owner-supplied decrypted executable (13 byte windows, the closed list of five callers of the setter 0x5ac0a0 and the closed list of writers of the pending globals 0xa1d7cc / 0xa1d7d0, pinned in the acceptance test): the launch 0x5aef40 copies, for a weapon record with LOCK_ON (+0x74 bit 15), the three dwords the pending triple points at into projectile +0x6c/+0x70/+0x74 through lea edx,[edi+0x6c] (a store the earlier [reg+0x70] byte scan could not see); the triple is set by the setter 0x5ac0a0 from the player fire path 0x4b7193 (a free-aim triple at player+0x290, or the actor's +0x294/+0x298 filled by the message-0x10 order handler 0x498950), the gun controller 0x4b6ba1 and the fire context 0x4ab385. STILL UNMEASURED (none claimed): see the limitations array of target-source.json. The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
