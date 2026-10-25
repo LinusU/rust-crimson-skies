@@ -67,8 +67,8 @@ use cs_content::coordinates::{
 use cs_content::scene::{BindingMap, MeshSlot, scene_graph_from_gamez};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_RECORD_STORES_NO_GEOMETRY,
-    HORIZON_SUBTREE_RECORD_NEVER_BLOCKS, OBJECT_STORES_NO_MESH,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_GROUPING_NODE_NEVER_BLOCKS,
+    GRID_RECORD_STORES_NO_GEOMETRY, HORIZON_SUBTREE_RECORD_NEVER_BLOCKS, OBJECT_STORES_NO_MESH,
     UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole,
 };
 use cs_formats::gamez::read_gamez_nodes;
@@ -750,17 +750,32 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
                         .strip_prefix("node-")
                         .and_then(|slot| slot.parse::<u32>().ok())
                         .is_some_and(|slot| indexed.contains(&slot));
-                    assert_eq!(
-                        claim_id.as_str(),
-                        if grid_named {
-                            GRID_RECORD_STORES_NO_GEOMETRY
-                        } else {
-                            UNINDEXED_RECORD_STORES_NO_GEOMETRY
-                        },
-                        "{}: a record that stores no geometry answers the same way whoever \\
-                         the grid names it — the store states no geometry either way",
-                        split.group
-                    );
+                    // A record the grid names answers one of the two measured
+                    // classes (task #1578, `a47eada5e`: the grid records that bind
+                    // no mesh split into those storing no geometry and those
+                    // storing a grouping box); a record the grid omits answers
+                    // only the unindexed claim.
+                    if grid_named {
+                        assert!(
+                            [
+                                GRID_RECORD_STORES_NO_GEOMETRY,
+                                GRID_GROUPING_NODE_NEVER_BLOCKS
+                            ]
+                            .contains(&claim_id.as_str()),
+                            "{}: a grid-named record that stores no mesh answers \\
+                             `GRID_RECORD_STORES_NO_GEOMETRY` or \\
+                             `GRID_GROUPING_NODE_NEVER_BLOCKS`, not {claim_id:?}",
+                            split.group
+                        );
+                    } else {
+                        assert_eq!(
+                            claim_id.as_str(),
+                            UNINDEXED_RECORD_STORES_NO_GEOMETRY,
+                            "{}: a record the grid omits that stores no geometry answers \\
+                             the unindexed claim",
+                            split.group
+                        );
+                    }
                     assert!(
                         !object.mesh().is_known(),
                         "{}: {} resolved to `None` but names a mesh — the store \\
