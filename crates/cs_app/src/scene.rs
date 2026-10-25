@@ -2008,6 +2008,155 @@ fn unload_airframe_scene(world: &mut World) {
     );
 }
 
+// ------------------------------------------------------------ producer ---
+
+/// Why a session's airframe scene could not be made live.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AirframeSessionError {
+    /// The load was refused. The scene that was running before the attempt,
+    /// if any, is untouched, and the session may retry.
+    Refused {
+        /// The airframe the session named.
+        airframe: ContentId,
+        /// The generation the refused attempt consumed.
+        generation: SceneGeneration,
+        /// The import error, verbatim.
+        error: Box<SceneImportError>,
+    },
+    /// The request was not served: the scene systems logged nothing for it.
+    /// This is a wiring fault, never a state to carry on from.
+    NotServed {
+        /// The airframe the session named.
+        airframe: ContentId,
+    },
+}
+
+impl std::fmt::Display for AirframeSessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused {
+                airframe,
+                generation,
+                error,
+            } => write!(
+                f,
+                "the scene load of airframe {airframe:?} (generation {}) was refused: {error:?}",
+                generation.0
+            ),
+            Self::NotServed { airframe } => {
+                write!(
+                    f,
+                    "the scene request for airframe {airframe:?} was not served"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for AirframeSessionError {}
+
+/// Session start (and mission retry): names the session's airframe and
+/// makes its visual subtree live.
+///
+/// This is the **producer** of [`AirframeSceneRequest::Load`]: the owner of
+/// session lifetime calls it once the converted container is at hand (an
+/// already converted [`SceneGraph`] — fixture, catalogue or cache — until the
+/// GameZ node-array reader lands, task #392). It inserts the request beside
+/// the one-shot `collision` table, serves it through
+/// [`process_airframe_scene_request`] and reads the outcome back out of
+/// [`AirframeSceneLog`], so the caller gets the new generation or the
+/// refusal instead of having to inspect the log.
+///
+/// A second call is a reload: the new generation supersedes the old, whose
+/// entities are released before the new record is published. A refusal
+/// propagates as [`AirframeSessionError::Refused`] and leaves the running
+/// scene exactly as it was.
+///
+/// # Errors
+///
+/// [`AirframeSessionError`] when the load is refused or was not served.
+pub fn start_airframe_scene(
+    world: &mut World,
+    airframe: AirframeVisual,
+    graph: Arc<SceneGraph>,
+    collision: SceneCollisionGeometry,
+) -> Result<SceneGeneration, AirframeSessionError> {
+    let id = airframe.airframe().clone();
+    let before = world
+        .get_resource::<AirframeSceneLog>()
+        .map_or(0, AirframeSceneLog::len);
+    world.insert_resource(collision);
+    world.insert_resource(AirframeSceneRequest::load(airframe, graph));
+    process_airframe_scene_request(world);
+    let log = world.get_resource::<AirframeSceneLog>();
+    let served = log.map_or(&[][..], |log| &log.events()[before.min(log.len())..]);
+    // The load's own outcome is the last `Loaded`/`Refused`; a `Released` for
+    // the superseded scene may precede a `Loaded`.
+    match served.iter().rev().find(|event| {
+        matches!(
+            event,
+            SceneEvent::Loaded { .. } | SceneEvent::Refused { .. }
+        )
+    }) {
+        Some(SceneEvent::Loaded { generation, .. }) => Ok(*generation),
+        Some(SceneEvent::Refused {
+            generation, error, ..
+        }) => Err(AirframeSessionError::Refused {
+            airframe: id,
+            generation: *generation,
+            error: Box::new(error.clone()),
+        }),
+        _ => Err(AirframeSessionError::NotServed { airframe: id }),
+    }
+}
+
+/// Session end: releases the live scene, if any, and returns how many of its
+/// entities were still live (`0` when nothing was live).
+pub fn end_airframe_scene(world: &mut World) -> usize {
+    let before = world
+        .get_resource::<AirframeSceneLog>()
+        .map_or(0, AirframeSceneLog::len);
+    world.insert_resource(AirframeSceneRequest::unload());
+    process_airframe_scene_request(world);
+    world
+        .get_resource::<AirframeSceneLog>()
+        .and_then(|log| log.events().get(before..))
+        .and_then(|served| {
+            served.iter().find_map(|event| match event {
+                SceneEvent::Released { entities, .. } => Some(*entities),
+                _ => None,
+            })
+        })
+        .unwrap_or(0)
+}
+
+/// Plugin: the three scene systems, in their one correct order.
+///
+/// [`process_airframe_scene_request`] serves a pending request, then
+/// [`apply_airframe_damage`] reflects the recorded damage onto the (possibly
+/// new) generation, then [`select_lod_presentation`] folds both into each
+/// node's presentation. The LOD pass only runs once the viewer stage
+/// (F21/F17) has inserted a [`LodDistance`]; a scene with no viewer has no
+/// meaningful band selection and is left unselected rather than given a
+/// guessed distance.
+pub struct AirframeScenePlugin;
+
+impl bevy::app::Plugin for AirframeScenePlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        use bevy::ecs::schedule::IntoScheduleConfigs;
+        app.add_systems(
+            bevy::app::Update,
+            (
+                process_airframe_scene_request,
+                apply_airframe_damage,
+                select_lod_presentation
+                    .run_if(bevy::ecs::schedule::common_conditions::resource_exists::<LodDistance>),
+            )
+                .chain(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
