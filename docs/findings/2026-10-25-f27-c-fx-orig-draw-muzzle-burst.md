@@ -43,3 +43,19 @@ statically; **not** `verified_original`.
 - Random roll (`FIRE` flag mask `0x1`): which rows set it is unmeasured; roll is 0.
 - Every shot of the mission uses the player's selected gun record's burst; whether other
   shooters (AI aircraft, turrets) bind a different `FIRE > ANIMATION` is not wired.
+
+## M01 owner smoke (retail, gpu)
+
+`cs --cs-path <retail> --mission M01 --smoke-seconds 45 --capture-dir private/evidence/F27-C-FX-ORIG-DRAW-C`
+passed (73 checks, failures none), `weapon_muzzle_flash_drawn`: a drawn measured burst
+was live in 8 frames of the hold. The smoke script changed for this task: the gun hold
+now holds the snap look to the side (`Numpad4`; the quads lie along the barrel axis, so
+the chase camera behind the aircraft sees them edge-on), `smoke_flashes` runs before
+`smoke_script`, and the first frame with a drawn burst is photographed
+(`frame_*_gun_burst.png`).
+
+**Visual result, stated plainly:** the `gun_burst` framebuffer shows no clearly visible
+flame. The only candidate is a few-pixel orange patch at the mount (`frame_02882`), which
+sits under the aft wing, not at the nose: the mission's gun mounts are designed
+placements, not the original's muzzle points. Whether the burst looks like the
+original's is **unverified** and needs the owner's eyes (`human_review`).

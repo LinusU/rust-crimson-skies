@@ -265,6 +265,8 @@ const APPROACH_MIN_FRAMES: u32 = 60;
 /// Frames into the post-wake phase at which the HUD screenshot is requested.
 const HUD_SHOT_OFFSET: u32 = 20;
 /// Frames the gun hold lasts: one second of `Space`.
+/// Frames after the gun hold starts before its side view has settled.
+const GUNS_SIDE_VIEW_SETTLE_FRAMES: u32 = 12;
 const GUNS_HOLD_FRAMES: u32 = 60;
 /// Frames into the gun phase at which the firing screenshot is requested.
 const GUNS_SHOT_OFFSET: u32 = 50;
@@ -2931,6 +2933,10 @@ struct SmokeData {
     camera_shots_due: Vec<String>,
     /// The first control frame's screenshot is waiting for the script.
     first_control_due: bool,
+    /// A frame with a drawn muzzle burst was seen: its screenshot is waiting
+    /// for the script (#2106), and whether one was already requested.
+    gun_burst_due: bool,
+    gun_burst_shot: bool,
     /// The parity flight shots already requested, an index into
     /// [`NO_TELEPORT_PARITY_SHOT_SECONDS`].
     parity_shots: usize,
@@ -3075,9 +3081,11 @@ fn add_script_systems(app: &mut App) {
             smoke_cockpit,
             camera_modes::smoke_camera_modes,
             smoke_lens_flare,
+            // Before the script, so the frame that shows a burst is the one
+            // whose screenshot the script requests (the burst lives one frame).
+            smoke_flashes,
             smoke_script,
             smoke_rounds,
-            smoke_flashes,
         )
             .chain(),
     );
@@ -3836,6 +3844,15 @@ fn smoke_flashes(
             !children.is_some_and(|kids| kids.iter().any(|kid| meshes.get(*kid).is_ok()))
         })
         .count() as u32;
+    // From the side look the gun hold holds (the burst's quads lie along
+    // the barrel axis, edge-on from behind), once the view has settled.
+    let settled = data.frame.saturating_sub(data.phase_start) >= GUNS_SIDE_VIEW_SETTLE_FRAMES;
+    if undrawn == 0 && settled && !data.gun_burst_shot {
+        // The first frame a burst is on screen is photographed: the fixed
+        // `guns` shot lands on a burst only by chance.
+        data.gun_burst_shot = true;
+        data.gun_burst_due = true;
+    }
     let guns = &mut data.measurements.guns;
     guns.flash_frames += 1;
     guns.flashes_undrawn += undrawn;
@@ -4305,6 +4322,9 @@ fn smoke_script(
 
     // --- the script --------------------------------------------------------
     let mut due: Vec<String> = Vec::new();
+    if std::mem::take(&mut data.gun_burst_due) {
+        due.push("gun_burst".to_owned());
+    }
     if std::mem::take(&mut data.first_control_due) {
         due.push("first_control".to_owned());
     }
@@ -4667,6 +4687,13 @@ fn smoke_script(
             }
         }
         Phase::Guns => {
+            // The burst's quads lie along the barrel axis, so from the chase
+            // camera behind the aircraft they are edge-on: the hold watches
+            // through the snap look to the side (`Numpad4`, held), which the
+            // release at the end of the hold undoes.
+            if at == 1 {
+                queue.0.push(KeyOp::Press(KeyCode::Numpad4));
+            }
             if at == GUNS_SHOT_OFFSET {
                 // The round census itself runs in `smoke_rounds`, which walks
                 // the hierarchy once instead of every frame.
@@ -4674,6 +4701,7 @@ fn smoke_script(
                 due.push("guns".to_owned());
             } else if at == GUNS_HOLD_FRAMES {
                 queue.0.push(KeyOp::Release(KeyCode::Space));
+                queue.0.push(KeyOp::Release(KeyCode::Numpad4));
                 data.phase = Phase::Rocket;
                 data.phase_start = frame + 1;
             }
