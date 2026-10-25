@@ -318,15 +318,29 @@ pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateE
 /// As [`render_state`]: [`StateError::CullFaceUnknown`] when neither the
 /// classification nor `stored_two_sided` establishes two-sidedness, and
 /// [`StateError::AddressModeUnknown`] when the addressing is not established.
+///
+/// An `unculled_billboard` surface never returns
+/// [`StateError::CullFaceUnknown`]: the original skipped the per-polygon
+/// back-face test for the whole mesh (`0x554a6b`-`0x554a84`,
+/// `OWNER-STATIC-2026-10-05`; F10-D.2 finding section 2), so two-sidedness
+/// cannot change how it draws and is not required. It can still return
+/// [`StateError::AddressModeUnknown`], because the addressing is unrelated to
+/// culling and stays unknown rather than defaulted.
 pub fn render_state_for_mesh(
     material: &ClassifiedMaterial,
     unculled_billboard: bool,
     stored_two_sided: Option<bool>,
 ) -> Result<RenderState, StateError> {
-    let two_sided = material
-        .two_sided()
-        .or(stored_two_sided)
-        .ok_or(StateError::CullFaceUnknown)?;
+    // An unculled billboard never needs the fact: the whole mesh skips the
+    // back-face test, so its surfaces are not refused for want of it.
+    let two_sided = if unculled_billboard {
+        material.two_sided().or(stored_two_sided).unwrap_or(false)
+    } else {
+        material
+            .two_sided()
+            .or(stored_two_sided)
+            .ok_or(StateError::CullFaceUnknown)?
+    };
     let address = material
         .addressing()
         .ok_or(StateError::AddressModeUnknown)?;

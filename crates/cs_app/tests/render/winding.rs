@@ -295,6 +295,20 @@ fn accept_f10_f_2_billboard_mesh_surfaces_are_not_culled() {
     );
 }
 
+/// Task #1622: a billboard surface needs no two-sidedness fact, while a
+/// non-billboard one still does and the addressing refusal keeps precedence.
+/// Remove the short-circuit and the first assertion fails.
+#[test]
+fn accept_f10_f_2_billboard_surface_needs_no_two_sidedness_fact() {
+    let undeclared = authored(MaterialClass::Opaque, None);
+    let state = render_state_for_mesh(&undeclared, true, None).expect("billboard needs no fact");
+    assert_eq!(state.cull_face(), None);
+    assert_eq!(
+        render_state_for_mesh(&undeclared, false, None).err(),
+        Some(StateError::CullFaceUnknown)
+    );
+}
+
 /// The type words reach the render mesh: only word0 == 1 with word1 in {0, 1}
 /// flags it, and a mesh never given type words is not a billboard.
 #[test]
