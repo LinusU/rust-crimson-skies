@@ -105,8 +105,8 @@ const KEYS: usize = 28;
 /// The cross-objective addresses the directed keys spell (wake, nap and
 /// kill lists).
 const EDGES: usize = 41;
-/// The `STOP_QUEUED_SOUNDS` sites and the comment-word sites that refuse.
-const REFUSED: usize = 4;
+/// The comment-word sites (`Change to mobile net`) the original ignores.
+const IGNORED: usize = 4;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -995,18 +995,16 @@ fn accept_m16_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     );
 }
 
-/// **M16's record does not lower, and the refusal is exactly four named
-/// calls.** All 37 conditions lower and 129 of 133 calls bind: the seven
-/// `STOP_QUEUED_SOUNDS` sites — 1, 3, 3, 4, 7, 9 and 14 names — carry their
-/// spelled list as one `Value::List` argument, so the 9- and 14-name shapes
-/// no longer exceed `MAX_CALL_ARGS` (M16-B-FU1). The four bare comment
-/// words of OBJECTIVE24 refuse `unknown host call`, because an unmeasured
-/// key registers nothing by design. No program is assembled, `validation`
-/// never runs and the only unmet row is `call_arguments`; the mission is
-/// not complete.
+/// **M16's record lowers: the four comment words of OBJECTIVE24 are ignored,
+/// as the original ignores them (#2134).** All 37 conditions lower and all
+/// 129 carried calls bind: the seven `STOP_QUEUED_SOUNDS` sites carry their
+/// spelled list as one `Value::List` argument (M16-B-FU1), and the four bare
+/// words `Change to mobile net` — keys the original's exact-match lookup never
+/// asks for — are dropped without a call and counted in `ignored_sites`. The
+/// program assembles, validates, and the row is complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m16_b_fu1_m16s_record_does_not_lower_and_four_of_its_calls_refuse() {
+fn accept_m16_b_fu1_m16s_record_lowers_and_the_four_comment_words_are_ignored() {
     let binding = control_binding();
     let row = census_row();
     let lowered = row
@@ -1024,76 +1022,38 @@ fn accept_m16_b_fu1_m16s_record_does_not_lower_and_four_of_its_calls_refuse() {
         attempt.objectives, BLOCKS,
         "every block carries a condition verdict"
     );
+    assert_eq!(attempt.ignored_sites as usize, IGNORED);
     assert_eq!(
         attempt.calls.len() as u32,
-        SITES,
-        "every site carries a call outcome"
+        SITES - IGNORED as u32,
+        "every carried site has a call outcome; the ignored ones carry none"
     );
     assert_eq!(
         attempt.conditions,
         vec![ConditionOutcome::Lowered; BLOCKS as usize],
-        "all {BLOCKS} conditions lower — nothing in M16's condition family \
-         refuses"
+        "all {BLOCKS} conditions lower"
     );
-
-    // Exactly four refused calls: the four comment words of OBJECTIVE24
-    // (unmeasured keys register nothing).
-    let refused: Vec<(usize, &str)> = attempt
-        .calls
-        .iter()
-        .enumerate()
-        .filter_map(|(index, call)| match call {
-            CallOutcome::Bound => None,
-            CallOutcome::Refused(text) => Some((index, text.as_str())),
-        })
-        .collect();
-    let expected: Vec<(usize, u32, u32, &str)> = vec![
-        // (flat site index, zero-based block, call inside block, key)
-        (93, 23, 1, "Change"),
-        (94, 23, 2, "to"),
-        (95, 23, 3, "mobile"),
-        (96, 23, 4, "net"),
-    ];
-    assert_eq!(
-        refused.len(),
-        REFUSED,
-        "exactly {REFUSED} of M16's {SITES} calls refuse: {refused:?}"
+    assert!(
+        attempt
+            .calls
+            .iter()
+            .all(|call| matches!(call, CallOutcome::Bound)),
+        "every carried call binds: {:?}",
+        attempt.calls
     );
-    for ((flat, text), (site, objective, call, key)) in refused.iter().zip(&expected) {
-        assert_eq!(flat, site, "site {site} is the refused call");
-        assert!(
-            text.contains(&format!(
-                "mission/ch4-m01 objective#{objective} call {call}: unknown host call `{key}`"
-            )),
-            "{text}"
-        );
-    }
     assert!(
         attempt.unbound_keys.is_empty(),
-        "`STOP_QUEUED_SOUNDS` registers — its list argument fits the bound — \
-         and the comment words were never registered, so no key names a \
-         binding error: {:?}",
+        "{:?}",
         attempt.unbound_keys
     );
-    assert!(
-        lowered.program().is_none(),
-        "refused calls mean no program is assembled — validation never runs"
-    );
-    assert!(
-        attempt.validation.is_none(),
-        "no program, so no validation verdict"
-    );
+    assert!(lowered.program().is_some(), "the program assembles");
+    assert!(attempt.validation.is_some(), "the program was validated");
 
     let lowering = record.lowering(attempt);
-    let unmet: Vec<String> = lowering.unmet().map(|r| r.kind.code().to_owned()).collect();
-    assert_eq!(
-        unmet,
-        ["call_arguments"],
-        "the one unmet row is the call binding — the conditions all lowered"
-    );
-    assert!(!record.is_complete(attempt));
-    assert!(!lowering.complete());
-    assert!(!row.is_complete());
+    assert_eq!(lowering.unmet().count(), 0, "no requirement is unmet");
+    assert!(record.is_complete(attempt));
+    assert!(lowering.complete());
+    assert!(row.is_complete());
 }
 
 /// **The sound-cleanup fix is census-wide: no measured control record still
@@ -1715,32 +1675,23 @@ fn standalone_offsets(haystack: &[u8], word: &[u8]) -> Vec<usize> {
 // Retail: M16 is not campaign-ready and the census does not hide it
 // ---------------------------------------------------------------------------
 
-/// **M16 is not campaign-ready and the census does not hide it.**
+/// **M16's row is complete, and the campaign gate stays closed on the rows
+/// that are not.**
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m16_b_m16_stays_unready_while_its_comment_calls_refuse() {
+fn accept_m16_b_m16_is_complete_and_the_campaign_gate_stays_closed() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
-    assert!(!census.campaign_ready());
+    assert!(census.complete_missions().contains(&MISSION));
+    assert!(
+        !census.campaign_ready(),
+        "other rows are still incomplete, so the gate stays closed"
+    );
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
     let unmet = census.unmet_by_requirement();
-    assert!(
-        unmet
-            .get("call_arguments")
-            .is_some_and(|missions| missions.iter().any(|mission| mission == MISSION)),
-        "the census reports M16 under call_arguments: {unmet:?}"
-    );
-    for requirement in [
-        "objective_condition",
-        "mission_identity",
-        "objective_identity",
-    ] {
+    for (requirement, missions) in &unmet {
         assert!(
-            !unmet
-                .get(requirement)
-                .is_some_and(|missions| missions.iter().any(|mission| mission == MISSION)),
-            "M16 must not appear under {requirement}: its conditions all lower \
-             and its identity resolves — {unmet:?}"
+            !missions.iter().any(|mission| mission == MISSION),
+            "M16 must not appear under {requirement}: {unmet:?}"
         );
     }
 }
@@ -1942,26 +1893,20 @@ fn accept_m16_b_unmeasured_bare_keys_refuse_but_a_two_latch_program_validates() 
     );
     let lowered = lower(&document);
     let attempt = lowered.attempt();
-    let refused: Vec<&str> = attempt
-        .calls
-        .iter()
-        .filter_map(|call| match call {
-            CallOutcome::Bound => None,
-            CallOutcome::Refused(text) => Some(text.as_str()),
-        })
-        .collect();
-    assert_eq!(
-        refused.len(),
-        4,
-        "the four bare words refuse, the measured sites bind: {refused:?}"
+    assert!(
+        attempt
+            .calls
+            .iter()
+            .all(|call| matches!(call, CallOutcome::Bound)),
+        "the four words are dropped, not refused (#2134): {:?}",
+        attempt.calls
     );
-    for (text, word) in refused.iter().zip(["Change", "to", "mobile", "net"]) {
-        assert!(
-            text.contains(&format!("unknown host call `{word}`")),
-            "{text}"
-        );
-    }
-    assert!(lowered.program().is_none(), "no program assembles");
+    assert_eq!(attempt.ignored_sites, 4, "the four words are ignored sites");
+    assert_eq!(
+        attempt.calls.len(),
+        2,
+        "only BEGIN_DORMANT and SET_AI_NET carry calls"
+    );
 
     // M16's terminal shape: a nap edge arms each latch after the pickup
     // gate and the train-gone block complete. Both latches, the nap and

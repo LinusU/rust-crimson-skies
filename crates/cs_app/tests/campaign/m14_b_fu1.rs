@@ -57,32 +57,29 @@ fn accept_m14_b_fu1_block_25_lowers_and_the_m14_row_is_complete() {
     );
 }
 
-/// The other incomplete rows hold on a different cause: a host call whose
-/// name the reader split or truncated, not a TRAVELERS radius.
+/// The other incomplete row holds on a different cause: a host call whose
+/// name the reader truncated, not a TRAVELERS radius. (`zbd/c4/m01` held on an
+/// unquoted phrase until #2134, which the original ignores.)
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m14_b_fu1_other_incomplete_rows_do_not_fail_on_the_int_radius() {
     let census = census();
-    for (mission, refused_call) in [
-        ("zbd/c4/m01", "unknown host call `Change`"),
-        ("zbd/c5/m04", "unknown host call `SET_AI_`"),
-    ] {
-        let row = census.row(mission).expect("a census row");
-        assert!(!row.is_complete(), "{mission}");
-        let lowered = row.lowering_attempt().expect("measured").attempt();
-        assert!(
-            lowered
-                .conditions
-                .iter()
-                .all(|c| *c == ConditionOutcome::Lowered),
-            "{mission}: every condition lowers, so the radius is not the cause"
-        );
-        assert!(
-            lowered
-                .calls
-                .iter()
-                .any(|c| matches!(c, CallOutcome::Refused(why) if why.contains(refused_call))),
-            "{mission}: the refused call is {refused_call}"
-        );
-    }
+    let (mission, refused_call) = ("zbd/c5/m04", "unknown host call `SET_AI_`");
+    let row = census.row(mission).expect("a census row");
+    assert!(!row.is_complete(), "{mission}");
+    let lowered = row.lowering_attempt().expect("measured").attempt();
+    assert!(
+        lowered
+            .conditions
+            .iter()
+            .all(|c| *c == ConditionOutcome::Lowered),
+        "{mission}: every condition lowers, so the radius is not the cause"
+    );
+    assert!(
+        lowered
+            .calls
+            .iter()
+            .any(|c| matches!(c, CallOutcome::Refused(why) if why.contains(refused_call))),
+        "{mission}: the refused call is {refused_call}"
+    );
 }

@@ -694,6 +694,10 @@ fn accept_m01_lc_record_fields_are_classified_and_an_unknown_key_stays_unclassif
 /// outcome vocabulary** instead, so an unrecognized bare key is refused like any
 /// other unmeasured key — and it is still **counted**, so the stray note cannot
 /// quietly disappear from a site's total.
+///
+/// Since #2134 the four words carry the `IgnoredByOriginal` disposition: the
+/// original's exact-match lookup never asks for them, so the adapter drops the
+/// sites rather than refusing them — but they are still measured and counted.
 #[test]
 fn accept_m01_lc_a_bare_key_that_is_not_a_measured_outcome_key_is_refused() {
     let document = control_record(vec![block(
@@ -731,9 +735,9 @@ fn accept_m01_lc_a_bare_key_that_is_not_a_measured_outcome_key_is_refused() {
         assert_eq!(
             key.disposition(),
             DirectiveDisposition::Unmeasured {
-                reason: UnmeasuredReason::MeaningNotMeasured,
+                reason: UnmeasuredReason::IgnoredByOriginal,
             },
-            "{word} is refused with the same reason as any unmeasured key"
+            "{word} is measured as ignored by the original, not given an operation"
         );
     }
 }

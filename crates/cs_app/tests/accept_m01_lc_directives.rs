@@ -510,13 +510,13 @@ fn accept_m01_lc_directives_a_key_no_finding_covers_stays_counted_and_named() {
         1,
         vec![
             directive("WIN_ANIM", vec![zrd_int(3)]),
-            vec![zrd_text("Change")],
+            vec![zrd_text("Relocate")],
             directive("INSTANTWIN", Vec::new()),
         ],
     )]);
     let (record, lowered) = lower(&document);
     assert_eq!(record.sites(), 3, "every spelled site is counted");
-    for name in ["WIN_ANIM", "Change"] {
+    for name in ["WIN_ANIM", "Relocate"] {
         let key = record.key(name).expect("counted");
         assert_eq!(key.sites, 1);
         assert!(
@@ -538,7 +538,7 @@ fn accept_m01_lc_directives_a_key_no_finding_covers_stays_counted_and_named() {
         "the unmeasured key's site refuses by name: {refused:?}"
     );
     assert!(
-        refused.iter().any(|reason| reason.contains("Change")),
+        refused.iter().any(|reason| reason.contains("Relocate")),
         "the stray word's site refuses by name: {refused:?}"
     );
     // A refusal is per site, never a blanket on its block: the terminal
