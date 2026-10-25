@@ -7215,3 +7215,67 @@ name = "hit.damage_pair_weapon_only"
 va = 0x005ad1c0
 bytes = "8b542404f6427404568b74240c750df6864c01000002740433c05ec3"
 fact = "0x5ad1c0 builds the damage pair from the weapon record (+0x4c, +0x50, +0x70, +0x34) alone; its only other inputs are weapon flag bit 0x4 and a per-round already-hit bit (+0x14c bit 0x2): no shooter or target team"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "fire.block_parse"
+va = 0x005ae0fc
+bytes = "68d8cf63008d939400000052"
+fact = "the weapon row parser (zwep_init) pushes the key FIRE (0x63cfd8) and the destination weapon+0x94 for the sub-block reader 0x5ae990; FLYOUT (0x63cfd0) goes to weapon+0xf8 through the same reader"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "fire.block_animation_key"
+va = 0x005aeac4
+bytes = "6818d3630057e8c1b5fcff"
+fact = "inside 0x5ae990 the key ANIMATION (0x63d318) of the block is read as up to two names, each turned into a handle by 0x523820 and stored at block+4 and block+8, i.e. weapon+0x98 and weapon+0x9c for the FIRE block; a boolean in the same list sets block flag bit 1 (weapon+0x94)"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "fire.effect_precedes_animation"
+va = 0x005af3e6
+bytes = "8b86b800000085c074128b4d"
+fact = "weapon fire 0x5aef9c: when the FIRE block's EFFECT handle [weapon+0xb8] is non-zero it plays that effect (0x525d90) at the muzzle and jumps past the animation path"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "fire.animation_gate"
+va = 0x005af402
+bytes = "8b86ec00000083f8ff0f84f40000"
+fact = "with no EFFECT, [weapon+0xec] (the current fire index, -1 for none) gates the animation path; index 0 plays both slots 0 and 1, any other index n plays only slot n-1"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "fire.animation_slot"
+va = 0x005af42b
+bytes = "8d948e9800000040"
+fact = "the animation slot address is weapon + 0x98 + 4*slot: the FIRE>ANIMATION handles; a zero handle is skipped"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "fire.animation_attached_branch"
+va = 0x005af449
+bytes = "8b9694000000f6c20274218b86f0"
+fact = "if FIRE block flag bit 1 [weapon+0x94] is set and [weapon+0xf0] is non-zero the animation is started attached by 0x4edf50 (handle, 0, [weapon+0xf0], [weapon+0xf4], 0); otherwise it is started by 0x4edc10 at the muzzle position with a yaw/pitch derived from the muzzle direction (fpatan), randomised by rand() when flag bit 0 is set"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "anim.event_offset_parse"
+va = 0x004ef3f7
+bytes = "db40148b5424185f"
+fact = "START_TIME: EVENT_OFFSET (0x62f060) stores its argument as a float at event+8 with event kind byte 3; an integer argument is converted by fild and stored unscaled, so the parser applies no unit factor; the unit is fixed by the consumer, not traced"
+
+[[weapon_fire_animation_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "anim.call_animation_at_node"
+va = 0x00515f3d
+bytes = "683427630057536a018d4d38"
+fact = "CALL_ANIMATION AT_NODE (0x62f1a4) resolves the node name to a 16-bit node index at record+0x34 (0x4ef7d0), then 0x4efb90 reads up to three number arguments into record+0x38 (offset, flag bit 1) and three more into record+0x44 (flag bit 2); 0x4efb90 converts integers with fild and multiplies by nothing, so the (0,-0.2,-1) offset is stored as written"
