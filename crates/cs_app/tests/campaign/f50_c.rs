@@ -41,12 +41,12 @@ use std::sync::OnceLock;
 use cs_assets::install::{discover, fingerprint};
 use cs_content::campaign_bindings::{
     BoundCampaign, CampaignBindings, CampaignInventory, ProbeInterruption, ProbePlan,
-    SourceBinding, SourceContext, assemble_campaign, probe_routes,
+    SourceBinding, SourceContext, TitleRulings, assemble_campaign, probe_routes,
 };
 
 use crate::campaign::common::{label, load_inventory, repo_path};
 use crate::campaign::f50_b::{
-    SYNTHETIC_INSTALL, bound, game_dir, synthetic_inventory, synthetic_source,
+    SYNTHETIC_INSTALL, bound, context, game_dir, synthetic_inventory, synthetic_source,
 };
 
 /// The human playtest route document this stage pins to the planned routes.
@@ -334,9 +334,9 @@ fn accept_f50_c_a_fingerprint_that_is_not_canonical_hex_is_refused() {
 
 /// Every declared work order of the real campaign has exactly one route, in
 /// declared order, under the one fingerprint production discovery reports.
-/// The work orders whose identity the installation carries in neither display
-/// form are *refused* routes — named, counted and pinned here so a change in
-/// the installation or in the binding code is re-measured instead of silently
+/// Under the owner's title ruling all 24 are ready; without it the seven ruled
+/// work orders are *refused* routes — named, counted and pinned here so a change
+/// in the installation or in the binding code is re-measured instead of silently
 /// shrinking the plan (spec F50 non-negotiable behavior 5).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -369,19 +369,38 @@ fn accept_f50_c_the_whole_campaign_has_one_probe_route_per_declared_work_order()
 
     assert_eq!(
         plan.ready_count(),
-        17,
-        "17 of the 24 work orders resolve their identity on this installation; if this count \
-         changes, re-measure the installation instead of adjusting the expectation"
+        24,
+        "all 24 work orders resolve their identity on this installation under the owner's title \
+         ruling; if this count changes, re-measure the installation instead of adjusting the \
+         expectation"
     );
-    let refused: Vec<&str> = plan.refused().map(|route| route.label.as_str()).collect();
+    assert_eq!(
+        plan.refused().count(),
+        0,
+        "no work order stays a refused route under the ruling"
+    );
+
+    // The ruling is what resolves the seven: with it withdrawn they are named
+    // refused routes again, never dropped from the plan.
+    let withdrawn = context()
+        .clone()
+        .with_title_rulings(TitleRulings::none())
+        .bind_campaign(&inventory)
+        .expect("the campaign binds without the ruling");
+    let withdrawn_plan = probe_routes(&withdrawn).expect("the routes plan without the ruling");
+    assert_eq!(withdrawn_plan.len(), inventory.len());
+    assert_eq!(withdrawn_plan.ready_count(), 17);
+    let refused: Vec<&str> = withdrawn_plan
+        .refused()
+        .map(|route| route.label.as_str())
+        .collect();
     assert_eq!(
         refused,
         vec!["M09", "M11", "M14", "M15", "M20", "M22", "M23"],
-        "the seven work orders whose declared title the installation carries in neither display \
-         form stay refused routes, named rather than dropped; if this set changes, re-measure \
-         the installation"
+        "the seven work orders whose declared title the installation does not carry stay refused \
+         routes without the ruling, named rather than dropped"
     );
-    for route in plan.refused() {
+    for route in withdrawn_plan.refused() {
         let refusal = route
             .refusal
             .as_ref()

@@ -43,7 +43,8 @@ use cs_assets::install::{discover, fingerprint};
 use cs_content::campaign_bindings::{
     BindingCategory, BoundCampaign, CampaignBindings, CampaignInventory, CellState,
     CriticalDependency, DependencyState, MissionLabel, REQUIRED_SUBSYSTEMS, SourceBinding,
-    SourceBindingError, SourceContext, SourceDependency, assemble_campaign, cell_state,
+    SourceBindingError, SourceContext, SourceDependency, TitleRulings, assemble_campaign,
+    cell_state,
 };
 use cs_types::content::{ContentId, ContentKind, Provenance};
 
@@ -720,17 +721,18 @@ fn accept_f50_b_the_prerequisite_closures_of_the_bound_campaign_omit_nothing() {
     );
 }
 
-/// The identities the installation did not resolve stay unresolved, and the
-/// campaign as a whole stays unready: nothing was filtered to the subset that
-/// worked, no cell went missing, and readiness was not awarded by this stage.
+/// All 24 identities resolve under the owner's title ruling (Rally #470), the
+/// seven ruled ones recorded as inferred, and the campaign as a whole stays
+/// unready: no cell went missing and readiness was not awarded by this stage.
+/// A title the installation does not carry stays unresolved: with the ruling
+/// withdrawn exactly the ruled seven refuse again.
 ///
-/// The set of unresolved work orders is pinned rather than counted, because
-/// "seven missions are unbound" would keep passing if a *different* seven
-/// were unbound — the owner's denominator and this installation decide which
-/// ones, and a change in either must fail here for a re-measurement.
+/// The set is pinned rather than counted, because "seven missions are unbound"
+/// would keep passing if a *different* seven were unbound.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f50_b_unresolved_identities_stay_unresolved_and_the_campaign_stays_unready() {
+fn accept_f50_b_ruled_identities_resolve_an_unruled_title_stays_unresolved_and_the_campaign_stays_unready()
+ {
     let inventory = load_inventory();
     let campaign = &bound().bindings;
     let coverage = campaign.coverage();
@@ -768,20 +770,62 @@ fn accept_f50_b_unresolved_identities_stay_unresolved_and_the_campaign_stays_unr
         "this stage binds identities; it must never report the campaign ready"
     );
 
-    let unresolved: Vec<&str> = bound()
-        .sources
-        .iter()
-        .filter(|source| !source.unresolved_critical().is_empty())
-        .map(|source| source.label.as_str())
-        .collect();
+    const RULED: [&str; 7] = ["M09", "M11", "M14", "M15", "M20", "M22", "M23"];
+
+    // Under the owner's title ruling (Rally #470) every declared title resolves.
+    let unresolved_of = |campaign: &BoundCampaign| -> Vec<String> {
+        campaign
+            .sources
+            .iter()
+            .filter(|source| !source.unresolved_critical().is_empty())
+            .map(|source| source.label.as_str().to_owned())
+            .collect()
+    };
     assert_eq!(
-        unresolved,
-        vec!["M09", "M11", "M14", "M15", "M20", "M22", "M23"],
-        "the declared titles the installation carries in neither display form changed; \
-         re-measure this installation before adjusting the expectation"
+        unresolved_of(bound()),
+        Vec::<String>::new(),
+        "every declared title resolves on this installation under the committed ruling; if a \
+         work order stops resolving, re-measure the installation before adjusting the expectation"
     );
-    for work_order in &unresolved {
-        let recorded = campaign.get(&label(work_order)).expect("it is recorded");
+    for work_order in RULED {
+        let source = bound()
+            .sources
+            .iter()
+            .find(|source| source.label.as_str() == work_order)
+            .expect("the source binding is recorded");
+        assert!(
+            source.campaign_position.is_some(),
+            "{work_order} resolves a campaign position through the ruling"
+        );
+        assert!(
+            source
+                .unknowns
+                .iter()
+                .any(|unknown| unknown.starts_with("title ruling:")),
+            "{work_order} must say its identity rests on the owner ruling, not on an exact title"
+        );
+    }
+
+    // The ruling is the only thing that resolves those seven: with the table
+    // withdrawn the same installation leaves exactly them unresolved, as unknown
+    // identities on bound records rather than placeholders.
+    let withdrawn = context()
+        .clone()
+        .with_title_rulings(TitleRulings::none())
+        .bind_campaign(&inventory)
+        .expect("the campaign still binds without the ruling");
+    assert_eq!(
+        unresolved_of(&withdrawn),
+        RULED,
+        "without the ruling the titles the installation carries in neither display form stay \
+         unresolved; the set must stay exactly the ruled seven"
+    );
+    assert!(!withdrawn.bindings.coverage().is_ready());
+    for work_order in RULED {
+        let recorded = withdrawn
+            .bindings
+            .get(&label(work_order))
+            .expect("it is recorded");
         assert!(
             !recorded.is_placeholder(),
             "{work_order} must be a bound record whose identity is unknown, not a placeholder"
@@ -793,10 +837,10 @@ fn accept_f50_b_unresolved_identities_stay_unresolved_and_the_campaign_stays_unr
             ),
             CellState::Unknown
         );
-        let source = bound()
+        let source = withdrawn
             .sources
             .iter()
-            .find(|source| source.label.as_str() == *work_order)
+            .find(|source| source.label.as_str() == work_order)
             .expect("the source binding is recorded");
         assert!(
             !source.unknowns.is_empty(),
