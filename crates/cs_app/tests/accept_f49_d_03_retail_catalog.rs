@@ -29,11 +29,12 @@ use cs_app::ui::instant_action::{
 };
 use cs_content::ai::{DeclaredSkillTier, DifficultyTier};
 use cs_content::instant_action::{
-    Declared, IaDenominator, InstantActionCatalog, InstantActionPreset, ScenarioActorSpec,
-    ScenarioOptionDimension, ScenarioOptions, ScenarioParameters, ScenarioRoster,
-    ScenarioSchemaError, ScenarioSide, VictoryRules, measured_ia_victory_rules, read_ia_descriptor,
-    survey_retail_instant_action, synthetic_difficulty, synthetic_instant_action_catalog,
-    synthetic_provenance, synthetic_scenario_options,
+    ActorIntensity, Declared, GameIntensity, IaDenominator, InstantActionCatalog,
+    InstantActionPreset, ScenarioActorSpec, ScenarioOptionDimension, ScenarioOptions,
+    ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSide, VictoryRules,
+    measured_ia_victory_rules, read_ia_descriptor, survey_retail_instant_action,
+    synthetic_difficulty, synthetic_instant_action_catalog, synthetic_provenance,
+    synthetic_scenario_options,
 };
 use cs_content::stunts::decode_zrd;
 use cs_content::world::WorldId;
@@ -280,8 +281,9 @@ fn accept_f49_d_03_retail_every_preset_lowers_to_its_declared_actors() {
 
             // Enemy groups, in record order, then the ace.
             let enemies = on(ScenarioSide::Enemy);
-            // The spawn routine seats the named ace for `dogfight_ace` only.
-            let seats_ace = preset.original_mission_type() == Some("dogfight_ace");
+            // The spawn routine seats the named ace for `dogfight_ace` only,
+            // and the type that runs is the descriptor's default.
+            let seats_ace = preset.launched_mission_type() == Some("dogfight_ace");
             assert_eq!(
                 enemies.len(),
                 aircraft.enemy_groups().len() + usize::from(seats_ace)
@@ -428,7 +430,7 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
         };
         assert_eq!(
             Some(*rules),
-            measured_ia_victory_rules(preset.original_mission_type().expect("a mission type")),
+            measured_ia_victory_rules(preset.launched_mission_type().expect("a launched type")),
             "{preset_id}"
         );
         assert!(matches!(preset.title(), Resolved::Unknown { .. }));
@@ -1238,7 +1240,20 @@ fn accept_f49_d_03_fu_rules_roster_synthetic_the_roster_follows_the_type_and_the
             .clone()
     };
     let ace_roster = by_type(&presets, "dogfight_ace");
-    let squadron_roster = by_type(&presets, "dogfight_squadron");
+    // The default type is the first offered one (`dogfight_ace`); the load
+    // overwrites the menu row's type, so the squadron row is the same launch.
+    assert_eq!(by_type(&presets, "dogfight_squadron"), ace_roster);
+    // A descriptor whose default is the squadron seats the squadron roster.
+    let squadron_presets = directory_presets(
+        &directory(&Descriptor {
+            offered: &["dogfight_squadron", "dogfight_ace"],
+            ..Descriptor::default()
+        }),
+        &inputs,
+    )
+    .expect("a squadron-default descriptor assembles");
+    let squadron_roster = by_type(&squadron_presets, "dogfight_squadron");
+    assert_eq!(by_type(&squadron_presets, "dogfight_ace"), squadron_roster);
     for roster in [&ace_roster, &squadron_roster] {
         let wingmen = roster.actors_on(ScenarioSide::Ally);
         assert_eq!(wingmen.len(), 2);
@@ -1252,6 +1267,21 @@ fn accept_f49_d_03_fu_rules_roster_synthetic_the_roster_follows_the_type_and_the
     }
     // The ace only under `dogfight_ace`; the template only under the squadron.
     assert_eq!(ace_roster.actors_on(ScenarioSide::Enemy).len(), 2);
+    // The ace runs under its `ace_skill` as 0/1/2 (`0x45acbe..0x45acfc`); no
+    // retail descriptor defaults to `dogfight_ace`, so this is the only place
+    // the production mapping is exercised.
+    let ace = ace_roster
+        .actors_on(ScenarioSide::Enemy)
+        .into_iter()
+        .find(|actor| actor.role() == Some("ace"))
+        .expect("the dogfight_ace roster seats the ace");
+    assert_eq!(ace.skill(), Some(DeclaredSkillTier::Ace));
+    assert_eq!(
+        ace.intensity(),
+        Some(ActorIntensity::Set(
+            GameIntensity::new(2).expect("measured")
+        ))
+    );
     assert_eq!(squadron_roster.actors_on(ScenarioSide::Enemy).len(), 1);
     assert_eq!(
         ace_roster.actors_on(ScenarioSide::Ally)[0].role(),

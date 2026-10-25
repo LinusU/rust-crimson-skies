@@ -1302,6 +1302,7 @@ pub struct InstantActionPreset {
     title: Resolved<String>,
     parameters: ScenarioParameters,
     original_mission_type: Option<String>,
+    launched_mission_type: Option<String>,
     unmeasured: Vec<UnmeasuredPresetFact>,
     origin: Origin,
     provenance: Provenance,
@@ -1350,6 +1351,7 @@ impl InstantActionPreset {
             title,
             parameters,
             original_mission_type: None,
+            launched_mission_type: None,
             unmeasured: Vec::new(),
             origin,
             provenance,
@@ -1364,6 +1366,20 @@ impl InstantActionPreset {
     #[must_use]
     pub fn with_original_mission_type(mut self, mission_type: String) -> Self {
         self.original_mission_type = Some(mission_type);
+        self
+    }
+
+    /// Records the mission type the original actually runs when this preset is
+    /// launched.
+    ///
+    /// The menu row's type ([`Self::original_mission_type`]) is overwritten by
+    /// the load, which re-reads the descriptor's own `mission_type`
+    /// (`docs/findings/2026-10-24-f49-d-03-fu-rules-type-order.md`); the
+    /// roster and rules of a preset are those of this type. For a row whose
+    /// type is not the directory's default the two differ.
+    #[must_use]
+    pub fn with_launched_mission_type(mut self, mission_type: String) -> Self {
+        self.launched_mission_type = Some(mission_type);
         self
     }
 
@@ -1389,6 +1405,13 @@ impl InstantActionPreset {
     #[must_use]
     pub fn original_mission_type(&self) -> Option<&str> {
         self.original_mission_type.as_deref()
+    }
+
+    /// The mission type the original runs for this preset, when recorded (see
+    /// [`Self::with_launched_mission_type`]).
+    #[must_use]
+    pub fn launched_mission_type(&self) -> Option<&str> {
+        self.launched_mission_type.as_deref()
     }
 
     /// The `ia_preset` id this preset is selected by.

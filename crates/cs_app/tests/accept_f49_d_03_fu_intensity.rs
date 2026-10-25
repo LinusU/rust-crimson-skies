@@ -189,7 +189,11 @@ fn accept_f49_d_03_fu_intensity_retail_every_actor_carries_the_spawn_routines_va
             }
         }
     }
-    assert!(aces > 0, "some preset seats the named ace");
+    // The type that runs is the descriptor's default and none is
+    // `dogfight_ace`, so no retail preset seats the named ace
+    // (F49-D.03-FU-RULES-TYPE-ORDER); its intensity is measured on the
+    // synthetic descriptor.
+    assert_eq!(aces, 0, "no retail preset seats the named ace");
 }
 
 #[test]

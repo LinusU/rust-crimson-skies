@@ -44,12 +44,12 @@ use cs_content::ai::DeclaredSkillTier;
 use cs_content::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use cs_content::environment::EnvironmentId;
 use cs_content::instant_action::{
-    ActorIntensity, GameIntensity, IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory,
-    IaPlayerPlane, IaSurveyError, IaWingmanPlane, IaWingmanTemplate, IaWingmen,
-    InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec,
-    ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed,
-    ScenarioSide, ia_spawns_named_ace, ia_wingman_template, measured_ia_victory_rules,
-    retail_scenario_options_with_pilots, survey_retail_instant_action,
+    ActorIntensity, GameIntensity, IA_ENGINE_DEFAULTS_CLAIM, IA_MISSION_TYPE_VOCABULARY,
+    IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError, IaWingmanPlane, IaWingmanTemplate,
+    IaWingmen, InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN,
+    ScenarioActorSpec, ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError,
+    ScenarioSeed, ScenarioSide, ia_spawns_named_ace, ia_wingman_template,
+    measured_ia_victory_rules, retail_scenario_options_with_pilots, survey_retail_instant_action,
 };
 use cs_content::world::WorldId;
 use cs_types::asset_id::SourceSpan;
@@ -133,6 +133,11 @@ fn rules_unmeasured_reason(mission_type: &str) -> String {
          the scenario is unmeasured and is not mapped by intuition"
     )
 }
+
+/// The mission type the record initialiser `0x458ff0` leaves in the live type
+/// (`mov dword [ebp],0`), which a descriptor without a recognised
+/// `mission_type` keeps.
+const RESET_MISSION_TYPE: &str = "dogfight_ace";
 
 /// Why a retail catalog could not be assembled.
 #[derive(Debug)]
@@ -611,7 +616,18 @@ pub fn directory_presets(
         .into_iter()
         .zip(directory.offered())
     {
-        let mission_type = offered.mission_type();
+        // The menu row's type never runs: the load resets the live type and
+        // re-reads the descriptor's own `mission_type`
+        // (docs/findings/2026-10-24-f49-d-03-fu-rules-type-order.md), so the
+        // roster and the rules are those of the directory's default type. A
+        // descriptor without the key keeps the reset value `dogfight_ace`.
+        // The 22 non-default rows stay presets of their own identity and
+        // launch exactly what the default row launches.
+        let offered_type = offered.mission_type();
+        let mission_type = directory
+            .default_mission_type()
+            .filter(|name| IA_MISSION_TYPE_VOCABULARY.contains(name))
+            .unwrap_or(RESET_MISSION_TYPE);
         let roster = directory_roster(directory, mission_type, inputs, &source)?;
         let mut parameters = ScenarioParameters::new_unmeasured_rules(
             world.clone(),
@@ -650,7 +666,8 @@ pub fn directory_presets(
             observed(IA_PRESET_CLAIM, &source)?,
         )
         .map_err(schema)?
-        .with_original_mission_type(mission_type.to_owned());
+        .with_original_mission_type(offered_type.to_owned())
+        .with_launched_mission_type(mission_type.to_owned());
         presets.push(preset);
     }
     Ok(presets)

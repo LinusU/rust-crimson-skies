@@ -535,9 +535,11 @@ fn accept_f49_d_03_fu_rules_end_retail_each_preset_binds_its_mission_type_rules(
     let catalog = retail_instant_action_catalog(&game_dir()).expect("the retail catalog assembles");
     assert!(!catalog.presets().is_empty());
     for preset in catalog.presets() {
+        // The type that runs is the descriptor's default, not the menu row's
+        // (F49-D.03-FU-RULES-TYPE-ORDER): the rules follow the launched type.
         let mission_type = preset
-            .original_mission_type()
-            .expect("a measured mission type");
+            .launched_mission_type()
+            .expect("a launched mission type");
         let Declared::Declared(rules) = preset.parameters().rules() else {
             panic!(
                 "{}: rules are the measured binding, not unmeasured",
@@ -705,7 +707,7 @@ fn accept_f49_d_03_fu_rules_end_a_descriptor_s_presets_carry_the_measured_rules(
         .expect("a descriptor offering all five types assembles");
     assert_eq!(presets.len(), 5);
     for preset in &presets {
-        let mission_type = preset.original_mission_type().expect("a mission type");
+        let mission_type = preset.launched_mission_type().expect("a mission type");
         let Declared::Declared(rules) = preset.parameters().rules() else {
             panic!("{}: rules are the measured binding", preset.id());
         };

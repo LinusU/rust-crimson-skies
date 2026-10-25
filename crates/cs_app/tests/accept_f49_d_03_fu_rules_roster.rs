@@ -641,7 +641,8 @@ fn accept_f49_d_03_fu_rules_roster_retail_each_preset_seats_what_the_spawn_routi
             );
         }
         for preset in catalog.presets_for_scenario(&scenario) {
-            let mission_type = preset.original_mission_type().expect("a mission type");
+            // The type that runs is the descriptor's default.
+            let mission_type = preset.launched_mission_type().expect("a mission type");
             let lowered =
                 lower_preset_roster(&catalog, preset.id()).expect("the measured roster lowers");
             let roles = |side| {
@@ -724,7 +725,10 @@ fn accept_f49_d_03_fu_rules_roster_retail_each_preset_seats_what_the_spawn_routi
         }
     }
     assert_eq!(checked, 30, "all thirty presets were checked");
-    assert_eq!(aces, 8, "eight directories offer dogfight_ace");
+    assert_eq!(
+        aces, 0,
+        "no retail descriptor defaults to dogfight_ace, so the named ace is never seated"
+    );
 }
 
 fn catalog_seats_ace(enemy_roles: &[String]) -> bool {
