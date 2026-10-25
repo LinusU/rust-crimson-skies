@@ -42,6 +42,10 @@ members, all verified) and **11** `faction` rows, ids `faction/blackhat`,
 `paint_mask` `rows: 184`, `gaps` empty and no diagnostic; `faction` `rows: 11`,
 `gaps.pattern_without_colors: 2` and no diagnostic.
 
+> **Totals since this note.** The 195 rows above are this stage's two collections only; the baseline report's other collections are not repeated here.
+> The current per-collection counts (88 496 rows in twenty collections, with the
+> stage that added each) are in `2026-10-03-f14-d-6-airframe-collection.md`.
+
 ## Why no mask-to-faction edge, and where the factions come from
 
 The task's caution is that `StockLivery::from_file` derives a faction and an

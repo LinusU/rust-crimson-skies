@@ -45,6 +45,10 @@ now 346 rows: 228 inventoried files, 24 campaign missions, 53 program rows,
 (24 + 8 + 21), `coverage.reachable` still `3 × 53` and `unresolved_references`
 still 0. `coverage.unreachable_by_kind` now also carries `world: 8`.
 
+> **Totals since this note.** The 346-row total above is the figure at this stage.
+> The current per-collection counts (88 496 rows in twenty collections, with the
+> stage that added each) are in `2026-10-03-f14-d-6-airframe-collection.md`.
+
 The retail acceptance test measures the expected groups by walking `ZBD/`
 directly rather than trusting the classifier, and asserts that the eight rows,
 the eight world-group-reader classifications and the eight directories are the

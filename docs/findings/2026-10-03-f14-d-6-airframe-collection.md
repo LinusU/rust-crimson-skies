@@ -12,28 +12,48 @@ rendered or played, no original run happened, and nothing here claims
 
 ## What this stage changes about the F14-D verdict
 
-The baseline inventory now holds a tenth populated collection. Its report over
-the owner's installation reads (measured on the reviewed tree, after F14-D.5's
-faction and paint-mask collections landed on `main`; see **Review record**):
+When this stage landed, the baseline inventory held a tenth populated
+collection, `airframe`. That per-stage count went stale as later stages added
+collections, so this section restates the **current** totals and says which
+stage added each collection. Re-measured on 2026-10-25 with `cs-inspect catalog
+--cs-path "$CS_GAME_DIR"` (capability `retail`, read-only) on `main` at
+`4d6f02105`; the row total is the report's own `rows` field and
+equals the sum of the column below:
 
-| collection | rows | source |
-| --- | --- | --- |
-| `install_file` | 228 | the F02 inventory |
-| `mission` | 24 | the shared campaign walk |
-| `script` | 53 | the mission and scenario program archives |
-| `ia_scenario` | 8 | F14-D.1's classified scenario directories |
-| `multiplayer_scenario` | 21 | F14-D.1's classified scenario directories |
-| `multiplayer_rules` | 4 | F14-D.2's mode table |
-| `world` | 8 | F14-D.3's world-group readers |
-| `faction` | 11 | F14-D.5's paint records |
-| `paint_mask` | 184 | F14-D.5's verified library members |
-| **`airframe`** | **11** | **`ZBD/interp.zbd`'s loading scripts** |
+| collection | rows | added by | source |
+| --- | --- | --- | --- |
+| `install_file` | 228 | F14-D | the F02 inventory |
+| `mission` | 24 | F14-D | the shared campaign walk |
+| `script` | 53 | F14-D | the mission and scenario program archives |
+| `ia_scenario` | 8 | F14-D.1 | classified scenario directories |
+| `multiplayer_scenario` | 21 | F14-D.1 | classified scenario directories |
+| `multiplayer_rules` | 4 | F14-D.2 | the mode table |
+| `world` | 8 | F14-D.3 | world-group readers |
+| `scene_node` | 56 620 | F14-D.4 | the nine geometry containers' nodes |
+| `mesh` | 17 139 | F14-D.4 | the nine geometry containers' meshes |
+| `faction` | 11 | F14-D.5 | paint records |
+| `paint_mask` | 184 | F14-D.5 | verified library members |
+| **`airframe`** | **11** | **F14-D.6 (this note)** | **`ZBD/interp.zbd`'s loading scripts** |
+| `sound` | 4 951 | F14-D.7 | see `2026-10-03-f14-d-7-sound-cue-collection.md` |
+| `scrapbook_item` | 461 | F14-D.8 | see `2026-10-03-f14-d-8-stunt-scrapbook-collections.md` |
+| `stunt` | 45 | F14-D.8 | same note |
+| `material` | 4 669 | F14-D.9 | see `2026-10-03-f14-d-9-material-collection.md` |
+| `engine` | 38 | F14-D.10 | see `2026-10-11-f14-d-10-engine-gun-collections.md` |
+| `gun` | 31 | F14-D.10 | same note |
+| `image` | 3 985 | F14-D.10 | see `2026-10-11-f14-d-10-image-collection.md` |
+| `video` | 5 | F14-D video | see `2026-10-12-f14-d-video-collection.md` |
 
-The coverage denominator did **not** move: 53 declared roots (24 campaign
-missions plus 29 scenario directories), 159 reachable rows, 393 unreachable,
-0 ready, 0 unresolved references. An airframe is not launchable content, so the
-eleven new rows are counted as unreachable unknowns in
-`coverage.unreachable_by_kind.airframe` rather than entering the denominator.
+**88 496 rows in twenty collections.** Coverage: 53 declared roots (24 campaign
+missions plus 29 scenario directories), 159 reachable rows, 88 337 unreachable,
+0 unresolved references, 0 ready. The coverage denominator did **not** move at
+this stage or since: none of the collections after `script` is launchable
+content, so their rows are counted as unreachable unknowns in
+`coverage.unreachable_by_kind` (for example `airframe: 11`) rather than
+entering the denominator.
+
+When this stage landed (before F14-D.4 and F14-D.7 onward) the same report
+held 552 rows in ten collections, 393 of them unreachable; those figures are
+historical and are superseded by the table above.
 
 ## Where the installation states an airframe at all
 
