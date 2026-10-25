@@ -41,3 +41,16 @@ round's damage on a team relation at all, so nothing measured says the player is
 
 Choosing `NonFriendly`/`Everyone` for M01 guns, or declaring player↔neutral hostile, would
 be a guessed rule (AGENTS rule 4) and is not done here.
+
+## Resolution (#2099, after #2102)
+
+`2026-10-25-m01-hit-dispatch-team-trace.md` found no team compare between a round's
+impact and the node's weapon-hit handler, so the relation does not decide the tanks. The
+change: the roster declares a neutral (team 0) ground node `Allegiance::Neutral` toward
+the player (no hostility invented), and the designed M01 gun rule is `NonFriendly`
+(hostile or neutral admitted, an ally never). Both remain **designed**, not measured. The
+#2096 gun-burst test no longer declares a relation itself.
+
+Still unmeasured: whether the tank nodes pass the ray query's node-flag admission
+(`0x40000`, `[node+0x20] != 1`); the retail gun-burst test shows the composed model
+admits them, not that the original does.
