@@ -10,14 +10,14 @@
 //!
 //! # What is **not** claimed
 //!
-//! * **Once per pilot, as a profile rule.** The gate is the engine callback
-//!   `2151`, read statically in
-//!   `docs/findings/2026-10-24-intro-callback-2151-static.md`: [`chapter_gate`]
-//!   is its measured rule. The campaign progress it reads (the current
-//!   mission's chapter and the two flags of the chapter's first mission
-//!   record) has no writer in this build, so every pilot is still a fresh
-//!   one and the intro plays on every entry from the pilot page; nothing is
-//!   persisted per profile until the progress exists.
+//! * **The original's saved bytes.** The gate is the engine callback `2151`,
+//!   read statically in `docs/findings/2026-10-24-intro-callback-2151-static.md`
+//!   and `docs/findings/2026-10-25-intro-gate-flag-writer-static.md`:
+//!   [`chapter_gate`] is its rule, [`chapter_of_mission`] its
+//!   mission-to-chapter table. The pilot's progress is this build's own
+//!   profile counters (`pilot_progress`), read into the callback's two words
+//!   by `pilot_progress::intro_chapter`; the original's save layout is
+//!   unknown and nothing here is `verified_original`.
 //! * **The menu music during the movie** is stopped while it plays and
 //!   restarted after; the original's handling is unread.
 //! * A movie that cannot be opened or fails part-way is recorded in
@@ -43,6 +43,42 @@ pub const INTRO_FILE: &str = "chap1.mpg";
 
 /// The engine callback that gates the intro (`callback($$E$$, 2151, FC)`).
 pub const GATE_CALLBACK: u32 = 2151;
+
+/// The chapter movie of the campaign areas, as the engine's mission loader
+/// numbers them (`0x46c036..0x46c0b4` then `0x419ce0`): the `area` string of
+/// each `cm_sequence.zrd` mission maps to the chapter whose `chap<N>.mpg` the
+/// cabin plays. `static`, not `verified_original`.
+pub const AREA_CHAPTERS: [(&str, u32); 5] = [
+    ("HAWAII", 1),
+    ("NORTHWEST", 2),
+    ("HOLLYWOOD", 3),
+    ("COLORADO", 4),
+    ("MANHATTAN", 5),
+];
+
+/// The missions `cm_sequence.zrd` lists: five per area, Manhattan four.
+pub const CAMPAIGN_MISSIONS: usize = 24;
+
+/// The chapter of a campaign `area` string; `0` for any other (the engine
+/// leaves such a mission's chapter unset).
+#[must_use]
+pub fn chapter_of_area(area: &str) -> u32 {
+    AREA_CHAPTERS
+        .iter()
+        .find(|(name, _)| *name == area)
+        .map_or(0, |(_, chapter)| *chapter)
+}
+
+/// The chapter of the mission at `index` (0-based, in `cm_sequence.zrd`
+/// order); `0` outside the 24 listed missions, as the engine's table does.
+#[must_use]
+pub fn chapter_of_mission(index: usize) -> u32 {
+    if index >= CAMPAIGN_MISSIONS {
+        return 0;
+    }
+    let area = index / MISSIONS_PER_CHAPTER;
+    AREA_CHAPTERS.get(area).map_or(0, |(_, chapter)| *chapter)
+}
 
 /// Missions per chapter in the callback's record arithmetic: it reads the
 /// record `5 * (chapter - 1)`, the chapter's first mission.
@@ -91,6 +127,17 @@ pub struct IntroMovie {
 }
 
 impl IntroMovie {
+    /// The movie file for `chapter`: the configured path for chapter 1 (the
+    /// measured `chap1.mpg`), its sibling `chap<chapter>.mpg` otherwise.
+    #[must_use]
+    pub fn path_for(&self, chapter: u32) -> PathBuf {
+        if chapter <= 1 {
+            self.path.clone()
+        } else {
+            self.path.with_file_name(format!("chap{chapter}.mpg"))
+        }
+    }
+
     /// The retail intro under the installation at `cs_path`.
     #[must_use]
     pub fn retail(cs_path: &std::path::Path, output: AudioOutput) -> Self {
@@ -128,6 +175,7 @@ enum Phase {
 pub struct IntroState {
     movie: Option<IntroMovie>,
     phase: Phase,
+    chapter: u32,
     /// How each intro ended, in order.
     pub outcomes: Vec<MovieOutcome>,
     finished: MessageCursor<MovieFinished>,
@@ -138,6 +186,7 @@ impl IntroState {
         Self {
             movie,
             phase: Phase::Idle,
+            chapter: 1,
             outcomes: Vec::new(),
             finished: MessageCursor::default(),
         }
@@ -155,12 +204,13 @@ impl IntroState {
         self.movie.is_some()
     }
 
-    /// The pilot page confirmed: the intro starts on the next frame. `false`
-    /// when this run has none.
-    pub(super) fn begin(&mut self, audio: Option<&mut MenuAudio>) -> bool {
-        if self.movie.is_none() || self.phase != Phase::Idle {
+    /// The pilot page confirmed: the chapter's intro starts on the next
+    /// frame. `false` when this run has none.
+    pub(super) fn begin(&mut self, chapter: u32, audio: Option<&mut MenuAudio>) -> bool {
+        if self.movie.is_none() || self.phase != Phase::Idle || chapter == 0 {
             return false;
         }
+        self.chapter = chapter;
         self.phase = Phase::Pending;
         if let Some(audio) = audio {
             audio.stop_music();
@@ -202,8 +252,13 @@ impl IntroState {
     fn open(&mut self, world: &mut World) {
         self.phase = Phase::Idle;
         let Some(movie) = &self.movie else { return };
-        let media: ContentId = movie_media(INTRO_FILE);
-        let opened = MoviePlayer::open(&movie.path, &media, &movie.output);
+        let path = movie.path_for(self.chapter);
+        let file = match self.chapter {
+            0 | 1 => INTRO_FILE.to_owned(),
+            chapter => format!("chap{chapter}.mpg"),
+        };
+        let media: ContentId = movie_media(&file);
+        let opened = MoviePlayer::open(&path, &media, &movie.output);
         // Messages written before this start belong to earlier movies.
         if let Some(messages) = world.get_resource::<Messages<MovieFinished>>() {
             self.finished.clear(messages);

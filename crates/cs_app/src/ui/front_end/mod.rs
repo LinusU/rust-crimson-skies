@@ -164,8 +164,9 @@ pub use flow::{
 };
 pub use import_dialog::ImportDialog;
 pub use intro::{
-    GATE_CALLBACK, INTRO_FILE, IntroMovie, IntroState, MISSIONS_PER_CHAPTER, MissionFlags,
-    chapter_gate, follows as intro_follows, gate_record,
+    AREA_CHAPTERS, CAMPAIGN_MISSIONS, GATE_CALLBACK, INTRO_FILE, IntroMovie, IntroState,
+    MISSIONS_PER_CHAPTER, MissionFlags, chapter_gate, chapter_of_area, chapter_of_mission,
+    follows as intro_follows, gate_record,
 };
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,

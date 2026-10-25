@@ -16,6 +16,14 @@
 //! * [`record_mission_end`] is the mission leg's write when the player leaves
 //!   for the cabin; [`progress_of`] is the front end's read after the return.
 //!
+//! The intro gate (#2077) reads the same counters: [`intro_chapter`] feeds the
+//! engine's callback 2151 rule ([`chapter_gate`]) from them. The original
+//! writes the gate's record word `+0x04` (the mission's elapsed time) in its
+//! end-of-mission handler for any single-player ending, so a mission with an
+//! attempt counted here stands for a record with that word set; the second
+//! word (`+0x58`) has no ordinary writer and stays 0
+//! (`docs/findings/2026-10-25-intro-gate-flag-writer-static.md`).
+//!
 //! **Our own layout, not the original's.** The original keeps this in
 //! `Status.dat` / `Mission.*`, whose layouts are unknown (F64 owner capture,
 //! #746; `2026-10-22-parity5-start-flow-transitions.md`). The counters below
@@ -27,6 +35,9 @@ use std::path::{Path, PathBuf};
 use cs_content::save::settings::SettingCatalog;
 use cs_types::profile::{ProfileKind, RecordEntry};
 
+use super::intro::{
+    CAMPAIGN_MISSIONS, MISSIONS_PER_CHAPTER, MissionFlags, chapter_gate, chapter_of_mission,
+};
 use super::start_flow::{
     FRONT_END_SMOKE_SUBDIR, MISSION_SMOKE_SUBDIR, MissionEnd, REPLAY_SMOKE_SUBDIR,
     RESUMED_SMOKE_SUBDIR,
@@ -268,4 +279,49 @@ pub fn progress_of(session: &ProfileSession) -> Option<PilotProgress> {
         attempts,
         last,
     })
+}
+
+/// The label the profile keeps campaign mission `index` (0-based, in
+/// `cm_sequence.zrd` order) under: `M01` for the first.
+#[must_use]
+pub fn mission_label(index: usize) -> String {
+    format!("M{:02}", index + 1)
+}
+
+/// The pilot's current campaign mission: the first mission not yet completed
+/// (`CAMPAIGN_MISSIONS` once all are). This build's reading of the engine's
+/// current mission, which advances past a passed mission; the original's
+/// advance rule is not traced.
+#[must_use]
+pub fn current_mission(records: &[RecordEntry]) -> usize {
+    (0..CAMPAIGN_MISSIONS)
+        .find(|&index| value_of(records, &counter_key(&mission_label(index), "completed")) == 0)
+        .unwrap_or(CAMPAIGN_MISSIONS)
+}
+
+/// The two words callback 2151 reads from the first mission record of
+/// `chapter`, as the pilot's counters stand: `word_04` is non-zero once the
+/// mission has an attempt on record, `word_58` is always 0.
+#[must_use]
+pub fn gate_flags(records: &[RecordEntry], chapter: u32) -> MissionFlags {
+    let first = usize::try_from(chapter)
+        .ok()
+        .and_then(|chapter| chapter.checked_sub(1))
+        .map(|before| before * MISSIONS_PER_CHAPTER);
+    let attempted = first.is_some_and(|index| {
+        value_of(records, &counter_key(&mission_label(index), "attempts")) > 0
+    });
+    MissionFlags {
+        word_04: u32::from(attempted),
+        word_58: 0,
+    }
+}
+
+/// Callback 2151's result for the selected pilot: the chapter whose intro the
+/// cabin plays, or `0` for none. `None` without a selected pilot.
+#[must_use]
+pub fn intro_chapter(session: &ProfileSession) -> Option<u32> {
+    let records = &session.document()?.records;
+    let chapter = chapter_of_mission(current_mission(records));
+    Some(chapter_gate(chapter, gate_flags(records, chapter)))
 }

@@ -1946,7 +1946,15 @@ fn frame_shell(world: &mut World) {
                 (None, Some(flow)) => flow.route(shell, outcome.clone()),
                 (None, None) => StartStep::Stay,
             };
-            let plays_intro = intro::follows(&step);
+            // Callback 2151: the chapter whose intro plays, 0 for none. A run
+            // without a pilot session keeps the first chapter's intro.
+            let intro_chapter = if intro::follows(&step) {
+                pilots.as_ref().map_or(Some(1), |pilots| {
+                    super::pilot_progress::intro_chapter(&pilots.session)
+                })
+            } else {
+                None
+            };
             match step {
                 StartStep::Moved { .. } => {
                     state
@@ -1954,7 +1962,9 @@ fn frame_shell(world: &mut World) {
                         .visited
                         .push(shell.section_name().unwrap_or_default().to_owned());
                     state.redraw = true;
-                    if plays_intro && state.intro.begin(state.audio.as_mut()) {
+                    if let Some(chapter) = intro_chapter
+                        && state.intro.begin(chapter, state.audio.as_mut())
+                    {
                         break;
                     }
                 }
