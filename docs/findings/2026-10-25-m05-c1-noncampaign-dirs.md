@@ -29,7 +29,7 @@ selects from it (item 1 of the task):
   for index 1. Anything else returns the caller's own value unchanged.
   Two sibling one-line predicates (0x4639b0: type == 3, 0x4639c0: type == 2)
   exist beside it.
-* The two routines have 21 and 26 call sites, among them the objectives loader
+* The mission-directory routine has 21 call sites and the group routine 26, among them the objectives loader
   that formats `..\data\%s\%s\zrdr\objectives.zrd` / `zbd\%s\%s\zrdr.zbd`
   (0x4acc4a, 0x4acca1, referencing 0x629ed0).
 
