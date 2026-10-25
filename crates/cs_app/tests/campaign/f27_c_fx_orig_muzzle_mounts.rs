@@ -69,10 +69,22 @@ fn accept_f27_c_fx_orig_muzzle_mounts_rows_pin_the_firepoint_table() {
     // The loop: outer counter starts at 0, `add eax, 7` forms N = i - j + 7,
     // the inner loop runs `cmp ebx, 2`, the outer step is `add eax, 2` against 8.
     assert_eq!(build[..7], [0xc7, 0x45, 0xf0, 0, 0, 0, 0]);
-    assert!(build.windows(3).any(|w| w == [0x83, 0xc0, 0x07]), "add eax,7");
-    assert!(build.windows(3).any(|w| w == [0x83, 0xfb, 0x02]), "cmp ebx,2");
-    assert!(build.windows(3).any(|w| w == [0x83, 0xc0, 0x02]), "add eax,2");
-    assert!(build.windows(3).any(|w| w == [0x83, 0xf8, 0x08]), "cmp eax,8");
+    assert!(
+        build.windows(3).any(|w| w == [0x83, 0xc0, 0x07]),
+        "add eax,7"
+    );
+    assert!(
+        build.windows(3).any(|w| w == [0x83, 0xfb, 0x02]),
+        "cmp ebx,2"
+    );
+    assert!(
+        build.windows(3).any(|w| w == [0x83, 0xc0, 0x02]),
+        "add eax,2"
+    );
+    assert!(
+        build.windows(3).any(|w| w == [0x83, 0xf8, 0x08]),
+        "cmp eax,8"
+    );
     // The chooser: fire group [esi+0x604], side [esi+0x4c4], doubled group.
     let index = get("firepoint.fire_index");
     assert_eq!(index[..6], [0x8b, 0x86, 0x04, 0x06, 0x00, 0x00]);
@@ -167,16 +179,26 @@ fn assert_close(found: [f32; 3], wanted: [f32; 3], what: &str) {
 fn accept_f27_c_fx_orig_muzzle_mounts_wing_guns_hang_at_the_measured_points() {
     let (left, right, nose) = rig_offsets();
     // `firepoint7` and `firepoint8` of `player_pfighter` (retail, planes.zbd).
-    assert_close(left, [-1.165_008, -0.620_576_6, -1.199_482], "left wing gun");
-    assert_close(right, [1.204_927_2, -0.584_683_8, -1.199_482], "right wing gun");
+    assert_close(
+        left,
+        [-1.165_008, -0.620_576_6, -1.199_482],
+        "left wing gun",
+    );
+    assert_close(
+        right,
+        [1.204_927_2, -0.584_683_8, -1.199_482],
+        "right wing gun",
+    );
     // The nose gun has no measured muzzle: it keeps its designed placement.
     assert_close(nose, [0.0, -0.4, -4.0], "nose gun");
 }
 
 fn game_dir() -> PathBuf {
-    PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
-        panic!("CS_GAME_DIR is not set: #2113 needs the retail capability")
-    }))
+    PathBuf::from(
+        std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
+            panic!("CS_GAME_DIR is not set: #2113 needs the retail capability")
+        }),
+    )
 }
 
 /// The world position of `player_pfighter`'s `firepoint<n>` marker.
@@ -211,6 +233,14 @@ fn retail_firepoint(n: u32) -> [f32; 3] {
 fn accept_f27_c_fx_orig_muzzle_mounts_retail_firepoints_are_the_rig_offsets() {
     let slots = firepoint_numbers_by_slot();
     let (left, right, _) = rig_offsets();
-    assert_close(retail_firepoint(slots[0] as u32), left, "firepoint of slot 0");
-    assert_close(retail_firepoint(slots[1] as u32), right, "firepoint of slot 1");
+    assert_close(
+        retail_firepoint(slots[0] as u32),
+        left,
+        "firepoint of slot 0",
+    );
+    assert_close(
+        retail_firepoint(slots[1] as u32),
+        right,
+        "firepoint of slot 1",
+    );
 }

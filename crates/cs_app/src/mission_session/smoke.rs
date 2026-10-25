@@ -267,6 +267,12 @@ const HUD_SHOT_OFFSET: u32 = 20;
 /// Frames the gun hold lasts: one second of `Space`.
 /// Frames after the gun hold starts before its side view has settled.
 const GUNS_SIDE_VIEW_SETTLE_FRAMES: u32 = 12;
+/// Where the gun hold's camera sits, in the player body's frame, metres. A
+/// smoke-only pose on the held-point view (`F7`): ahead of and abeam the left
+/// wing gun, about three metres from its burst, looking at the aircraft. **Designed**:
+/// no look key brings the camera closer than the chase distance, and the
+/// burst is a metre across.
+const GUNS_MUZZLE_CAMERA_BODY_M: [f32; 3] = [-4.5, -0.3, -5.0];
 const GUNS_HOLD_FRAMES: u32 = 60;
 /// Frames into the gun phase at which the firing screenshot is requested.
 const GUNS_SHOT_OFFSET: u32 = 50;
@@ -3089,6 +3095,7 @@ fn add_script_systems(app: &mut App) {
         )
             .chain(),
     );
+    app.add_systems(Update, smoke_muzzle_camera);
     // Beside the chain (it is at Bevy's tuple limit): the convoy-kill stage's
     // observation read and its visible-node-state sample run just before the
     // stage that consumes them.
@@ -3827,6 +3834,23 @@ fn smoke_rounds(
     guns.rounds_drawn = Some(guns.rounds_drawn.unwrap_or(true) && drawn);
 }
 
+/// Keeps the held-point camera of the gun hold abeam the left wing gun, in the
+/// player body's frame, so the burst is photographed from a few metres.
+fn smoke_muzzle_camera(
+    data: Res<SmokeData>,
+    view: Res<super::view_cycle::MissionViewMode>,
+    mut held: ResMut<super::external_view::HeldPoint>,
+    bodies: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
+) {
+    if data.phase != Phase::Guns || *view != super::view_cycle::MissionViewMode::HeldPoint {
+        return;
+    }
+    let Ok((position, rotation)) = bodies.single() else {
+        return;
+    };
+    held.0 = Some(position.0 + rotation.0 * Vec3::from_array(GUNS_MUZZLE_CAMERA_BODY_M));
+}
+
 /// The muzzle-flash census during the gun hold: each frame with a live
 /// muzzle-effect record counts once, and a record without a drawn child is
 /// counted as undrawn.
@@ -3844,7 +3868,7 @@ fn smoke_flashes(
             !children.is_some_and(|kids| kids.iter().any(|kid| meshes.get(*kid).is_ok()))
         })
         .count() as u32;
-    // From the side look the gun hold holds (the burst's quads lie along
+    // From the held-point camera the gun hold keeps beside the wing gun (the quads lie along
     // the barrel axis, edge-on from behind), once the view has settled.
     let settled = data.frame.saturating_sub(data.phase_start) >= GUNS_SIDE_VIEW_SETTLE_FRAMES;
     if undrawn == 0 && settled && !data.gun_burst_shot {
@@ -4688,11 +4712,14 @@ fn smoke_script(
         }
         Phase::Guns => {
             // The burst's quads lie along the barrel axis, so from the chase
-            // camera behind the aircraft they are edge-on: the hold watches
-            // through the snap look to the side (`Numpad4`, held), which the
-            // release at the end of the hold undoes.
+            // camera behind the aircraft they are edge-on and a few pixels
+            // across: the hold watches from the held-point view (`F7`),
+            // which `smoke_muzzle_camera` keeps abeam the left wing gun. `F8`
+            // at the end of the hold returns to the remembered view.
             if at == 1 {
-                queue.0.push(KeyOp::Press(KeyCode::Numpad4));
+                queue.0.push(KeyOp::Press(KeyCode::F7));
+            } else if at == 3 {
+                queue.0.push(KeyOp::Release(KeyCode::F7));
             }
             if at == GUNS_SHOT_OFFSET {
                 // The round census itself runs in `smoke_rounds`, which walks
@@ -4701,12 +4728,21 @@ fn smoke_script(
                 due.push("guns".to_owned());
             } else if at == GUNS_HOLD_FRAMES {
                 queue.0.push(KeyOp::Release(KeyCode::Space));
-                queue.0.push(KeyOp::Release(KeyCode::Numpad4));
+                queue.0.push(KeyOp::Press(KeyCode::F8));
                 data.phase = Phase::Rocket;
                 data.phase_start = frame + 1;
             }
         }
         Phase::Rocket => {
+            // The gun hold's `F8` left the held-point view for the remembered
+            // cycle mode (the second eye); one more press cycles on to the
+            // chase view the later phases expect.
+            match at {
+                0 => queue.0.push(KeyOp::Release(KeyCode::F8)),
+                1 => queue.0.push(KeyOp::Press(KeyCode::F8)),
+                2 => queue.0.push(KeyOp::Release(KeyCode::F8)),
+                _ => {}
+            }
             if data.measurements.rocket.max_live_puffs > 0 && data.burst_shot_frame.is_none() {
                 // A few frames after the first puff so the cloud has grown.
                 data.burst_shot_frame = Some(frame + BURST_SHOT_DELAY);

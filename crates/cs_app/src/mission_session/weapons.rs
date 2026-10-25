@@ -156,7 +156,7 @@ const NOSE_MOUNT_OFFSET_M: [f32; 3] = [0.0, -0.4, -4.0];
 pub const WING_LEFT_OFFSET_M: [f32; 3] = [-1.165_008_1, -0.620_576_6, -1.199_481_9];
 /// The right wing gun's muzzle: `firepoint8`, the second slot of fire group 0.
 /// Measured from `planes.zbd`.
-pub const WING_RIGHT_OFFSET_M: [f32; 3] = [1.204_927_2, -0.584_683_77, -1.199_481_9];
+pub const WING_RIGHT_OFFSET_M: [f32; 3] = [1.204_927_2, -0.584_683_8, -1.199_481_9];
 /// The rocket launcher's designed offset.
 const ROCKET_OFFSET_M: [f32; 3] = [0.0, -1.0, -2.0];
 
