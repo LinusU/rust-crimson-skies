@@ -1679,13 +1679,13 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 .to_owned()
         } else if m.guns.flashes_undrawn > 0 {
             format!(
-                "{} muzzle-effect records carried no drawn flash (designed stand-in, claim {})",
+                "{} muzzle-effect records carried no drawn burst (measured burst art, claim {})",
                 m.guns.flashes_undrawn,
                 super::MUZZLE_FLASH_VISUAL_CLAIM
             )
         } else {
             format!(
-                "a drawn flash was live in {} frames of the hold (designed stand-in, claim {})",
+                "a drawn measured burst was live in {} frames of the hold (claim {})",
                 m.guns.flash_frames,
                 super::MUZZLE_FLASH_VISUAL_CLAIM
             )

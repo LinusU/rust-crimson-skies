@@ -16,9 +16,12 @@
 //!   otherwise;
 //! * one drawn child per live rocket — a body oriented along the rocket's own
 //!   flight path;
-//! * one drawn flash per accepted shot — a child of the shot's
-//!   [`MuzzleEffectSpawn`] record, at the emitted muzzle position, for a
-//!   designed number of committed fixed ticks ([`MUZZLE_FLASH_LIFETIME_TICKS`]);
+//! * one measured muzzle burst per accepted shot — the `mb1` quad and the
+//!   rolled `mb_spinflame` quads of the shot's gun
+//!   ([`super::muzzle_burst_art`], #2106), children of the shot's
+//!   [`MuzzleEffectSpawn`] record, at the emitted muzzle position, oriented by
+//!   the record's pose (local -Z on the fire direction) and drawn for one
+//!   committed fixed tick ([`MUZZLE_FLASH_LIFETIME_TICKS`]);
 //! * [`MissionHudNotice`]: a weapon refusal the publisher records (today:
 //!   the rocket's "no target is selected") is published for the HUD to show,
 //!   so a refused shot is reported on screen instead of silently doing
@@ -40,22 +43,24 @@
 //! drawing with it — the same scene-generation discipline the mirrors
 //! themselves follow.
 
-use bevy::asset::{AssetApp, Assets};
-use bevy::mesh::Mesh;
+use bevy::asset::{AssetApp, Assets, RenderAssetUsages};
+use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::prelude::FixedPostUpdate;
 use bevy::prelude::{
-    Added, App, BackgroundColor, ChildOf, Children, Color, Commands, Component, Cuboid, Entity,
-    Handle, IntoScheduleConfigs, Local, Mesh3d, MeshMaterial3d, Node, Plugin, PositionType, Quat,
-    Query, Res, ResMut, Resource, StandardMaterial, Startup, Text, TextColor, TextFont, Transform,
-    UiRect, Update, Val, Vec3, Visibility, With, Without, World, default,
+    Added, AlphaMode, App, BackgroundColor, ChildOf, Children, Color, Commands, Component, Cuboid,
+    Entity, Handle, Image, IntoScheduleConfigs, Local, Mesh3d, MeshMaterial3d, Node, Plugin,
+    PositionType, Quat, Query, Res, ResMut, Resource, StandardMaterial, Startup, Text, TextColor,
+    TextFont, Transform, UiRect, Update, Val, Vec3, Visibility, With, Without, World, default,
 };
 use bevy::text::FontSize;
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
+use super::muzzle_burst_art::{BurstNodeArt, BurstQuad, MuzzleBurstArt};
 use super::weapons::MissionWeaponReport;
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
+use crate::playtest_textures::to_bevy_image;
 use crate::weapon_effects::{MuzzleEffectSpawn, drive_weapon_effect_presentation};
 
 /// The claim the mission's weapon visuals and its HUD notice line are filed
@@ -72,19 +77,29 @@ pub const NOTICE_HUD_CAPTION: &str = "WEAPONS — DESIGNED LAYOUT";
 /// with its own tick.
 pub const NOTICE_LIFETIME_TICKS: u64 = 240;
 
-/// The claim the muzzle flash is filed under. The original's muzzle-effect id →
-/// drawable mapping is not recovered (`docs/findings/2026-10-19-f27-c-fx-render-muzzle-flash.md`),
-/// so the flash is a project-designed stand-in, never the 2000 original's art.
+/// The claim the muzzle burst is filed under.
+///
+/// The drawn quads, their textures, scale 1, the node's pose and the one-tick
+/// lifetime are read from the original's data and engine image (findings
+/// `2026-10-24-f27-c-fx-orig-muzzle-effect-binding`,
+/// `2026-10-25-f27-c-fx-orig-muzzle-burst-pose`), statically — checked, never
+/// `verified_original`. Still unmeasured, and so not drawn or only provisional:
+/// the smoke puffer, lights and gunshell companions; the blend of material
+/// flags 17 (drawn alpha-blended, unlit); which weapon rows set the random-roll
+/// FIRE flag (roll 0 here); and whether shooters other than the player's gun
+/// bind a different burst (every shot uses the art installed for the player's
+/// selected gun record).
 pub const MUZZLE_FLASH_VISUAL_CLAIM: &str = "f27-c-fx-render.designed-muzzle-flash";
 
-/// How long a muzzle flash lives, in committed fixed ticks (50 ms at the
-/// composition's 120 Hz). The flash born on the shot's tick is drawn through
-/// the next `MUZZLE_FLASH_LIFETIME_TICKS - 1` ticks and released on the one
-/// after. Designed.
-pub const MUZZLE_FLASH_LIFETIME_TICKS: u64 = 6;
-
-/// The flash cube's edge, in metres. Designed.
-const MUZZLE_FLASH_SIZE_M: f32 = 0.55;
+/// How long a muzzle burst lives, in committed fixed ticks: drawn on the
+/// shot's tick, released on the next. The burst definition switches the node
+/// off at `EVENT_OFFSET 0.001` seconds, which is shorter than one tick.
+///
+/// A burst is also never released before a rendered frame has shown it
+/// ([`MuzzleFlash::presented`]): the original's flash is one frame long, and a
+/// 120 Hz fixed loop can run two ticks in one frame, which would otherwise
+/// release a burst born on the first of them unseen.
+pub const MUZZLE_FLASH_LIFETIME_TICKS: u64 = 1;
 
 /// The rocket body's width, in metres. Designed.
 const ROCKET_WIDTH_M: f32 = 0.34;
@@ -111,41 +126,93 @@ pub enum WeaponVisualKind {
 }
 
 /// What a declared muzzle-effect id resolves to for drawing.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MuzzleDrawable {
-    /// No original asset is recovered for the declared id: this designed
-    /// stand-in is drawn under `claim`. The id is kept as declared.
-    DesignedStandIn {
+    /// The measured burst of the weapon row's `FIRE > ANIMATION` binding.
+    MeasuredBurst {
         /// The declared muzzle-effect id the shot named.
         declared: ContentId,
-        /// The claim the drawing is filed under.
+        /// The weapon record whose binding chose the art, e.g. `wep_50`.
+        weapon: String,
+        /// The bound burst, e.g. `muzzle_burst_slug`.
+        burst: String,
+        /// The roll about z the shot's `mb_spinflame` was turned to, one of
+        /// the definition's measured rolls.
+        spin_roll_deg: f32,
+    },
+    /// No measured art is installed, so nothing is drawn for the shot (there
+    /// is no designed substitute). The record still exists for the audit.
+    NotDrawn {
+        /// The declared muzzle-effect id the shot named.
+        declared: ContentId,
+        /// The claim the omission is filed under.
         claim: &'static str,
     },
 }
 
 /// Resolves a declared muzzle-effect id to what is drawn for it.
 ///
-/// No original-data mapping from a `hardpoint_equipment` muzzle-effect id to a
-/// mesh, sprite or particle has been measured, and a name is not a binding, so
-/// every id resolves to the designed stand-in, by name.
+/// `art` is the burst the weapon row's binding chose, when the stage loaded
+/// one; `projectile_serial` picks the spin roll of this shot (the original
+/// picks one of the measured rolls at random with equal weight, so any
+/// deterministic choice among them is as measured).
 #[must_use]
-pub fn resolve_muzzle_drawable(declared: &ContentId) -> MuzzleDrawable {
-    MuzzleDrawable::DesignedStandIn {
+pub fn resolve_muzzle_drawable(
+    declared: &ContentId,
+    art: Option<&MuzzleBurstArt>,
+    projectile_serial: u64,
+) -> MuzzleDrawable {
+    let Some(art) = art else {
+        return MuzzleDrawable::NotDrawn {
+            declared: declared.clone(),
+            claim: MUZZLE_FLASH_VISUAL_CLAIM,
+        };
+    };
+    let rolls = art.spin_rolls_deg.len().max(1) as u64;
+    let pick = (projectile_serial.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) % rolls;
+    MuzzleDrawable::MeasuredBurst {
         declared: declared.clone(),
-        claim: MUZZLE_FLASH_VISUAL_CLAIM,
+        weapon: art.weapon.clone(),
+        burst: art.burst.clone(),
+        spin_roll_deg: art
+            .spin_rolls_deg
+            .get(pick as usize)
+            .copied()
+            .unwrap_or(0.0),
     }
+}
+
+/// Resource: the burst art the stage loaded from the installation, waiting
+/// for [`build_muzzle_burst_drawing`] to turn it into engine assets.
+#[derive(Resource, Clone, Debug)]
+pub struct MuzzleBurstArtResource(pub MuzzleBurstArt);
+
+/// One quad's engine assets.
+#[derive(Clone, Debug)]
+struct BurstQuadDraw {
+    mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+}
+
+/// The engine assets of the installed burst art.
+#[derive(Resource, Clone, Debug)]
+struct MuzzleBurstDrawing {
+    flash: Vec<BurstQuadDraw>,
+    spin: Vec<BurstQuadDraw>,
 }
 
 /// Component: a [`MuzzleEffectSpawn`] record that has been drawn.
 ///
 /// Its presence is the once-only guard: the attach pass skips a record that
 /// carries it, so a record is never drawn twice.
-#[derive(Component, Clone, Debug, PartialEq, Eq)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct MuzzleFlash {
     /// What the declared id resolved to.
     pub drawable: MuzzleDrawable,
     /// The first committed tick the flash is no longer drawn on.
     pub expires_at: u64,
+    /// Whether a rendered frame has shown the burst; it is not released before.
+    pub presented: bool,
 }
 
 /// One mirror's motion sample, kept so the drawn child can be oriented along
@@ -192,32 +259,9 @@ struct VisualPair {
 #[derive(Resource, Default)]
 struct WeaponVisualAssets {
     rocket: Option<VisualPair>,
-    flash: Option<VisualPair>,
 }
 
 impl WeaponVisualAssets {
-    /// The muzzle flash pair, built on first use.
-    fn flash(
-        &mut self,
-        meshes: &mut Assets<Mesh>,
-        materials: &mut Assets<StandardMaterial>,
-    ) -> VisualPair {
-        self.flash
-            .get_or_insert_with(|| VisualPair {
-                mesh: meshes.add(Cuboid::new(
-                    MUZZLE_FLASH_SIZE_M,
-                    MUZZLE_FLASH_SIZE_M,
-                    MUZZLE_FLASH_SIZE_M,
-                )),
-                material: materials.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 0.95, 0.7),
-                    unlit: true,
-                    ..default()
-                }),
-            })
-            .clone()
-    }
-
     /// The rocket body pair, built on first use.
     fn rocket(
         &mut self,
@@ -268,43 +312,143 @@ fn attach_rocket_visuals(
     }
 }
 
-/// Draws one flash for every muzzle-effect record that has none yet.
-///
-/// Runs on the fixed loop right after the presentation pass that spawns the
-/// records, so a shot's flash exists in the tick that accepted it. The flash is
-/// a child of the record: whatever releases the record releases the drawing.
-fn attach_muzzle_flashes(
+/// One quad as an engine mesh: the stored corners and uvs in stored order,
+/// split into the triangles (0,1,2) and (0,2,3).
+fn quad_mesh(quad: &BurstQuad) -> Mesh {
+    let positions: Vec<[f32; 3]> = quad.corners.to_vec();
+    let uvs: Vec<[f32; 2]> = quad.uvs.to_vec();
+    let a = Vec3::from(quad.corners[0]);
+    let normal = (Vec3::from(quad.corners[1]) - a)
+        .cross(Vec3::from(quad.corners[2]) - a)
+        .normalize_or_zero();
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![normal.to_array(); 4])
+    .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]))
+}
+
+/// Builds the engine meshes, textures and materials of the installed burst
+/// art, once.
+fn build_muzzle_burst_drawing(
+    source: Option<Res<MuzzleBurstArtResource>>,
+    built: Option<Res<MuzzleBurstDrawing>>,
     mut commands: Commands,
-    mut assets: ResMut<WeaponVisualAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let (Some(source), None) = (source, built) else {
+        return;
+    };
+    let art = &source.0;
+    let textures: Vec<(&str, Handle<Image>)> = art
+        .textures
+        .iter()
+        .map(|texture| {
+            (
+                texture.name.as_str(),
+                images.add(to_bevy_image(&texture.image).0),
+            )
+        })
+        .collect();
+    let mut draw = |node: &BurstNodeArt| -> Vec<BurstQuadDraw> {
+        node.quads
+            .iter()
+            .map(|quad| BurstQuadDraw {
+                mesh: meshes.add(quad_mesh(quad)),
+                material: materials.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    base_color_texture: textures
+                        .iter()
+                        .find(|(name, _)| *name == quad.texture)
+                        .map(|(_, handle)| handle.clone()),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Blend,
+                    cull_mode: None,
+                    ..default()
+                }),
+            })
+            .collect()
+    };
+    let flash = draw(&art.flash);
+    let spin = draw(&art.spin);
+    commands.insert_resource(MuzzleBurstDrawing { flash, spin });
+}
+
+/// Draws the measured burst for every muzzle-effect record that has none yet.
+///
+/// Runs on the fixed loop right after the presentation pass that spawns the
+/// records, so a shot's burst exists in the tick that accepted it. The quads
+/// are children of the record: the record's `Transform` is the burst node's
+/// pose (translation at the muzzle, local -Z on the fire direction), quads sit
+/// at scale 1 in the node's local space, and whatever releases the record
+/// releases the drawing.
+fn attach_muzzle_flashes(
+    mut commands: Commands,
+    art: Option<Res<MuzzleBurstArtResource>>,
+    drawing: Option<Res<MuzzleBurstDrawing>>,
     spawns: Query<(Entity, &MuzzleEffectSpawn), Without<MuzzleFlash>>,
 ) {
-    if spawns.is_empty() {
-        return;
-    }
-    let drawn = assets.flash(&mut meshes, &mut materials);
     for (entity, spawn) in &spawns {
+        let drawable = resolve_muzzle_drawable(
+            &spawn.effect,
+            art.as_deref().map(|art| &art.0),
+            spawn.projectile.serial,
+        );
+        let roll = match &drawable {
+            MuzzleDrawable::MeasuredBurst { spin_roll_deg, .. } => Some(*spin_roll_deg),
+            MuzzleDrawable::NotDrawn { .. } => None,
+        };
         commands.entity(entity).insert((
             Visibility::Inherited,
             MuzzleFlash {
-                drawable: resolve_muzzle_drawable(&spawn.effect),
+                drawable,
                 expires_at: spawn.at.0.saturating_add(MUZZLE_FLASH_LIFETIME_TICKS),
+                presented: false,
             },
         ));
-        commands.spawn((
-            WeaponVisual {
-                kind: WeaponVisualKind::MuzzleFlash,
-            },
-            Mesh3d(drawn.mesh.clone()),
-            MeshMaterial3d(drawn.material.clone()),
-            Transform::IDENTITY,
-            ChildOf(entity),
-        ));
+        let (Some(roll), Some(drawing)) = (roll, drawing.as_deref()) else {
+            continue;
+        };
+        let quads = drawing
+            .flash
+            .iter()
+            .map(|quad| (quad, Quat::IDENTITY))
+            .chain(
+                drawing
+                    .spin
+                    .iter()
+                    .map(|quad| (quad, Quat::from_rotation_z(roll.to_radians()))),
+            );
+        for (quad, rotation) in quads {
+            commands.spawn((
+                WeaponVisual {
+                    kind: WeaponVisualKind::MuzzleFlash,
+                },
+                Mesh3d(quad.mesh.clone()),
+                MeshMaterial3d(quad.material.clone()),
+                Transform::from_rotation(rotation),
+                ChildOf(entity),
+            ));
+        }
     }
 }
 
-/// Releases every flash whose designed lifetime has run out, record and
+/// Marks every burst a rendered frame has now shown, so the next fixed tick
+/// past its lifetime may release it.
+fn present_muzzle_flashes(mut flashes: Query<&mut MuzzleFlash>) {
+    for mut flash in &mut flashes {
+        if !flash.presented {
+            flash.presented = true;
+        }
+    }
+}
+
+/// Releases every burst whose lifetime has run out, record and
 /// drawing together.
 ///
 /// The clock is the committed tick ledger, so a paused or unfocused run
@@ -319,7 +463,7 @@ fn expire_muzzle_flashes(
         return;
     };
     for (entity, flash) in &flashes {
-        if ledger.ticks >= flash.expires_at {
+        if flash.presented && ledger.ticks >= flash.expires_at {
             commands.entity(entity).despawn();
         }
     }
@@ -514,6 +658,9 @@ impl Plugin for MissionWeaponPresentationPlugin {
         if !app.world().contains_resource::<Assets<Mesh>>() {
             app.init_asset::<Mesh>();
         }
+        if !app.world().contains_resource::<Assets<Image>>() {
+            app.init_asset::<Image>();
+        }
         app.init_resource::<MissionHudNotice>()
             .init_resource::<WeaponVisualAssets>()
             .add_systems(
@@ -522,10 +669,15 @@ impl Plugin for MissionWeaponPresentationPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
-                (attach_muzzle_flashes, expire_muzzle_flashes)
+                (
+                    build_muzzle_burst_drawing,
+                    attach_muzzle_flashes,
+                    expire_muzzle_flashes,
+                )
                     .chain()
                     .after(drive_weapon_effect_presentation),
             )
+            .add_systems(Update, present_muzzle_flashes)
             .add_systems(Update, publish_rocket_notices.after(orient_weapon_visuals));
     }
 }

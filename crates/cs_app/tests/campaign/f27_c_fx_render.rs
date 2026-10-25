@@ -10,6 +10,12 @@
 //! its stand-in label, its once-only draw, its lifetime in committed fixed
 //! ticks, the pause freeze and the session teardown.
 //!
+//! Since #2106 the record resolves to the measured muzzle burst instead of the
+//! designed stand-in. These synthetic stages carry no retail art, so each test
+//! installs a newly authored synthetic [`MuzzleBurstArt`] (one flash quad, three
+//! spin quads, no textures); the retail art is exercised by the
+//! `accept_f27_c_fx_orig_draw_c_` tests.
+//!
 //! Every value is newly authored synthetic fixture data. No `CS_GAME_DIR`.
 
 use bevy::input::ButtonInput;
@@ -18,9 +24,10 @@ use bevy::prelude::{App, ChildOf, Children, Entity, Mesh3d};
 
 use cs_app::input::platform::PlatformInput;
 use cs_app::input::session::PauseReason;
+use cs_app::mission_session::muzzle_burst_art::{BurstNodeArt, BurstQuad, MuzzleBurstArt};
 use cs_app::mission_session::{
-    MUZZLE_FLASH_LIFETIME_TICKS, MUZZLE_FLASH_VISUAL_CLAIM, MuzzleDrawable, MuzzleFlash,
-    WeaponVisual, WeaponVisualKind, build_headless, teardown,
+    MUZZLE_FLASH_LIFETIME_TICKS, MuzzleBurstArtResource, MuzzleDrawable, MuzzleFlash, WeaponVisual,
+    WeaponVisualKind, build_headless, teardown,
 };
 use cs_app::physics::PhysicsTickLedger;
 use cs_app::weapon_effects::MuzzleEffectSpawn;
@@ -28,10 +35,42 @@ use cs_app::weapons::WeaponSession;
 
 use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
+/// The synthetic burst's quads: one flash quad and three spin quads.
+const QUADS_PER_BURST: usize = 4;
+
+/// A newly authored synthetic burst: one flash quad and three spin quads.
+pub(super) fn synthetic_art() -> MuzzleBurstArt {
+    let quad = |z: f32| BurstQuad {
+        corners: [
+            [-0.1, 0.0, z],
+            [0.1, 0.0, z],
+            [0.1, 0.0, z + 0.5],
+            [-0.1, 0.0, z + 0.5],
+        ],
+        uvs: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        texture: "synthetic.tif".to_owned(),
+    };
+    MuzzleBurstArt {
+        weapon: "wep_synthetic".to_owned(),
+        burst: "muzzle_burst_synthetic".to_owned(),
+        world_group: "SYNTHETIC".to_owned(),
+        texture_archive: String::new(),
+        flash: BurstNodeArt {
+            quads: vec![quad(-0.2)],
+        },
+        spin: BurstNodeArt {
+            quads: vec![quad(-0.2), quad(-0.1), quad(0.0)],
+        },
+        spin_rolls_deg: vec![0.0, 60.0, 120.0],
+        textures: Vec::new(),
+    }
+}
+
 fn composed(label: &str) -> (Scratch, App) {
     let scratch = Scratch::new(label);
     let stage = synthetic_stage(scratch.path());
     let mut app = build_headless(&stage).expect("the synthetic stage composes");
+    app.insert_resource(MuzzleBurstArtResource(synthetic_art()));
     app.update();
     (scratch, app)
 }
@@ -77,8 +116,8 @@ fn fire_once(app: &mut App) {
     assert!(!records(app).is_empty(), "the press was accepted");
 }
 
-/// **An accepted shot draws a flash: a drawn child of its record, at the
-/// record's muzzle position, labelled as the designed stand-in it is.**
+/// **An accepted shot draws the measured burst: drawn children of its record,
+/// at the record's muzzle position, naming the weapon row's burst.**
 #[test]
 fn accept_f27_c_fx_render_an_accepted_shot_draws_a_labelled_flash_child_of_its_record() {
     let (_scratch, mut app) = composed("f27-c-fx-render-draw");
@@ -86,18 +125,31 @@ fn accept_f27_c_fx_render_an_accepted_shot_draws_a_labelled_flash_child_of_its_r
 
     let records = records(&app);
     let flashes = flashes(&app);
-    assert_eq!(flashes.len(), records.len(), "one flash per record");
+    assert_eq!(
+        flashes.len(),
+        records.len() * QUADS_PER_BURST,
+        "one burst (four quads) per record"
+    );
     for record in records {
         let world = app.world();
         let spawn = world.get::<MuzzleEffectSpawn>(record).expect("record");
         let flash = world.get::<MuzzleFlash>(record).expect("record is drawn");
+        let MuzzleDrawable::MeasuredBurst {
+            declared,
+            weapon,
+            burst,
+            ..
+        } = &flash.drawable
+        else {
+            panic!(
+                "an installed art draws the measured burst, got {:?}",
+                flash.drawable
+            );
+        };
+        assert_eq!(declared, &spawn.effect, "the declared id is kept");
         assert_eq!(
-            flash.drawable,
-            MuzzleDrawable::DesignedStandIn {
-                declared: spawn.effect.clone(),
-                claim: MUZZLE_FLASH_VISUAL_CLAIM,
-            },
-            "the declared id is kept and the stand-in is labelled, never a guessed asset"
+            (weapon.as_str(), burst.as_str()),
+            ("wep_synthetic", "muzzle_burst_synthetic")
         );
         assert_eq!(flash.expires_at, spawn.at.0 + MUZZLE_FLASH_LIFETIME_TICKS);
         let children = world.get::<Children>(record).expect("record has a drawing");
@@ -112,7 +164,7 @@ fn accept_f27_c_fx_render_an_accepted_shot_draws_a_labelled_flash_child_of_its_r
                     && world.get::<ChildOf>(child).map(ChildOf::parent) == Some(record)
             })
             .collect();
-        assert_eq!(drawn.len(), 1, "exactly one drawn mesh child");
+        assert_eq!(drawn.len(), 4, "one flash quad and three spin quads");
     }
     teardown(&mut app);
 }
@@ -125,12 +177,16 @@ fn accept_f27_c_fx_render_a_spawning_pass_never_draws_the_same_record_twice() {
     for _ in 0..6 {
         app.update();
         let records = records(&app);
-        assert_eq!(flashes(&app).len(), records.len(), "one flash per record");
+        assert_eq!(
+            flashes(&app).len(),
+            records.len() * QUADS_PER_BURST,
+            "one burst (four quads) per record"
+        );
     }
     teardown(&mut app);
 }
 
-/// **A flash expires after its designed lifetime in committed ticks, taking
+/// **A flash expires after its one-tick lifetime in committed ticks, taking
 /// its record with it.**
 #[test]
 fn accept_f27_c_fx_render_a_flash_expires_after_its_designed_lifetime() {
@@ -140,9 +196,11 @@ fn accept_f27_c_fx_render_a_flash_expires_after_its_designed_lifetime() {
     while !records(&app).is_empty() {
         for record in records(&app) {
             let flash = app.world().get::<MuzzleFlash>(record).expect("drawn");
+            // A burst is held past its tick only until a rendered frame has
+            // shown it; a frame that ended with the record live showed it.
             assert!(
-                ticks(&app) < flash.expires_at,
-                "a live flash is in lifetime"
+                ticks(&app) < flash.expires_at || flash.presented,
+                "a live flash is in lifetime or was just shown"
             );
         }
         app.update();
@@ -172,7 +230,7 @@ fn accept_f27_c_fx_render_a_paused_clock_freezes_the_flash() {
     }
     assert_eq!(ticks(&app), frozen_at, "the fixed clock did not advance");
     assert_eq!(records(&app).len(), before, "the flash did not age");
-    assert_eq!(flashes(&app).len(), before);
+    assert_eq!(flashes(&app).len(), before * QUADS_PER_BURST);
     teardown(&mut app);
 }
 

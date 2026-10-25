@@ -300,6 +300,11 @@ pub struct MissionStage {
     /// #1806): the `large_black_smokeball` emitter and its decoded textures.
     /// `Some` only for M01's retail stage; `None` draws no burst puffs.
     pub burst_puffs: Option<super::burst_puffs::BurstPuffSource>,
+    /// The measured muzzle burst of the player's selected gun record
+    /// (F27-C-FX-ORIG-DRAW, #2106): the `mb1` and `mb_spinflame` quads of its
+    /// `FIRE > ANIMATION` binding and their decoded textures. `Some` only for
+    /// M01's retail stage; `None` draws no muzzle burst.
+    pub muzzle_burst: Option<super::muzzle_burst_art::MuzzleBurstArt>,
     /// The measured sparks a terrain contact throws (PARITY4-CRASH-D.02,
     /// #1945): the `yellow_sparks_follow` emitters and their decoded
     /// textures. `Some` only for M01's retail stage.
@@ -431,6 +436,8 @@ pub enum MissionCompositionError {
     WeaponCounts(WeaponCountsError),
     /// The burst puff emitter or its textures could not be measured.
     BurstPuffs(super::burst_puffs::BurstPuffError),
+    /// The muzzle burst art could not be loaded.
+    MuzzleBurst(super::muzzle_burst_art::MuzzleBurstArtError),
     /// The contact spark emitters or their textures could not be measured.
     ContactSparks(super::contact_sparks::ContactSparkError),
     /// The damage trail effect or its textures could not be measured.
@@ -495,6 +502,7 @@ impl fmt::Display for MissionCompositionError {
             Self::AmbientSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::BurstPuffs(error) => write!(f, "{error}"),
+            Self::MuzzleBurst(error) => write!(f, "{error}"),
             Self::ContactSparks(error) => write!(f, "{error}"),
             Self::DamageTrail(error) => write!(f, "{error}"),
             Self::WingFire(error) => write!(f, "{error}"),
@@ -682,6 +690,18 @@ pub fn stage_for(
         Some(
             super::burst_puffs::measure_burst_puffs(install_root, "c3")
                 .map_err(MissionCompositionError::BurstPuffs)?,
+        )
+    } else {
+        None
+    };
+    let muzzle_burst = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::muzzle_burst_art::load_muzzle_burst_art(
+                install_root,
+                "c3",
+                super::SELECTED_GUN_RECORD,
+            )
+            .map_err(MissionCompositionError::MuzzleBurst)?,
         )
     } else {
         None
@@ -918,6 +938,7 @@ pub fn stage_for(
         ambient_sound,
         weapon_counts,
         burst_puffs,
+        muzzle_burst,
         contact_sparks,
         damage_trail,
         wing_fire,
@@ -1441,6 +1462,10 @@ fn add_composition(
     // the visuals gate: the headless composition presents its weapons the
     // same way, which is what its acceptance tests read.
     app.add_plugins(crate::mission_session::MissionWeaponPresentationPlugin);
+    // F27-C-FX-ORIG-DRAW (#2106): the measured muzzle burst of the player's gun.
+    if let Some(art) = &stage.muzzle_burst {
+        app.insert_resource(crate::mission_session::MuzzleBurstArtResource(art.clone()));
+    }
     // PARITY2-DMG-FX-B (#1806): the smoke puffs of an ordnance burst.
     if let Some(puffs) = &stage.burst_puffs {
         app.insert_resource(crate::mission_session::BurstPuffSourceResource(
