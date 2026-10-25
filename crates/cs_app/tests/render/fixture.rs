@@ -298,3 +298,47 @@ fn stored_bytes(shape: ImageShape, extent: Extent) -> Vec<u8> {
     );
     stored
 }
+
+/// Two material groups over disjoint corners: material 3 owns a triangle on
+/// positions `0, 1, 2`, material 9 owns a triangle on positions `3, 2, 0`
+/// that is listed *after* it. Render vertices are numbered in polygon order,
+/// so the second group's vertices are `3..6`, not `0..3` — the shape on which
+/// indexing the group's vertex arrays by compaction slot reads the wrong
+/// group's vertices.
+pub fn two_group_mesh() -> RenderMesh {
+    let corner = |position: u32, uv: [f32; 2]| RawCorner {
+        position,
+        normal: None,
+        uv: Some(uv),
+        color: None,
+    };
+    let polygon = |material: u32, corners: Vec<RawCorner>| RawPolygon {
+        kind: PrimitiveKind::Polygon,
+        raw_flags: 0,
+        material,
+        corners,
+    };
+    let mesh = RawMesh {
+        positions: QUAD_POSITIONS.to_vec(),
+        normals: Vec::new(),
+        polygons: vec![
+            polygon(
+                3,
+                vec![
+                    corner(0, [0.0, 0.0]),
+                    corner(1, [0.5, 0.0]),
+                    corner(2, [0.5, 0.5]),
+                ],
+            ),
+            polygon(
+                9,
+                vec![
+                    corner(3, [0.25, 0.75]),
+                    corner(2, [0.5, 0.5]),
+                    corner(0, [0.0, 0.0]),
+                ],
+            ),
+        ],
+    };
+    RenderMesh::build(&mesh).expect("the authored triangles have a decodable outline")
+}

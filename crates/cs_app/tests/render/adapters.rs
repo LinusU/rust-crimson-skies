@@ -34,7 +34,7 @@ use cs_types::evidence::ClaimStatus;
 
 use super::fixture::{
     IMAGE_TEXELS, MESH_UNKNOWNS, QUAD_COLORS, QUAD_NORMALS, QUAD_POSITIONS, QUAD_UVS, QuadShape,
-    decoded_image, degenerate_strip_mesh, mixed_normal_mesh, quad_mesh,
+    decoded_image, degenerate_strip_mesh, mixed_normal_mesh, quad_mesh, two_group_mesh,
 };
 
 const REPEAT: TextureAddress = TextureAddress {
@@ -233,6 +233,68 @@ fn accept_f17_b_mesh_upload_keeps_stored_values_bit_exact() {
         upload.unknowns(),
         MESH_UNKNOWNS,
         "winding, uv origin and vertex-color meaning are still open"
+    );
+}
+
+/// A material group that is not group `0`, and whose render vertices are not
+/// `0..n`, uploads exactly its own vertices. Compaction renumbers them into
+/// slots; building the vertex arrays by indexing the mesh with the *slots*
+/// would read group `0`'s vertices here, so the drawn triangles (positions and
+/// UVs, read through the index buffer) pin that the arrays follow the vertex
+/// index, not the slot.
+#[test]
+fn accept_f17_b_mesh_upload_of_a_later_group_keeps_its_own_vertices() {
+    let render = two_group_mesh();
+    assert_eq!(render.groups().len(), 2);
+    let group = render
+        .groups()
+        .iter()
+        .position(|group| group.material == 9)
+        .expect("material 9 has a group");
+    assert_ne!(group, 0, "the group under test is not the first");
+    let first_vertex = render.groups()[group]
+        .triangles
+        .iter()
+        .flat_map(|&triangle| render.triangles()[triangle].vertices)
+        .min()
+        .expect("the group has triangles");
+    assert!(first_vertex > 0, "its render vertices do not start at 0");
+
+    let upload = upload_group(&render, group, &MESH_UNKNOWNS).expect("a later group uploads");
+    let mesh = upload.mesh();
+    assert_eq!(upload.material(), 9);
+    assert_eq!(upload.report().vertices, 3);
+
+    let indices = match mesh.indices() {
+        Some(Indices::U32(indices)) => indices.clone(),
+        other => panic!("the index buffer is U32, got {other:?}"),
+    };
+    let positions = positions_of(mesh);
+    let uvs = uvs_of(mesh);
+    let drawn: Vec<[([f32; 3], [f32; 2]); 3]> = indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|slots| {
+            slots.map(|slot| {
+                let slot = usize::try_from(slot).expect("a u32 slot fits in usize");
+                (positions[slot], uvs[slot])
+            })
+        })
+        .collect();
+    let stored: Vec<[([f32; 3], [f32; 2]); 3]> = render.groups()[group]
+        .triangles
+        .iter()
+        .map(|&triangle| {
+            render.triangles()[triangle].vertices.map(|vertex| {
+                let vertex = &render.vertices()[vertex as usize];
+                (vertex.position, vertex.uv.expect("the fixture stores a uv"))
+            })
+        })
+        .collect();
+    assert_eq!(
+        drawn, stored,
+        "the later group draws the IR's own triangles, in order and winding"
     );
 }
 
