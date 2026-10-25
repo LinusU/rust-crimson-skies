@@ -603,6 +603,11 @@ const FINDING_B: &str = "2026-10-06-m01-lc-directive-b-objective-lifecycle-targe
 /// The finding that measured the directive table has no `WAKEUP_OBJECTIVE…`
 /// spelling (M03-B-FU1, #803).
 const FINDING_M03_FU1: &str = "2026-10-18-m03-b-fu1-wakeup-objective-spelling";
+/// The finding that measured the stray `Change to mobile net` phrase in
+/// `zbd/c4/m01` (#2134), and the parser finding whose exact-lookup reading it
+/// applies.
+const FINDING_C4_M01_FU: &str = "2026-10-25-c4-m01-fu-stray-phrase";
+const FINDING_PARSER: &str = "2026-10-06-m01-lc-directive-a-objective-directive-parser";
 const FINDING_C: &str = "2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives";
 const FINDING_D: &str = "2026-10-06-m01-lc-directive-d-sound-help-timer-directives";
 const FINDING_F37_FU2: &str = "2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering";
@@ -954,6 +959,15 @@ pub fn ignored_directive(key: &str) -> Option<IgnoredDirective> {
                       the executable, so the exact-match field lookup never finds it and the \
                       site wakes nothing",
             evidence: &[FINDING_M03_FU1, FINDING_B],
+        }),
+        // `zbd/c4/m01` objective 24 spells the unquoted phrase `Change to mobile
+        // net` ahead of `SET_AI_NET`; the reader stores each word as its own
+        // text child. The parser never looks any of them up (task #2134).
+        "Change" | "to" | "mobile" | "net" => Some(IgnoredDirective {
+            summary: "a word of the unquoted authoring note `Change to mobile net`: the \
+                      objective parser reaches keys by exact lookup, no lookup site spells it, \
+                      so the word is read by the document walk and has no effect",
+            evidence: &[FINDING_C4_M01_FU, FINDING_PARSER],
         }),
         _ => None,
     }
