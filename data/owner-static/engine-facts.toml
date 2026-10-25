@@ -7279,3 +7279,112 @@ name = "anim.call_animation_at_node"
 va = 0x00515f3d
 bytes = "683427630057536a018d4d38"
 fact = "CALL_ANIMATION AT_NODE (0x62f1a4) resolves the node name to a 16-bit node index at record+0x34 (0x4ef7d0), then 0x4efb90 reads up to three number arguments into record+0x38 (offset, flag bit 1) and three more into record+0x44 (flag bit 2); 0x4efb90 converts integers with fild and multiplies by nothing, so the (0,-0.2,-1) offset is stored as written"
+
+# Muzzle burst node pose (task #2104 F27-C-FX-ORIG-DRAW-A, finding
+# docs/findings/2026-10-25-f27-c-fx-orig-muzzle-burst-pose.md): how weapon fire
+# poses the FIRE>ANIMATION root node, which local axis is the fire direction and
+# the unit of EVENT_OFFSET. Statically read; no original run.
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.yaw"
+va = 0x005af4a4
+bytes = "d9038b4508d9e06a00d943086a00d9e06a00"
+fact = "weapon fire 0x5af4a4..0x5af4b6 computes yaw = fpatan(-dir.x over -dir.z) = atan2(-dir.x, -dir.z) of the unit muzzle direction (the vector at [ebp+0x18], read through ebx) and passes it as argument 7 of the animation starter 0x4edc10"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.pitch"
+va = 0x005af4bd
+bytes = "d94304e8857b0400"
+fact = "weapon fire 0x5af4bd..0x5af4c0 computes pitch = asin(dir.y) (call 0x5f704a, see pose.asin_import) and passes it as argument 6 of 0x4edc10"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.asin_import"
+va = 0x005f704a
+bytes = "ff259801a200"
+fact = "0x5f704a is `jmp [0xa20198]`; the import table entry at 0xa20198 is MSVCRT.dll _CIasin (0xa20350 is rand, 0xa2034c _CIacos), so the pitch is asin(dir.y)"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.roll"
+va = 0x005af475
+bytes = "f6c2017423ff155003a200894508db4508d80d98356000d825e0326000d80dc4406000d9"
+fact = "argument 8 of 0x4edc10 (roll): 0 unless the FIRE block flag mask 0x1 ([weapon+0x94], test dl,1 at 0x5af475) is set; then (rand() * 3.0518509e-5 - 0.5) * 3.1415927 (constants at 0x603598, 0x6032e0, 0x6040c4), a uniform roll in [-pi/2, +pi/2) about the node's local z, drawn per shot"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.start_call"
+va = 0x005af4c5
+bytes = "8b574c8b4520518b4f50d91c24518b08528b5514516a0052e8"
+fact = "the unattached start calls 0x4edc10(handle, 0, x, y, z, pitch, yaw, roll, 0, 0, 0) at 0x5af4dd: (x, y, z) is the round record's position, copied from the muzzle position (the vector at [edi+0x48], read as [eax], [edi+0x4c], [edi+0x50]); the second argument is 0 and the last three are 0, so the animation root node is not parented"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.starter_position"
+va = 0x004ed774
+bytes = "8b54241c53555250e8cf45feff8b869c00000083c410f6c4"
+fact = "0x4ed730 (reached from 0x4edc10) sets the animation's root node [anim+0x48] to the position (argument 3, 4, 5) with 0x4d1d50 (call at 0x4ed77c)"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "pose.starter_rotation"
+va = 0x004ed78f
+bytes = "8b4424308b4c242c8b542428508b4648515250e88942feff"
+fact = "unless the animation's flag word [anim+0x9c] has bit 0x200 set, 0x4ed730 calls 0x4d1a30(root node, argument 6, 7, 8) = SetRotation(node, pitch, yaw, roll) at 0x4ed7a2: the routine that the stored heading uses as SetRotation(node, 0, yaw, 0)"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "frame.matrix_rows_xy"
+va = 0x0053c00d
+bytes = "d945088b4514d84dfc83c004d9c283c004d84df483c004d9c283c004d84df483c00483c00483c004d95d0c83c004d9c183c004d8cc83c0045bd8450cd958d8d9c3d84df8d958dcd9c0d84dfcd9c3d84d08dee9d958e0d9c9d8cad8e1d958e4ddd8d84df8d958e8d84d08d9450cd84dfcdec1d9"
+fact = "the rotation builder 0x53bf40(pitch a, yaw b, roll c) stores nine floats m0..m8: m0 = cos c cos b + sin a sin b sin c, m1 = sin c cos a, m2 = sin a cos b sin c - cos c sin b, m3 = sin a sin b cos c - cos b sin c, m4 = cos c cos a, m5 = sin b sin c + sin a cos b cos c"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "frame.matrix_row_z"
+va = 0x0053c082
+bytes = "d94508d84df8d958f0d945fcd9e0d958f4d945f4d84df8d958f8c740fc00000000c7"
+fact = "the same builder stores m6 = sin b cos a, m7 = -sin a, m8 = cos b cos a: the third row, i.e. the image of the local +Z axis, is (sin yaw cos pitch, -sin pitch, cos yaw cos pitch)"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "frame.point_transform"
+va = 0x0053cc98
+bytes = "d900d80bd900d84b04d900d84b08"
+fact = "0x53cc60 transforms a point as a row vector: x' = x*m0 + y*m3 + z*m6 + t.x with the translation at matrix +0x24 (0x53ccda..0x53cce6), so the matrix rows are the images of local +X, +Y, +Z in world axes"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "frame.at_node_offset"
+va = 0x004cf50c
+bytes = "e88fad06006a0157e807faffff6a0156e83fd7060083c410e8"
+fact = "0x4cf490(node, offset) with a non-zero offset builds the node's world matrix (0x4cef20(node, 1)) and transforms the offset by it with 0x53cc60 in place; with a zero offset 0x4cf200 returns the node's own position: a CALL_ANIMATION node offset is a point in the node's local frame"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "anim.call_executor_node_branch"
+va = 0x004eb441
+bytes = "0fbf45348d0c808d14488b86"
+fact = "the CALL_ANIMATION executor picks the node from the record word [event+0x34] (movsx, index into the table at [owner+0xe8], 0x2c bytes per entry, node at +0x28) in its branch for mode bit 0x1, hands the node and the offset to 0x4edf80 (call at 0x4eb540) which stores them at anim+0x7c / +0x80 for the animation; the branch for mode bit 0x2 (0x4eb45b) turns node plus offset into a world position with 0x4cf490 instead"
+
+[[muzzle_burst_pose_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "time.event_offset_seconds"
+va = 0x0059c11b
+bytes = "d80d4cd79a00d91d44d79a00"
+fact = "the clock EVENT_OFFSET is compared with (event clock [seq+0x28], reset to the frame delta after an event fires) is advanced by [0x9ad744] (see sequence.step_clocks / animation.clock_advance), which the frame setter 0x59c0c0 stores at 0x59c121 as millisecond-timer difference * 0.001 (0x6075dc) * time scale 1.0 (0x63b16c): EVENT_OFFSET is in seconds of that scaled clock"
