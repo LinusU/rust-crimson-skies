@@ -32,6 +32,7 @@ mod accept_f20_d_validation;
 mod accept_f22_b_device_adapters;
 mod accept_f22_c_focus_ui_replay_ownership;
 mod accept_f22_d_device_families_and_command_coverage;
+mod accept_f22_e_profile_persistence;
 mod accept_f22_wheel_mouse_wheel_producer;
 mod accept_f24_c_flight_wiring;
 mod accept_f40_d1_mpeg_playback;

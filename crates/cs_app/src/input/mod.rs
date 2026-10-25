@@ -46,12 +46,14 @@ use cs_types::input::{Action, ActionMap, BindingSource, DeviceId, InputContext, 
 pub mod devices;
 pub mod hid;
 pub mod platform;
+pub mod profile;
 pub mod session;
 
 pub use devices::{
     AdapterError, DESIGNED_DEAD_ZONE, DeviceAdapters, DeviceEvent, DeviceLoss, HeldEdge,
     SuppressedHolds, designed_axis_calibration, normalize_gamepad_axis,
 };
+pub use profile::{InputProfile, ProfileError, ProfileField};
 pub use session::{
     CommandReplay, ControlHandover, EjectConfirmation, FlightContent, FocusOutcome, FrameInput,
     FrameOutcome, HandoverReason, InputFault, InputSession, PauseDecision, PauseReason,
