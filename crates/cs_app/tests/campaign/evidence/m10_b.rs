@@ -147,10 +147,13 @@ fn evidence_report_m10_b_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer of the re-pin: sonnet-1/sonnet-1 (Rally #1620, Sonnet 5.5, session of \
-             2026-10-18); the original M10-B implementation and review (Rally #286) measured the \
-             wrong archive and no longer stand; the re-pin has not been independently reviewed \
-             yet, and no agent review replaces the owner's human approval"
+            "implementer: sonnet-1/sonnet-1 (Rally #1620 M10-B-REPIN-CORRECTED-LAYOUT, session of \
+             2026-10-18); reviewer: sonnet-1/sonnet-1 (Rally review claim of 2026-10-18T14:45Z) - the \
+             same agent identity as the implementer, context not fresh, so this review is not \
+             independent; the committed report is the implementer's regenerated acceptance evidence \
+             on the corrected campaign layout, an agent review of the code and tests only, not \
+             original-run or original-reference evidence; no agent review replaces the owner's human \
+             approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
