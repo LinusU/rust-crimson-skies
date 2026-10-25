@@ -89,10 +89,25 @@ fn accept_t454_retail_guided_rockets_lose_the_proximity_trigger_and_nothing_else
     for rule in &rules {
         eprintln!("{rule:?}");
     }
-    assert!(
-        !rules.is_empty(),
-        "the installation declares guided rockets"
+    assert_eq!(
+        rules.len(),
+        12,
+        "the installation declares 12 guided rockets"
     );
+    for rule in &rules {
+        assert_eq!(
+            rule.range_end,
+            OriginalRangeEnd::Detonates,
+            "{}: no retail record declares EXPIRES",
+            rule.record
+        );
+        // wep_15 is the one record that declares no RANGE, only its timer.
+        assert_eq!(rule.range_m.is_none(), rule.record == "wep_15");
+    }
+    let timers: Vec<_> = rules.iter().filter(|r| r.timer_s.is_some()).collect();
+    assert_eq!(timers.len(), 1, "only one guided rocket keeps a timer");
+    assert_eq!(timers[0].record, "wep_15");
+    assert_eq!(timers[0].timer_s, Some(2.0));
 }
 
 /// Every store of a 32-bit register or immediate to `[reg + 0x70]` in
