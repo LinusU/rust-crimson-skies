@@ -28,6 +28,7 @@ mod campaign {
     mod f27_c_fx_orig_draw_b;
     mod f27_c_fx_orig_draw_c;
     mod f27_c_fx_orig_engine;
+    mod f27_c_fx_orig_muzzle_mounts;
     mod f27_c_fx_render;
     mod f29_c_3b_score;
     mod f29_c_3c_admit;

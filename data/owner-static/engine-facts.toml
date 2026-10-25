@@ -7388,3 +7388,56 @@ name = "time.event_offset_seconds"
 va = 0x0059c11b
 bytes = "d80d4cd79a00d91d44d79a00"
 fact = "the clock EVENT_OFFSET is compared with (event clock [seq+0x28], reset to the frame delta after an event fires) is advanced by [0x9ad744] (see sequence.step_clocks / animation.clock_advance), which the frame setter 0x59c0c0 stores at 0x59c121 as millisecond-timer difference * 0.001 (0x6075dc) * time scale 1.0 (0x63b16c): EVENT_OFFSET is in seconds of that scaled clock"
+
+# Player gun firepoint binding (task #2113 F27-C-FX-ORIG-MUZZLE-MOUNTS, finding
+# docs/findings/2026-10-25-f27-c-fx-orig-muzzle-mounts.md): which airframe
+# `firepoint<N>` marker node each (fire group, side) pair of the player's
+# airframe fires from. Statically read; no original run.
+
+[[player_firepoint_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "firepoint.table_build"
+va = 0x0047695e
+bytes = "c745f0000000008dbea403000033db8b55f08bc32bc283c007508d4da868987c620051ff151002a2008b460c8d55a85250e85c23060083c41489074383c72483fb027ccb8b45f083c00283f80889"
+fact = "for an airframe entity whose kind word [esi+0x67c] is 0 or 4, the loop at 0x47695e..0x4769ac, with outer counter j = 0, 2, 4, 6 ([ebp-0x10]) and inner counter i = 0, 1, formats the name `firepoint%d` (0x627c98) with N = i - j + 7 and stores the node found under the airframe root [esi+0xc] (lookup 0x4d8cf0) at [esi+0x3a4 + 0x24*k], k running 0..7 in order: slot k holds firepoint 7, 8, 5, 6, 3, 4, 1, 2"
+
+[[player_firepoint_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "firepoint.fire_index"
+va = 0x004b6c08
+bytes = "8b86040600008b8ec4040000d1e08d14018d14d28b9c96a40300008d149633ff85db740a8a9ac403000084"
+fact = "the muzzle chooser at 0x4b6c08 reads the selected fire group [esi+0x604] and the side toggle [esi+0x4c4] and takes the table slot k = 2 * group + side (shl eax,1; add; stride 0x24 = lea edx,[edx+edx*8] then *4), then the node's world position through 0x4d1cc0; the same selection is repeated at 0x4b7d51; when the slot is empty or its enable byte [slot+0x20] is 0 the side toggle is flipped (xor ecx,1 at 0x4b6c36)"
+
+[[player_firepoint_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "firepoint.default_group"
+va = 0x004b090e
+bytes = "899e04060000"
+fact = "the fire group [esi+0x604] is reset to 0 (ebx is 0) at 0x4b090e"
+
+[[player_firepoint_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "firepoint.default_side"
+va = 0x004b0178
+bytes = "899ec4040000"
+fact = "the side toggle [esi+0x4c4] starts at 0 (mov [esi+0x4c4], ebx with ebx 0) at 0x4b0178"
+
+[[player_firepoint_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "firepoint.side_flip"
+va = 0x004b6c36
+bytes = "83f101898ec4040000"
+fact = "xor ecx,1 then mov [esi+0x4c4], ecx at 0x4b6c36: the side toggle flips between 0 and 1"
+
+[[player_firepoint_fact]]
+claim = "OWNER-STATIC-2026-10-25"
+provenance = "static"
+name = "firepoint.alternate"
+va = 0x004b6d35
+bytes = "8b86c404000083f0018986c4040000"
+fact = "after the muzzle at the current side was used and the other side's slot is filled and enabled (test at 0x4b6d19), the side toggle is flipped (mov eax,[esi+0x4c4]; xor eax,1; mov [esi+0x4c4],eax at 0x4b6d35): shots alternate between the two firepoints of the fire group"
