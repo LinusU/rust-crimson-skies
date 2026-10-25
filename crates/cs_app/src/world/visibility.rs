@@ -38,6 +38,16 @@
 //! present after it *was* streamed away asks for it with
 //! [`super::residency::load_sector`].
 //!
+//! # Actors other than the focus (F18-E)
+//!
+//! The focus is one point. An actor elsewhere can be inside a sector the pass
+//! streams away, taking its ground with it. [`update_visibility_with_actors`]
+//! takes the positions the composition supplies and holds every sector any of
+//! them is inside; [`actor_held_sectors`] is the pure decision, and
+//! [`VisibilityUpdate::occupied`] reports those holds apart from the focus's and
+//! from [`VisibilityUpdate::retained`]. Which actors to supply is the
+//! composition's question, not this policy's.
+//!
 //! # No arbitrary wall
 //!
 //! F18 non-negotiable behavior 4 forbids an arbitrary invisible wall in fidelity
@@ -161,6 +171,15 @@ pub enum VisibilityError {
         /// The radius the caller asked for.
         radius_m: f64,
     },
+    /// An actor position had a coordinate that was NaN or infinite. Refused like
+    /// a bad focus: a position that is not a place holds no sector, and quietly
+    /// skipping it would stream that actor's ground away.
+    UnusableActor {
+        /// The index in the actor positions the caller supplied.
+        index: usize,
+        /// The axis that was not finite.
+        axis: usize,
+    },
     /// A sector the pass decided to move could not be moved. The sectors already
     /// moved stay moved, and the pass stops here rather than continuing: the
     /// caller is told what it is in, and a retry re-decides from the residency
@@ -181,6 +200,10 @@ impl std::fmt::Display for VisibilityError {
                 write!(f, "the visibility focus is not finite on axis {axis}")
             }
             Self::UnusableRadius => write!(f, "the visibility radius is not finite"),
+            Self::UnusableActor { index, axis } => write!(
+                f,
+                "actor position {index} is not finite on axis {axis}, so it holds no sector"
+            ),
             Self::NegativeRadius { radius_m } => write!(
                 f,
                 "the visibility radius {radius_m} m is negative, and no sector is that \
@@ -225,6 +248,13 @@ pub struct VisibilityUpdate {
     /// This is the interesting half of the report: the difference between a
     /// streaming policy and a policy that eats the mission.
     pub retained: Vec<SectorId>,
+    /// The sectors that were out of the focus's range, are not retained for a
+    /// required object, and were **held** only because an actor position the
+    /// composition supplied is inside them.
+    ///
+    /// Disjoint from [`VisibilityUpdate::retained`], so a caller can see which
+    /// memory is spent on a mover and which on a required object.
+    pub occupied: Vec<SectorId>,
 }
 
 impl VisibilityUpdate {
@@ -283,7 +313,67 @@ pub fn retained_sectors(
         .collect()
 }
 
+/// The sectors whose bounds contain at least one of `actors`.
+///
+/// An actor holds the sectors it is *inside*, not those within a radius: the
+/// ground under a mover is what streaming must not remove, and a radius around
+/// every actor would spend memory the focus's own radius already spends.
+/// Non-finite positions hold nothing here; [`update_visibility_with_actors`]
+/// refuses them before it asks.
+#[must_use]
+pub fn occupied_sectors(definition: &WorldDefinition, actors: &[[f64; 3]]) -> BTreeSet<SectorId> {
+    let points: Vec<VisibilityRequest> = actors
+        .iter()
+        .map(|position| VisibilityRequest::new(*position, 0.0))
+        .collect();
+    definition
+        .sectors()
+        .iter()
+        .filter(|record| points.iter().any(|point| point.holds(record.bounds())))
+        .map(|record| record.id().clone())
+        .collect()
+}
+
+/// The sectors held **only** because an actor occupies them: inside an actor
+/// position, outside `request`'s range, and not already retained for a required
+/// object.
+///
+/// The pure decision behind [`VisibilityUpdate::occupied`], answerable before
+/// anything moves.
+#[must_use]
+pub fn actor_held_sectors(
+    definition: &WorldDefinition,
+    request: &VisibilityRequest,
+    required: &BTreeSet<WorldObjectId>,
+    actors: &[[f64; 3]],
+) -> BTreeSet<SectorId> {
+    let retained = retained_sectors(definition, request, required);
+    occupied_sectors(definition, actors)
+        .into_iter()
+        .filter(|sector| !holds_sector(definition, request, sector) && !retained.contains(sector))
+        .collect()
+}
+
 /// Runs one visibility pass over the resident world and reports what it moved.
+///
+/// Holds nothing for actors; see [`update_visibility_with_actors`].
+///
+/// # Errors
+///
+/// As [`update_visibility_with_actors`], without the actor refusal.
+pub fn update_visibility(
+    app: &mut App,
+    request: &VisibilityRequest,
+    meshes: &WorldMeshes,
+) -> Result<VisibilityUpdate, VisibilityError> {
+    update_visibility_with_actors(app, request, &[], meshes)
+}
+
+/// Runs one visibility pass that also holds every sector an actor position is
+/// inside.
+///
+/// Which actors the composition supplies is its decision (F18-E); this pass only
+/// guarantees that a position it is given keeps its ground.
 ///
 /// Everything is decided before anything is moved: the request, the set of
 /// sectors to load and the set to unload are established first, so a refusal
@@ -299,17 +389,24 @@ pub fn retained_sectors(
 /// [`VisibilityError::NoResidentWorld`] when nothing is loaded;
 /// [`VisibilityError::UnusableFocus`], [`VisibilityError::UnusableRadius`] and
 /// [`VisibilityError::NegativeRadius`] for a request that names no usable focus;
+/// [`VisibilityError::UnusableActor`] for a non-finite actor position;
 /// and [`VisibilityError::Sector`] when a sector the pass decided to move could
 /// not be moved.
-pub fn update_visibility(
+pub fn update_visibility_with_actors(
     app: &mut App,
     request: &VisibilityRequest,
+    actors: &[[f64; 3]],
     meshes: &WorldMeshes,
 ) -> Result<VisibilityUpdate, VisibilityError> {
     request.validate()?;
+    for (index, position) in actors.iter().enumerate() {
+        if let Some(axis) = position.iter().position(|c| !c.is_finite()) {
+            return Err(VisibilityError::UnusableActor { index, axis });
+        }
+    }
 
     // 1. Decide, read-only.
-    let (retained, to_load, to_unload) = {
+    let (retained, occupied, to_load, to_unload) = {
         let Some(resident) = residency(app.world()).map(WorldResidency::resident) else {
             return Err(VisibilityError::NoResidentWorld);
         };
@@ -322,9 +419,15 @@ pub fn update_visibility(
             .map(|record| record.id().clone())
             .collect();
         let retained = retained_sectors(definition, request, resident.required_objects());
-        let keep: BTreeSet<SectorId> = held.union(&retained).cloned().collect();
+        let occupied = actor_held_sectors(definition, request, resident.required_objects(), actors);
+        let keep: BTreeSet<SectorId> = held
+            .union(&retained)
+            .chain(occupied.iter())
+            .cloned()
+            .collect();
         (
             retained,
+            occupied,
             keep.difference(loaded).cloned().collect::<Vec<_>>(),
             loaded.difference(&keep).cloned().collect::<Vec<_>>(),
         )
@@ -334,6 +437,7 @@ pub fn update_visibility(
     //    rather than one that is missing geometry it was holding.
     let mut update = VisibilityUpdate {
         retained: retained.into_iter().collect(),
+        occupied: occupied.into_iter().collect(),
         ..VisibilityUpdate::default()
     };
     for sector in to_load {

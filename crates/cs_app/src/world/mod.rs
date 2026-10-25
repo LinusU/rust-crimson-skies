@@ -189,6 +189,6 @@ pub use triggers::{
     TriggerVolumeSurveyError, ZONE_PREFIX, survey_retail_trigger_volumes, zone_box_field,
 };
 pub use visibility::{
-    VisibilityError, VisibilityRequest, VisibilityUpdate, holds_sector, retained_sectors,
-    update_visibility,
+    VisibilityError, VisibilityRequest, VisibilityUpdate, actor_held_sectors, holds_sector,
+    occupied_sectors, retained_sectors, update_visibility, update_visibility_with_actors,
 };

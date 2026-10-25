@@ -30,9 +30,9 @@ use cs_app::world::{
     DEPOT_OBJECT_CRATE, DEPOT_OBJECT_DOOR, DEPOT_OBJECT_HANGAR, DEPOT_SECTOR_ANNEX,
     DEPOT_SECTOR_APPROACH, DEPOT_SECTOR_YARD, MESH_SETTLE_UPDATES, ObjectCondition, SpawnedWorld,
     VisibilityError, VisibilityRequest, VisibilityUpdate, WorldLoadError, WorldObjectBinding,
-    condition_of, damage_object, depot_meshes, depot_mission, depot_world, holds_sector,
-    load_sector, load_world, residency, retained_sectors, unload_sector, update_visibility,
-    world_app,
+    actor_held_sectors, condition_of, damage_object, depot_meshes, depot_mission, depot_world,
+    holds_sector, load_sector, load_world, occupied_sectors, residency, retained_sectors,
+    unload_sector, update_visibility, update_visibility_with_actors, world_app,
 };
 use cs_content::world::{SectorId, WorldDefinition, WorldObjectCondition, WorldObjectId};
 
@@ -763,4 +763,96 @@ fn accept_f18_c_a_sector_a_pass_unloaded_can_be_loaded_again_on_purpose() {
         "and the transaction still owns it, so a caller may unload it again"
     );
     let _: VisibilityUpdate = VisibilityUpdate::default();
+}
+
+/// An actor in the annex, far outside the focus's radius.
+const ANNEX_ACTOR: [f64; 3] = [30.0, 1.5, 0.0];
+
+/// **F18-E: an actor outside the focus's radius keeps the sector it is in.**
+///
+/// Without actors the pass streams the annex away; with a mover inside it the
+/// annex stays loaded and is reported as `occupied`, distinct from `retained`
+/// (the yard, held for the required door).
+///
+/// Observable failure: the annex unloads, or is reported as retained, or the
+/// occupied report is empty.
+#[test]
+fn accept_f18_e_an_actor_outside_the_focus_radius_keeps_its_sector() {
+    let (mut app, _report) = loaded(&[DEPOT_OBJECT_DOOR]);
+    let update = update_visibility_with_actors(&mut app, &FAR_WEST, &[ANNEX_ACTOR], &meshes())
+        .expect("the pass runs");
+    assert_eq!(update.unloaded, Vec::<SectorId>::new(), "{update:?}");
+    assert_eq!(
+        update.occupied,
+        vec![sector(DEPOT_SECTOR_ANNEX)],
+        "{update:?}"
+    );
+    assert_eq!(
+        update.retained,
+        vec![sector(DEPOT_SECTOR_YARD)],
+        "{update:?}"
+    );
+    assert!(
+        !entities_of(&mut app, &object(DEPOT_OBJECT_CRATE)).is_empty(),
+        "the mover's ground is still there"
+    );
+    assert!(loaded_sectors(&app).contains(&DEPOT_SECTOR_ANNEX.to_owned()));
+}
+
+/// **The same pass with no actor streams that sector away.** Pins that the hold
+/// above is the actor's doing.
+#[test]
+fn accept_f18_e_without_the_actor_the_same_pass_streams_the_sector() {
+    let (mut app, _report) = loaded(&[DEPOT_OBJECT_DOOR]);
+    let update =
+        update_visibility_with_actors(&mut app, &FAR_WEST, &[], &meshes()).expect("the pass runs");
+    assert_eq!(
+        update.unloaded,
+        vec![sector(DEPOT_SECTOR_ANNEX)],
+        "{update:?}"
+    );
+    assert!(update.occupied.is_empty(), "{update:?}");
+}
+
+/// **The decision is pure and classifies the holds apart.** A sector the focus
+/// reaches, or a required object retains, is not an actor-only hold.
+#[test]
+fn accept_f18_e_the_actor_hold_is_a_pure_decision_distinct_from_focus_and_required() {
+    let definition = depot();
+    let required: std::collections::BTreeSet<WorldObjectId> =
+        [object(DEPOT_OBJECT_DOOR)].into_iter().collect();
+    let actors = [ANNEX_ACTOR, [-35.0, 1.5, 0.0], [5.0, 1.5, 0.0]];
+    assert_eq!(
+        occupied_sectors(&definition, &actors),
+        [
+            sector(DEPOT_SECTOR_ANNEX),
+            sector(DEPOT_SECTOR_APPROACH),
+            sector(DEPOT_SECTOR_YARD)
+        ]
+        .into_iter()
+        .collect(),
+        "every sector any actor is inside"
+    );
+    assert_eq!(
+        actor_held_sectors(&definition, &FAR_WEST, &required, &actors),
+        [sector(DEPOT_SECTOR_ANNEX)].into_iter().collect(),
+        "the approach is the focus's and the yard is retained; only the annex is the actor's"
+    );
+    assert!(actor_held_sectors(&definition, &FAR_WEST, &required, &[]).is_empty());
+}
+
+/// **A non-finite actor position is refused and moves nothing.**
+#[test]
+fn accept_f18_e_a_non_finite_actor_position_is_refused() {
+    let (mut app, _report) = loaded(&[]);
+    let before = loaded_sectors(&app);
+    let err = update_visibility_with_actors(
+        &mut app,
+        &FAR_WEST,
+        &[ANNEX_ACTOR, [0.0, f64::NAN, 0.0]],
+        &meshes(),
+    )
+    .expect_err("a NaN position is refused");
+    assert_eq!(err, VisibilityError::UnusableActor { index: 1, axis: 1 });
+    assert_eq!(loaded_sectors(&app), before);
 }
