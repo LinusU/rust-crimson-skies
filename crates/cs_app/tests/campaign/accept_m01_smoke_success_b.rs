@@ -25,7 +25,7 @@ fn check<'a>(checks: &'a [Check], id: &str) -> &'a Check {
         .unwrap_or_else(|| panic!("no check named {id}: {checks:#?}"))
 }
 
-fn full() -> SuccessMetrics {
+pub(super) fn full() -> SuccessMetrics {
     let names = ["medkestrel_1", "medkestrel_2", "medkestrel_3"];
     SuccessMetrics {
         start_frame: Some(2_600),
@@ -71,7 +71,9 @@ fn measured(success: SuccessMetrics) -> SmokeMeasurements {
 
 #[test]
 fn accept_m01_smoke_success_b_whole_sequence_passes() {
-    let checks = evaluate_mission_smoke(&measured(full()));
+    // The stage's later beats (part C) are checks too, so the whole sequence is
+    // the complete run, which part C's fixture holds.
+    let checks = evaluate_mission_smoke(&measured(super::accept_m01_smoke_success_c::full()));
     for id in [
         "success_landing_block_completed",
         "success_kestrel_wake_block_completed",

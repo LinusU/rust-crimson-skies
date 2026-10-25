@@ -734,6 +734,15 @@ pub struct MissionHostRestartReport {
 #[derive(Resource, Debug, Default)]
 pub struct MissionHostRestartRequest;
 
+/// Resource: the terminal still settles, but the host does not write the app
+/// exit message for it. The owner-command smoke inserts it so the settled
+/// screen outlives the terminal long enough to be photographed (a successful
+/// run has no debrief screen yet to hold the window open); the exit the
+/// terminal asked for stays on [`MissionTerminal::exit`] and the smoke judges
+/// it.
+#[derive(Resource, Debug, Default)]
+pub struct MissionExitHeld;
+
 /// A restart the composed system could not perform, kept so a run says what
 /// it did not do rather than silently keeping the old sessions
 /// (`docs/contracts/CLI-EVIDENCE.md`).
@@ -1914,7 +1923,7 @@ pub fn mission_host_tick(world: &mut World) {
                 .debrief
                 .as_ref()
                 .is_some_and(|debrief| super::debrief_screen::show_debrief(world, debrief));
-        if !shown {
+        if !shown && !world.contains_resource::<MissionExitHeld>() {
             world.write_message(terminal.exit.app_exit());
         }
     }

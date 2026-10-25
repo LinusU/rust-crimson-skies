@@ -116,7 +116,9 @@ fn accept_m01_smoke_success_a_empty_stage_fails_every_check() {
 
 #[test]
 fn accept_m01_smoke_success_a_whole_sequence_passes() {
-    let checks = evaluate_mission_smoke(&measured(full()));
+    // The later beats are checks of the same stage: the whole sequence is the
+    // complete run, which part C's fixture holds.
+    let checks = evaluate_mission_smoke(&measured(super::accept_m01_smoke_success_c::full()));
     for check in &checks {
         assert!(check.passed, "{} failed: {}", check.id, check.detail);
     }

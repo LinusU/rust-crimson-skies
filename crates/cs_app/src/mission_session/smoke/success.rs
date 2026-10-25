@@ -54,7 +54,9 @@ use cs_sim::damage::ActorId;
 use cs_types::input::{Action, FlightCommand};
 
 use super::super::compose::MissionPlayerBody;
-use super::super::host::{MissionHost, MissionHostReport, MissionWorldObservation};
+use super::super::host::{
+    MissionExitHeld, MissionHost, MissionHostReport, MissionWorldObservation,
+};
 use super::super::observation::mission_world_observation;
 use super::super::weapons::MissionCockpitActions;
 use super::{
@@ -128,12 +130,18 @@ pub const DOCK_NODE: &str = "pz_manual_land";
 /// The horizontal distance the player stands off from the tank, metres.
 /// **Designed:** the gun-hit distance of the Kestrel beat.
 pub const TANK_STANDOFF_M: f32 = 60.0;
+/// How far below the tank the player stands, metres. **Designed:** under the
+/// girders that frame the tanks on the zeppelin's underside.
+pub const TANK_BELOW_M: f32 = 45.0;
 /// The player is put back abeam the tank this often. **Designed.**
 pub const TANK_PLACE_EVERY_FRAMES: u32 = 2;
 /// Frames after the tank beat starts that the guns key goes down. **Designed.**
 const TANK_FIRE_AFTER_FRAMES: u32 = 30;
 /// Frames the tank beat may spend before giving up. **Designed.**
 pub const TANK_BUDGET_FRAMES: u32 = 1_800;
+/// Frames after the tank beat starts that the tank under fire is photographed.
+/// **Designed:** the guns have been down for a second.
+const TANK_SHOT_OFFSET: u32 = TANK_FIRE_AFTER_FRAMES + 60;
 /// Frames after `OBJECTIVE25` completes that the burning tank is photographed.
 /// **Designed:** time for the fire to show.
 const HYDROGEN_SHOT_OFFSET: u32 = 90;
@@ -199,6 +207,8 @@ pub struct SuccessTerminal {
     pub requested_by: Option<u32>,
     /// The host tick it settled on.
     pub tick: u64,
+    /// The process exit code the terminal asked for (held by the smoke).
+    pub exit_code: i32,
     /// The script frame the stage first saw it in.
     pub frame: u32,
 }
@@ -267,10 +277,16 @@ pub struct SuccessMetrics {
     pub tank_placements: u32,
     /// Guns-key presses queued at the tank.
     pub tank_fire_presses: u64,
+    /// The host's animation-health ledger as last seen during the tank beat.
+    pub tank_diag: String,
     /// The tank never appeared as a ground target.
     pub tank_never_found: bool,
     /// The tank beat ended without `OBJECTIVE25` completing.
     pub tank_gave_up: bool,
+    /// The script frame the tank-under-fire frame was asked for in.
+    pub tank_shot_frame: Option<u32>,
+    /// The share of the tank-under-fire frame that is off black, per mille.
+    pub tank_permille: u32,
     /// The script frame the burning-tank frame was asked for in.
     pub hydrogen_shot_frame: Option<u32>,
     /// The share of the burning-tank frame that is off black, per mille.
@@ -510,6 +526,8 @@ pub fn smoke_success(
         };
         metrics.centre = Some(site.to_array());
         metrics.start_frame = Some(frame);
+        // The win's exit would end the run before the settled frame exists.
+        commands.insert_resource(MissionExitHeld);
     }
     if let Some(done) = world.completions.as_deref() {
         for block in &done.0 {
@@ -535,6 +553,32 @@ pub fn smoke_success(
             metrics.dock_at = Some(now);
         }
     }
+    if metrics.beat == Beat::Tank
+        && let Some(ledger) = world
+            .host
+            .as_deref()
+            .and_then(|host| host.animation_health())
+    {
+        metrics.tank_diag = format!(
+            "pools {:?}; starts {:?}",
+            ledger
+                .pools()
+                .iter()
+                .map(|pool| format!(
+                    "{} on {}: {}/{}",
+                    pool.animation(),
+                    pool.node(),
+                    pool.remaining(),
+                    pool.maximum()
+                ))
+                .collect::<Vec<_>>(),
+            ledger
+                .starts()
+                .iter()
+                .map(|start| format!("{} at {:?}: {:?}", start.animation, start.at, start.outcome))
+                .collect::<Vec<_>>()
+        );
+    }
     let tank = world
         .grounds
         .iter()
@@ -549,6 +593,7 @@ pub fn smoke_success(
             source: terminal.source.label().to_owned(),
             requested_by: terminal.requested_by.map(|symbol| symbol.0),
             tick: terminal.tick.0,
+            exit_code: terminal.exit.code(),
             frame,
         });
     if metrics.beat == Beat::Kestrels
@@ -643,6 +688,7 @@ pub fn smoke_success(
             "success_marked",
             "success_landed",
             "success_kestrels",
+            "success_tank",
             "success_hydrogen",
             "success_settled",
         ];
@@ -650,6 +696,7 @@ pub fn smoke_success(
             metrics.marked_shot_frame,
             metrics.landed_shot_frame,
             metrics.kestrels_shot_frame,
+            metrics.tank_shot_frame,
             metrics.hydrogen_shot_frame,
             metrics.settled_shot_frame,
         ]
@@ -662,6 +709,7 @@ pub fn smoke_success(
         let required = |label: &str| match label {
             "success_landed" => metrics.landed_shot_frame.is_some(),
             "success_kestrels" => metrics.kestrels_shot_frame.is_some(),
+            "success_tank" => metrics.tank_shot_frame.is_some(),
             "success_hydrogen" => metrics.hydrogen_shot_frame.is_some(),
             "success_settled" => metrics.settled_shot_frame.is_some(),
             _ => true,
@@ -683,6 +731,7 @@ pub fn smoke_success(
             metrics.marked_permille = permille(find("success_marked"));
             metrics.landed_permille = permille(find("success_landed"));
             metrics.kestrels_permille = permille(find("success_kestrels"));
+            metrics.tank_permille = permille(find("success_tank"));
             metrics.hydrogen_permille = permille(find("success_hydrogen"));
             metrics.settled_permille = permille(find("success_settled"));
         }
@@ -751,12 +800,12 @@ fn pass(node: [f64; 3], name: &str) -> Placement {
 /// The tank mark: [`TANK_STANDOFF_M`] abeam the tank (south of it, level),
 /// nose on it.
 fn abeam(tank: Vec3) -> Placement {
-    let offset = Vec3::Z * TANK_STANDOFF_M;
+    let offset = Vec3::new(0.0, -TANK_BELOW_M, TANK_STANDOFF_M);
     Placement {
         name: format!("{TANK} mark (test placement)"),
         position_m: (tank + offset).to_array(),
         yaw: yaw_toward(-offset),
-        pitch: 0.0,
+        pitch: -offset.y.atan2(offset.x.hypot(offset.z)),
         speed_m_s: 0.0,
         distance_m: f64::from(TANK_STANDOFF_M),
     }
@@ -917,6 +966,10 @@ fn step(
                 pending.0 = Some(abeam(tank));
                 metrics.tank_placements += 1;
             }
+            if at == TANK_SHOT_OFFSET {
+                step.shots.push("success_tank");
+                metrics.tank_shot_frame = Some(frame);
+            }
             if burning.is_none() {
                 if at > TANK_BUDGET_FRAMES {
                     metrics.tank_gave_up = true;
@@ -1072,15 +1125,16 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             applies: true,
             passed: c.has_completed(HYDROGEN_BLOCK) && c.tank_fire_presses > 0 && !c.tank_gave_up,
             detail: format!(
-                "{} guns-key press(es) were queued from {TANK_STANDOFF_M} m abeam {TANK} at {:?} \
+                "{} guns-key press(es) were queued from {TANK_STANDOFF_M} m abeam and {TANK_BELOW_M} m below {TANK} at {:?} \
                  ({} test placements) and the host reported block {HYDROGEN_BLOCK} \
-                 (hydrogen_fire RUNNING) completed at {:?}; tank never found: {}; gave up: {}",
+                 (hydrogen_fire RUNNING) completed at {:?}; tank never found: {}; gave up: {}; host: {}",
                 c.tank_fire_presses,
                 c.tank_at,
                 c.tank_placements,
                 at(HYDROGEN_BLOCK),
                 c.tank_never_found,
-                c.tank_gave_up
+                c.tank_gave_up,
+                c.tank_diag
             ),
         },
         Check {
@@ -1117,6 +1171,7 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 terminal.outcome == "success"
                     && terminal.source == "control_program"
                     && terminal.requested_by == Some(WIN_BLOCK)
+                    && terminal.exit_code == 0
             }),
             detail: format!(
                 "the mission host settled {:?} (expected outcome success, source control_program, \
@@ -1134,6 +1189,7 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                     c.marked_permille,
                     c.landed_permille,
                     c.kestrels_permille,
+                    c.tank_permille,
                     c.hydrogen_permille,
                     c.settled_permille,
                 ]
@@ -1141,12 +1197,19 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 .all(|permille| *permille >= MIN_DRAWN_PERMILLE),
             detail: if c.frames_delivered {
                 format!(
-                    "{} / {} / {} / {} per mille of the near, marked, landed and Kestrel frames \
-                     are off black (floor {MIN_DRAWN_PERMILLE})",
-                    c.near_permille, c.marked_permille, c.landed_permille, c.kestrels_permille
+                    "{} / {} / {} / {} / {} / {} per mille of the near, marked, landed, Kestrel, \
+                     tank and hydrogen frames are off black ({} for the settled frame; floor \
+                     {MIN_DRAWN_PERMILLE})",
+                    c.near_permille,
+                    c.marked_permille,
+                    c.landed_permille,
+                    c.kestrels_permille,
+                    c.tank_permille,
+                    c.hydrogen_permille,
+                    c.settled_permille
                 )
             } else {
-                "a near, marked, landed or Kestrel framebuffer never arrived".to_owned()
+                "a success-stage framebuffer never arrived".to_owned()
             },
         },
         Check {
@@ -1208,11 +1271,12 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
         || "null".to_owned(),
         |t| {
             format!(
-                "{{\"outcome\":{},\"source\":{},\"requested_by_block\":{},\"tick\":{},\"frame\":{}}}",
+                "{{\"outcome\":{},\"source\":{},\"requested_by_block\":{},\"exit_code\":{},\"tick\":{},\"frame\":{}}}",
                 json_string(&t.outcome),
                 json_string(&t.source),
                 t.requested_by
                     .map_or_else(|| "null".to_owned(), |b| b.to_string()),
+                t.exit_code,
                 t.tick,
                 t.frame
             )
@@ -1228,7 +1292,7 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
          \"kestrels_never_woken\":{},\"gave_up_on\":{gave_up},\"landed_permille\":{},\
          \"kestrels_permille\":{},\"tank\":{},\"tank_at_m\":{tank_at},\"tank_placements\":{},\
          \"tank_fire_presses\":{},\"tank_never_found\":{},\"tank_gave_up\":{},\
-         \"hydrogen_permille\":{},\"dock_node\":{},\"dock_at_m\":{dock_at},\
+         \"tank_permille\":{},\"tank_diag\":{},\"hydrogen_permille\":{},\"dock_node\":{},\"dock_at_m\":{dock_at},\
          \"dock_placements\":{},\"dock_node_never_found\":{},\"dock_gave_up\":{},\
          \"dock_diag\":{},\"terminal\":{terminal},\"terminal_never\":{},\
          \"settled_permille\":{}}}",
@@ -1254,6 +1318,8 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
         c.tank_fire_presses,
         c.tank_never_found,
         c.tank_gave_up,
+        c.tank_permille,
+        json_string(&c.tank_diag),
         c.hydrogen_permille,
         json_string(DOCK_NODE),
         c.dock_placements,

@@ -770,9 +770,18 @@ site on arrival (`frame_scNNNNN_success_near.png`) and once `OBJECTIVE27`
 (woken 2 s after `OBJECTIVE12`) has completed (`…_success_marked.png`), and
 judges `success_proximity_block_completed`, `success_mark_block_completed`,
 `success_frames_drawn` and `smoke_shots_delivered`. `report.json` carries a
-`success` section. Nothing is written to the damage authority or the host. The
-later beats (drop-off landing, Medusa wave, hydrogen fire, docking) are #2082.
-See `docs/findings/2026-10-24-m01-smoke-success-a.md`.
+`success` section. Nothing is written to the damage authority or the host.
+Part B (#2082) lands at `do_approach1` and shoots down the three Medusa
+Kestrels; part C (#2083) shoots `hydrogentank1` from 60 m abeam and 45 m below
+until `OBJECTIVE25` (`hydrogen_fire` RUNNING) completes, flies a level pass
+through `pz_manual_land` until `OBJECTIVE14` (`hooked_to_klondike`) completes,
+and waits for the mission host's own terminal (`OBJECTIVE15`'s `INSTANTWIN`:
+outcome success, source control program). The smoke holds the app exit that
+terminal asks for (`MissionExitHeld`) so the settled screen can be photographed,
+and judges the exit code it asked for. Use `--smoke-seconds 700`. The Mission
+Succeeded debrief does not exist yet (#1972) and is not covered. See
+`docs/findings/2026-10-24-m01-smoke-success-a.md`, `-b.md` and
+`2026-10-25-m01-smoke-success-c.md`.
 
 #### The crash mode (#1857 `PARITY4-CRASH-E`)
 

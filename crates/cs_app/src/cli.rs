@@ -995,8 +995,10 @@ WINDOWED PLAYTEST (development, not original)
         has destroyed every truck and judges the observation rows and
         framebuffer screenshots of the intact and the destroyed convoy
         --smoke-success places the player inside OBJECTIVE12's radius of
-        the shipwreck site (a test placement) and judges which objective
-        blocks the mission host reported completed
+        the shipwreck site (a test placement), flies the drop-off landing,
+        shoots the Kestrels and a hydrogen tank, docks, and judges which
+        objective blocks the mission host reported completed and the terminal
+        it settled
 
     --mission <id> [--joystick <vid:pid|name>] [--force-feedback-gain <percent>]
         A connected HID joystick flies too (SIDEWINDER-FFB2): stick X roll,

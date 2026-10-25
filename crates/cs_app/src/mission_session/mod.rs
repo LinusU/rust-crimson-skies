@@ -269,7 +269,7 @@ pub use hit_sound::{
     HitVoice, cue_player_hits, measure_hit_sound, play_hit_cue, voices_from_document,
 };
 pub use host::{
-    MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,
+    MissionExitHeld, MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,
     MissionHostRestartError, MissionHostRestartFailure, MissionHostRestartReport,
     MissionHostRestartRequest, MissionHostSeed, MissionHostStepError, MissionHostTick,
     MissionWorldObservation, host_session_id, install_mission_host, mint_host_generation,

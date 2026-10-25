@@ -21,6 +21,7 @@ mod campaign {
     mod accept_m01_b_wake;
     mod accept_m01_smoke_success_a;
     mod accept_m01_smoke_success_b;
+    mod accept_m01_smoke_success_c;
     mod accept_trucks_smoke;
     mod common;
     mod f27_c_fx_orig_engine;
