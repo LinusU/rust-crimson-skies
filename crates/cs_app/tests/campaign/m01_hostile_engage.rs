@@ -130,11 +130,16 @@ fn accept_m01_outcome_a_an_idle_player_never_wakes_the_kestrels() {
     // fatal contact rule judges those contacts (#1850, #1854, #1983) they cost
     // hull. That is the player's own crash, not a hostile round: every point
     // of hull lost must be accounted for by a judged terrain contact.
-    assert_eq!(
-        hull_integrity(&app),
-        Some((start - terrain_damage).max(0.0)),
+    // The pool loses each contact's share one subtraction at a time while the
+    // sum above adds them first, so the two agree only to floating-point
+    // rounding (they differed by one ulp, 2e-13, on 2026-10-25): a tolerance
+    // of a millionth of a hull point, far below any round's damage.
+    let hull = hull_integrity(&app).expect("the player's hull still has a pool");
+    let expected = (start - terrain_damage).max(0.0);
+    assert!(
+        (hull - expected).abs() < 1.0e-6,
         "only judged terrain contacts (total {terrain_damage}) damaged the idle player's \
-         hull in {IDLE_SECONDS} s"
+         hull in {IDLE_SECONDS} s: hull {hull}, expected {expected}"
     );
     teardown(&mut app);
 }
