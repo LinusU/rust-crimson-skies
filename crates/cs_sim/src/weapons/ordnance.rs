@@ -107,6 +107,7 @@ use cs_types::space::{SpaceError, WorldPosition};
 
 use crate::damage::{ActorId, DamageNodeKey, HitEvent, HitEventError, HitEventId, SystemKind};
 use crate::environment::{air_relative_velocity_m_s, world_velocity_from_air_m_s};
+use crate::flight::BoostParameters;
 use crate::time::TickRate;
 use crate::weapons::guns::{
     InheritanceRule, MountTransform, ProjectileId, ProjectileSegment, SweptHit,
@@ -1786,6 +1787,23 @@ impl NitroParameters {
             tradeoffs,
             recovery_on_refused: NitroRefusedRecovery::Recovers,
         })
+    }
+
+    /// The flight model's boost terms for this booster.
+    ///
+    /// **This is the one place an airframe's [`BoostParameters`] come from**
+    /// (task #453): the declared nitro record is the authority, and the
+    /// flight record is lowered from it, never declared a second time. The
+    /// extra thrust and the per-second consumption carry over unchanged and
+    /// in the same units, so a tick the ledger accepts consumes exactly what
+    /// the flight model reports as accepted consumption. The result holds no
+    /// pose and no duration.
+    #[must_use]
+    pub const fn boost_parameters(&self) -> BoostParameters {
+        BoostParameters {
+            thrust_n: self.extra_thrust_n,
+            consumption_per_s: self.consumption_per_s,
+        }
     }
 
     /// Replaces the refused-activation recovery rule.
@@ -4011,6 +4029,13 @@ impl NitroLedger {
             },
             refused,
         })
+    }
+
+    /// Whether capacity remains, which is the flight model's
+    /// `FlightState::boost_available` for the next tick.
+    #[must_use]
+    pub fn boost_available(&self) -> bool {
+        self.capacity_units > 0.0
     }
 
     /// Whether a fixed burn has finished and the booster is idle again.

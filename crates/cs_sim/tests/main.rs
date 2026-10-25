@@ -33,6 +33,7 @@ mod accept_f27_d_ammunition_registry;
 mod accept_f28_a_ordnance;
 mod accept_f28_ae1_area_ledger;
 mod accept_f28_b_ordnance_runtime;
+mod accept_f28_f24_nitro_boost_authority;
 mod accept_f29_a_damage_resolver;
 mod accept_f29_b_zones_armor_disablement;
 mod accept_f29_c_04_bailout_mission_transition;
