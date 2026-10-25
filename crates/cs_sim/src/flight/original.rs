@@ -32,7 +32,8 @@
 //! 5. lift is **velocity steering**, not a lift curve: [`lift_target`] blends
 //!    the target velocity from the current one to the nose direction across
 //!    [`LIFT_AOA_DEG`], the demanded acceleration becomes a load factor and
-//!    that becomes `CL`;
+//!    that becomes `CL`; the load command and the lift direction both use the
+//!    original's approximate square root ([`approx_sqrt`]);
 //! 6. gravity is the acceleration `-g` on `y`;
 //! 7. the rotation terms accumulate into a world-space angular-momentum
 //!    increment, damping runs as `exp(-damp * dt)` and the attitude rotates by
@@ -41,8 +42,15 @@
 //!    the naive value;
 //! 8. `v += a * dt`, then `pos += v * dt` (semi-implicit), with a floor on the
 //!    nose-ward speed for AI only;
-//! 9. the fake-dynamics branch ([`DynamicsKind::Fake`]: the autogyro and far
-//!    AI) replaces 2–8 with `a = fd_speed * throttle * nose - v`.
+//! 9. the fake-dynamics branch ([`DynamicsKind::Fake`]: an AI more than 1000 m
+//!    (horizontally) from the player, or the player under the `-fd`, `fd` and
+//!    `ifon` dev options) replaces 2–8 with
+//!    `a = (fd_speed * throttle [+ 5 m/s for a non-player]) * nose - v`, and
+//!    turns off the speed fades, the authority limit, the bank coupling, the
+//!    weathervane and the stall.
+//!
+//! The re-read of the whole force block against the image is
+//! `docs/findings/2026-10-25-force-block-reread.md`.
 //!
 //! # Mapping onto the shared contract
 //!
@@ -133,6 +141,16 @@ pub const NITRO_THROTTLE: f64 = 1.8;
 /// Nitro multiplies drag by this factor.
 pub const NITRO_DRAG_FACTOR: f64 = 0.8;
 
+/// The fake-dynamics target speed of a non-player is `fd_speed * throttle`
+/// plus this many m/s along the nose (`fsub [0x6036bc]`, `0x48c5ae`); the
+/// player's has no such term (`0x48c5ac` skips it when `veh == player`).
+pub const FAKE_AI_SPEED_BONUS_MPS: f64 = 5.0;
+
+/// The unit-normal fallback the lift steering uses when it has no direction to
+/// give: both components `0.7` (`mov [ebp-0x1c], 0x3f333333`, `0x48c7f7`,
+/// `0x48c857`).
+pub const LIFT_NORMAL_FALLBACK: [f64; 2] = [0.7, 0.7];
+
 /// AI aircraft never fly slower than this nose-ward, m/s (`4 mph`).
 pub const AI_MIN_FORWARD_SPEED_MPS: f64 = 4.47;
 
@@ -146,6 +164,9 @@ pub const LIFT_AOA_DEG: [f64; 2] = [5.0, 9.0];
 pub const LOAD_COMMAND_WINDOW: [f64; 2] = [-5.0, 9.0];
 /// The lift coefficient is clamped into this window.
 pub const LIFT_COEFFICIENT_WINDOW: [f64; 2] = [-1.8, 1.8];
+
+/// World up, `(0, 1, 0)` (`0x6379c0`).
+const WORLD_UP: [f64; 3] = [0.0, 1.0, 0.0];
 
 /// The dev tool at `0x491c60` measures a top speed with the attitude held;
 /// [`OriginalInput::hold_attitude`] reproduces that.
@@ -852,24 +873,65 @@ fn rotate_by(vector: [f64; 3], rotation: [f64; 3]) -> [f64; 3] {
     )
 }
 
-/// The half-angle rotation vector that carries `from` onto `to`:
-/// `axis * (angle / 2)`, the vector part of the corresponding quaternion.
+/// The square-root approximation the original uses in three places
+/// (`0x48c824`, `0x53fcf5`, `0x539087`): the `f32` bit pattern shifted right
+/// once (arithmetic) plus `0x1fc00000`.
 ///
-/// Parallel vectors give the zero vector; antiparallel ones use `fallback`.
-fn half_angle_rotation(from: [f64; 3], to: [f64; 3], fallback: [f64; 3]) -> [f64; 3] {
-    let from = unit(from);
-    let to = unit(to);
-    let sine = cross(from, to);
-    let cosine = clamp(dot(from, to), -1.0, 1.0);
-    let sine_length = norm(sine);
-    if sine_length <= f64::EPSILON {
-        if cosine > 0.0 {
-            return [0.0, 0.0, 0.0];
-        }
-        return scale(unit(fallback), std::f64::consts::FRAC_PI_4);
+/// It is exact at every power of four and over-estimates in between by up to
+/// about 6.07 %. `x` is rounded to `f32` first, as the original stores it.
+#[must_use]
+pub fn approx_sqrt(x: f64) -> f64 {
+    let bits = (x as f32).to_bits().cast_signed();
+    f64::from(f32::from_bits(
+        (bits >> 1).wrapping_add(0x1fc0_0000).cast_unsigned(),
+    ))
+}
+
+/// The unit-ish vector the original builds perpendicular to `a` in the XY
+/// plane when two directions are exactly opposite (`0x539040`).
+fn perpendicular_in_xy(a: [f64; 3]) -> [f64; 3] {
+    if a[0] == 0.0 {
+        return [1.0, 0.0, 0.0];
     }
-    let axis = scale(sine, 1.0 / sine_length);
-    scale(axis, sine_length.atan2(cosine) * 0.5)
+    let inverse = 1.0 / approx_sqrt(a[1] * a[1] + a[0] * a[0]);
+    [a[1] * inverse, -a[0] * inverse, 0.0]
+}
+
+/// The rotation vector the original derives from two unit directions with
+/// `0x53fd40` followed by `0x53fca0`, which carries `from` onto `to`.
+///
+/// `0x53fd40` builds the half-angle quaternion `(a . m, a x m)` with `m` the
+/// unit bisector of `a + b`; `0x53fca0` turns its vector part `v` into
+/// `v * atan2(s, w) / s` with `s` the **approximate** root of `|v|^2`
+/// ([`approx_sqrt`]). The result is `axis * theta / 2` shrunk by the
+/// approximation's error, by up to 6 %.
+///
+/// Parallel vectors give the zero vector. Exactly opposite ones use the
+/// perpendicular of [`perpendicular_in_xy`] with `w = 0`, so the angle is
+/// `pi / 2`: the half of the half-turn between them.
+fn half_angle_rotation(from: [f64; 3], to: [f64; 3]) -> [f64; 3] {
+    const ZERO: [f64; 3] = [0.0, 0.0, 0.0];
+    let a = unit(from);
+    let b = unit(to);
+    let sum = add(a, b);
+    let (w, v) = if sum == ZERO {
+        (0.0, perpendicular_in_xy(a))
+    } else {
+        let bisector = unit(sum);
+        let cross_ab = cross(a, bisector);
+        if cross_ab == ZERO && dot(a, b) < 0.0 {
+            (0.0, perpendicular_in_xy(a))
+        } else {
+            (dot(a, bisector), cross_ab)
+        }
+    };
+    let squared = dot(v, v);
+    if squared == 0.0 {
+        return ZERO;
+    }
+    let s = approx_sqrt(squared);
+    let angle = if w < 0.0 { -s.atan2(-w) } else { s.atan2(w) };
+    scale(v, angle / s)
 }
 
 // ------------------------------------------------------------- the model ---
@@ -915,8 +977,10 @@ pub struct OriginalStep {
     /// Whether the AI minimum forward speed clamped the velocity.
     pub speed_floor_applied: bool,
     /// The stall margin the step's rotation used: `1 - q * S * min(CLmax, 1.8)
-    /// / W`. Positive means stalled (the law strips nose-up rotation and drops
-    /// the nose in proportion to it); zero or negative means flying.
+    /// / W`, for the player under the full law; `0` for every other caller
+    /// (`0x48cfa3`). Positive means stalled (the law strips the nose-up part of
+    /// the rotation and drops the nose in proportion to it); zero or negative
+    /// means flying.
     pub stall_margin: f64,
 }
 
@@ -926,6 +990,22 @@ pub struct OriginalStep {
 fn stall_margin(aero: &AeroStep, airframe: &OriginalAirframe) -> f64 {
     let cl_max = max_lift_coefficient(aero.mach);
     1.0 - aero.dynamic_pressure * airframe.ref_area * cl_max.min(1.8) / airframe.veh_weight
+}
+
+/// The stall margin the step reports and acts on: the original computes it for
+/// the player only and not under fake dynamics (`0x48cfa3`, `0x48cfa9`); every
+/// other caller leaves the output at its initial `0` (`0x48e5a9`).
+fn reported_stall_margin(
+    aero: &AeroStep,
+    airframe: &OriginalAirframe,
+    is_player: bool,
+    fake: bool,
+) -> f64 {
+    if is_player && !fake {
+        stall_margin(aero, airframe)
+    } else {
+        0.0
+    }
 }
 
 /// The forces of one step, before gravity and before the `F * 9.82 / W` scale.
@@ -1015,7 +1095,12 @@ impl OriginalFlightModel {
 
         // Steps 2-6, or step 9's fake dynamics.
         let (linear_acceleration_mps2, aero) = if self.dynamics == DynamicsKind::Fake {
-            let target = scale(nose, airframe.fd_speed * throttle);
+            let bonus = if input.is_player {
+                0.0
+            } else {
+                FAKE_AI_SPEED_BONUS_MPS
+            };
+            let target = scale(nose, airframe.fd_speed * throttle + bonus);
             (
                 sub(target, velocity),
                 AeroStep {
@@ -1065,6 +1150,7 @@ impl OriginalFlightModel {
                 nose,
                 velocity_hat,
                 dt_s,
+                self.dynamics == DynamicsKind::Fake,
             );
             let damped = scale(
                 add(momentum_before, delta),
@@ -1112,7 +1198,12 @@ impl OriginalFlightModel {
             throttle,
             fuel: state.fuel,
             speed_floor_applied,
-            stall_margin: stall_margin(&aero, airframe),
+            stall_margin: reported_stall_margin(
+                &aero,
+                airframe,
+                input.is_player,
+                self.dynamics == DynamicsKind::Fake,
+            ),
         })
     }
 
@@ -1178,16 +1269,17 @@ impl OriginalFlightModel {
             [0.0, airframe.gravity, 0.0],
         );
         let (ax, ay) = (dot(steer, right), dot(steer, up));
-        let magnitude = (ax * ax + ay * ay).sqrt();
-        let g_command = if speed <= LIFT_MIN_SPEED_MPS {
-            0.0
+        // Below the speed floor the original skips the demand altogether
+        // (`0x48c857`); a demand that vanishes exactly gets the same fallback
+        // (`0x48c7f1`). Otherwise the load command and the unit normal both
+        // come from the approximate root (`0x48c824`), so the normal is up
+        // to 6 % short of unit length where `Gcmd` is up to 6 % long.
+        let squared = ax * ax + ay * ay;
+        let (g_command, normal) = if speed <= LIFT_MIN_SPEED_MPS || squared as f32 == 0.0 {
+            (0.0, LIFT_NORMAL_FALLBACK)
         } else {
-            magnitude / FORCE_TO_ACCEL
-        };
-        let normal = if magnitude > f64::EPSILON {
-            [ax / magnitude, ay / magnitude]
-        } else {
-            [0.7, 0.7]
+            let root = approx_sqrt(squared);
+            (root / FORCE_TO_ACCEL, [ax / root, ay / root])
         };
         let cl_max = max_lift_coefficient(mach);
         let coefficient = if dynamic_pressure * area > 0.0 {
@@ -1227,16 +1319,34 @@ impl OriginalFlightModel {
         nose: [f64; 3],
         velocity_hat: [f64; 3],
         dt_s: f64,
+        fake: bool,
     ) -> [f64; 3] {
         let airframe = &self.airframe;
         let globals = &self.globals;
         let [right, up, back] = axes;
 
+        // Under fake dynamics the original sets every speed factor and the
+        // authority limit to 1 (`0x48c8e7..0x48c8fc`), skips the bank
+        // coupling (`0x48cc5b`), never computes the weathervane (`0x48cd52`)
+        // and the stall (`0x48cfb1`), and has no nose-to-velocity rotation for
+        // the sign tests, so nothing is ever scaled by the limit.
         let fade_in = globals.turn_fade_mph[0] * MPH_TO_MPS;
         let fade_out = globals.turn_fade_mph[1] * MPH_TO_MPS;
-        let fade = ramp(speed, fade_in, fade_out);
-        let yaw_authority = yaw_authority(speed, globals);
-        let lambda = authority(aero.attack_rad, aero.load_factor, globals);
+        let fade = if fake {
+            1.0
+        } else {
+            ramp(speed, fade_in, fade_out)
+        };
+        let yaw_authority = if fake {
+            1.0
+        } else {
+            yaw_authority(speed, globals)
+        };
+        let lambda = if fake {
+            1.0
+        } else {
+            authority(aero.attack_rad, aero.load_factor, globals)
+        };
 
         let mut increment = [0.0, 0.0, 0.0];
 
@@ -1264,19 +1374,21 @@ impl OriginalFlightModel {
         increment = add(increment, yaw);
 
         // Bank coupling (`fall_off` 0x6289f8, `bank_off` 0x6289fc).
-        increment = add(increment, scale(up, FALL_OFF * right[1] * dt_s));
-        let inverted_pitch = if up[1] < 0.0 { FALL_OFF * up[1] } else { 0.0 };
-        increment = add(
-            increment,
-            scale(right, (BANK_OFF * right[1].abs() - inverted_pitch) * dt_s),
-        );
+        if !fake {
+            increment = add(increment, scale(up, FALL_OFF * right[1] * dt_s));
+            let inverted_pitch = if up[1] < 0.0 { FALL_OFF * up[1] } else { 0.0 };
+            increment = add(
+                increment,
+                scale(right, (BANK_OFF * right[1].abs() - inverted_pitch) * dt_s),
+            );
+        }
 
         // Player weathervane: the half-angle from the nose to the velocity.
-        if input.is_player && norm(velocity_hat) > 0.0 {
+        if input.is_player && !fake && norm(velocity_hat) > 0.0 {
             increment = add(
                 increment,
                 scale(
-                    half_angle_rotation(nose, velocity_hat, right),
+                    half_angle_rotation(nose, velocity_hat),
                     airframe.return_rate * dt_s,
                 ),
             );
@@ -1285,25 +1397,29 @@ impl OriginalFlightModel {
         // Level-Off assist (Shift+L, command 47), hands off.
         if level_off && input.roll == 0.0 && input.pitch == 0.0 {
             let mut level = scale(
-                half_angle_rotation(up, BODY_UP, right),
+                half_angle_rotation(up, WORLD_UP),
                 airframe.level_off_rate * dt_s,
             );
-            if rotation_increases_attack(level, nose, velocity_hat) {
+            if !fake && rotation_increases_attack(level, nose, velocity_hat) {
                 level = scale(level, lambda);
             }
             increment = add(increment, level);
         }
 
-        // Stall: strip any nose-up component, then drop the nose.
-        let stall_margin = stall_margin(aero, airframe);
-        if stall_margin > 0.0 {
-            let nose_up = dot(increment, right);
-            if nose_up > 0.0 {
-                increment = add(increment, scale(right, -nose_up));
-            }
+        // Stall, for the player only (`0x48cfa3`): along `r`, the rotation
+        // from the body +Z axis to world up (`0x48d05f..0x48d09e`), strip the
+        // part of the increment that opposes `r` (`-(dL . r) / (r . r)` when
+        // `dL . r < 0`) and add `stall_mag * s * dt`. `r` is the
+        // half-angle rotation vector, not a unit axis, and it follows the
+        // attitude: it is the body -X axis only in level flight.
+        let margin = reported_stall_margin(aero, airframe, input.is_player, fake);
+        if margin > 0.0 {
+            let r = half_angle_rotation(back, WORLD_UP);
+            let along = dot(increment, r);
+            let strip = if along < 0.0 { -along / dot(r, r) } else { 0.0 };
             increment = add(
                 increment,
-                scale(right, -globals.stall_mag * stall_margin * dt_s),
+                scale(r, strip + globals.stall_mag * margin * dt_s),
             );
         }
 
@@ -1965,6 +2081,202 @@ mod tests {
     }
 
     // ------------------------------------------------------------- helpers --
+
+    // ------------------------------------------- the force block re-read ---
+    // Finding `docs/findings/2026-10-25-force-block-reread.md` (task #2071):
+    // each test below is a term the re-read of `0x48c470..0x48ff88` proved and
+    // the law did not have. The hand values come from the cited instructions,
+    // not from a second call into the code under test.
+
+    /// `0x48c824`, `0x53fcf5`, `0x539087`: `(bits >> 1) + 0x1fc00000` on the
+    /// `f32` pattern. Exact at powers of four, high by up to 6.07 % between.
+    #[test]
+    fn accept_force_block_reread_approx_sqrt_halves_the_bit_pattern() {
+        assert_eq!(approx_sqrt(1.0), 1.0);
+        assert_eq!(approx_sqrt(4.0), 2.0);
+        assert_eq!(approx_sqrt(16.0), 4.0);
+        // 2.0 = 0x40000000 -> 0x20000000 + 0x1fc00000 = 0x3fc00000 = 1.5.
+        assert_eq!(approx_sqrt(2.0), 1.5);
+        // 3.0 = 0x40400000 -> 0x3fe00000 = 1.75.
+        assert_eq!(approx_sqrt(3.0), 1.75);
+        // 400 = 1.5625 * 2^8: 1 + 0.5625 / 2 = 1.28125 -> 20.5, not 20.
+        assert_eq!(approx_sqrt(400.0), 20.5);
+        let mut worst: f64 = 1.0;
+        for step in 0..4000 {
+            let x = 1.0 + f64::from(step) * 0.001;
+            let ratio = approx_sqrt(x) / x.sqrt();
+            assert!(ratio >= 1.0 - 1e-6, "never low: {x} -> {ratio}");
+            worst = worst.max(ratio);
+        }
+        assert!(worst > 1.06 && worst < 1.0608, "worst ratio {worst}");
+    }
+
+    /// `0x48c824..0x48c852`: `Gcmd = root / 9.82` and the normal is `a / root`
+    /// with `root` the approximate root. In level flight `a = (0, g)` and
+    /// `g^2 = 400`, so the root is 20.5, `Gcmd` 2.5 % high and the normal
+    /// 2.4 % short; the vertical lift they give still equals `g / 9.82 * W`.
+    #[test]
+    fn accept_force_block_reread_lift_normal_and_load_command_use_the_approximate_root() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let mut state = OriginalState::at(0.0, Quaternion::IDENTITY, 0.0, 1e9);
+        state.velocity_mps = [0.0, 0.0, -60.0];
+        let input = OriginalInput {
+            throttle: 0.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        let step = model
+            .step(&mut state, input, 0.01)
+            .expect("the declared step is valid");
+        let qs = step.dynamic_pressure * model.airframe.ref_area;
+        let weight = model.airframe.veh_weight;
+        let approx = 20.5 / FORCE_TO_ACCEL * weight / qs;
+        let exact = 20.0 / FORCE_TO_ACCEL * weight / qs;
+        assert!(approx < max_lift_coefficient(step.mach), "not CL-limited");
+        assert!(
+            (step.lift_coefficient - approx).abs() <= 1e-12 * approx,
+            "CL {} (approximate root {approx}, exact root {exact})",
+            step.lift_coefficient
+        );
+        assert!(step.lift_coefficient > exact * 1.02);
+        // n = qS * CL * ny / W = (20.5 / 9.82) * (20 / 20.5): the root cancels.
+        assert!(
+            (step.load_factor - 20.0 / FORCE_TO_ACCEL).abs() < 1e-12,
+            "load factor {}",
+            step.load_factor
+        );
+        // The lift vector is qS * CL * |normal|, i.e. 2.4 % short of qS * CL.
+        let along_normal = step.lift / (qs * step.lift_coefficient);
+        assert!(
+            (along_normal - 20.0 / 20.5).abs() < 1e-12,
+            "|n| {along_normal}"
+        );
+    }
+
+    /// `0x53fd40` + `0x53fca0`: `v * atan2(s, w) / s` with `s` the approximate
+    /// root of `|v|^2`. A quarter turn about +Z: `w = cos 45`, `v = (0, 0,
+    /// sin 45)`, `|v|^2 = 0.5` -> `s = 0.75` (true 0.7071), so the rotation is
+    /// `0.70711 * atan2(0.75, 0.70711) / 0.75 = 0.768226`, not `pi / 8`'s
+    /// `0.785398`.
+    #[test]
+    fn accept_force_block_reread_half_angle_rotation_uses_the_approximate_root() {
+        let turned = half_angle_rotation([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!(turned[0] == 0.0 && turned[1] == 0.0, "{turned:?}");
+        assert!(
+            (turned[2] - 0.768_226_184_079_000_2).abs() < 1e-12,
+            "{turned:?}"
+        );
+        assert!(turned[2] < std::f64::consts::FRAC_PI_4);
+        // Parallel directions give no rotation.
+        assert_eq!(
+            half_angle_rotation([0.0, 0.0, 1.0], [0.0, 0.0, 1.0]),
+            [0.0; 3]
+        );
+        // Exactly opposite directions: `0x539040` builds (a.y, -a.x, 0) / root,
+        // w = 0, so the angle is atan2(s, 0) = pi / 2.
+        let opposite = half_angle_rotation([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]);
+        assert!(
+            opposite[0].abs() < 1e-12 && opposite[2] == 0.0,
+            "{opposite:?}"
+        );
+        assert!(
+            (opposite[1] + std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+            "{opposite:?}"
+        );
+    }
+
+    /// `0x48c5a0..0x48c5b4`: a non-player's fake-dynamics target speed is
+    /// `fd_speed * throttle + 5.0` along the nose; the player's has no `+ 5`.
+    #[test]
+    fn accept_force_block_reread_ai_fake_dynamics_adds_five_metres_per_second() {
+        let fake = OriginalFlightModel {
+            airframe: airframe(),
+            globals: globals(),
+            dynamics: DynamicsKind::Fake,
+        };
+        let at_rest = |is_player: bool| {
+            let mut state = OriginalState::at(0.0, Quaternion::IDENTITY, 0.0, 1e9);
+            let input = OriginalInput {
+                throttle: 0.0,
+                is_player,
+                ..OriginalInput::default()
+            };
+            fake.step(&mut state, input, 0.01)
+                .expect("the declared step is valid")
+        };
+        let ai = at_rest(false);
+        assert!(
+            (ai.linear_acceleration_mps2[2] + FAKE_AI_SPEED_BONUS_MPS).abs() < 1e-12,
+            "an idle AI accelerates toward 5 m/s ahead: {:?}",
+            ai.linear_acceleration_mps2
+        );
+        assert_eq!(ai.linear_acceleration_mps2[0], 0.0);
+        assert_eq!(at_rest(true).linear_acceleration_mps2, [0.0; 3]);
+    }
+
+    /// `0x48cc5b`, `0x48cd3e`: under fake dynamics there is no bank coupling
+    /// and no weathervane, so a banked aircraft with the stick centred gets no
+    /// torque from them; the full law does.
+    #[test]
+    fn accept_force_block_reread_fake_dynamics_skips_the_bank_coupling() {
+        let banked = Quaternion::from_axis_angle(
+            cs_types::space::UnitVec3::FORWARD,
+            cs_types::space::Radians(0.5),
+        )
+        .expect("a banked attitude is a unit quaternion");
+        let torque = |dynamics: DynamicsKind| {
+            let model = OriginalFlightModel {
+                airframe: airframe(),
+                globals: globals(),
+                dynamics,
+            };
+            let mut state = OriginalState::at(0.0, banked, 1.0, 1e9);
+            state.velocity_mps = scale(nose_direction(banked), 100.0);
+            model
+                .step(&mut state, OriginalInput::full_throttle(true), 0.01)
+                .expect("the declared step is valid")
+                .world_torque
+        };
+        assert_eq!(torque(DynamicsKind::Fake), [0.0; 3]);
+        assert!(norm(torque(DynamicsKind::Full)) > 0.0);
+    }
+
+    /// `0x48cfa3`, `0x48d05f..0x48d13b`: the stall belongs to the player and
+    /// acts along `r`, the rotation from the body +Z axis to world up. Level,
+    /// `r = (-0.768226, 0, 0)`, so the nose-drop is `stall_mag * s * dt * r`
+    /// (23 % weaker than the unit-axis term the law had), and an AI at the same
+    /// state gets none.
+    #[test]
+    fn accept_force_block_reread_stall_is_the_players_and_acts_along_the_up_rotation() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let step_for = |is_player: bool| {
+            let mut state = OriginalState::at(0.0, Quaternion::IDENTITY, 0.0, 1e9);
+            state.velocity_mps = [0.0, 0.0, -20.0];
+            let input = OriginalInput {
+                throttle: 0.0,
+                is_player,
+                ..OriginalInput::default()
+            };
+            model
+                .step(&mut state, input, 0.01)
+                .expect("the declared step is valid")
+        };
+        let player = step_for(true);
+        assert!(player.stall_margin > 0.3, "stalled at 20 m/s");
+        let damp = (-model.airframe.ang_momentum_damp * 0.01).exp();
+        let expected =
+            -0.768_226_184_079_000_2 * model.globals.stall_mag * player.stall_margin * damp;
+        assert!(
+            (player.world_torque[0] - expected).abs() < 1e-9,
+            "torque {:?}, expected {expected} about X",
+            player.world_torque
+        );
+        assert!(player.world_torque[1].abs() < 1e-12 && player.world_torque[2].abs() < 1e-12);
+
+        let ai = step_for(false);
+        assert_eq!(ai.stall_margin, 0.0, "the margin is the player's alone");
+        assert_eq!(ai.world_torque, [0.0; 3], "an AI is never stall-rotated");
+    }
 
     fn airframe_fields() -> Vec<(&'static str, f64)> {
         vec![
