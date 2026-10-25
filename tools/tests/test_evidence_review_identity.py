@@ -145,6 +145,12 @@ DECLARATION = r'(?:let\s+{}\b|fn\s+{}\b)[^;{{]{{0,200}}?(?:env::var|env_var)\(\s
 # The task id of a report the harness fills in at run time rather than spelling
 # into the format string: `"task_id": {},` with the value passed as the format
 # call's first placeholder argument.  #492's case.
+# A task id with a run-time override and a spelled default:
+# `let task_id = std::env::var("CS_EVIDENCE_TASK_ID").unwrap_or_else(|_| "F14-D".to_owned());`
+# (or `.unwrap_or("F14-D")`).  The default is the id the harness writes unless
+# the environment says otherwise, so the report is keyed by that literal.
+RUNTIME_DEFAULT = (r'\s*(?::[^=;]*)?=\s*(?:\w+::)*env::var\(\s*"[A-Z0-9_]+"\s*\)'
+                   r'\s*\.unwrap_or(?:_else)?\(\s*(?:\|_\|\s*)?(?P<default>")')
 RUNTIME_TASK_ID = re.compile(r'\\"task_id\\": \{\}')
 # The m01lc harness writes three reports through one format call, choosing the
 # task id from a `M01lcReport { task_id: "...", ..., review: NAME }` table
@@ -201,6 +207,24 @@ fn evidence_report_x98_b() {
          \\x20\\"claim\\": \\"implemented\\"\\n\\
          }}\\n",
         jstr(TASK),
+        json(&reviewer),
+        json(METHOD),
+    );
+}
+'''
+
+# A `task_id` overridable from the environment with a spelled default, the way
+# the F14-D harness writes it (#492).
+ENV_TASK_HARNESS = '''fn evidence_report_x95_e() {
+    let task_id = std::env::var("CS_EVIDENCE_TASK_ID").unwrap_or_else(|_| "X95-E".to_owned());
+    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
+    let report = format!(
+        "{{\\n\\
+         \\x20\\"task_id\\": {},\\n\\
+         \\x20\\"review\\": {{\\"identity\\": {}, \\"method\\": {}}},\\n\\
+         \\x20\\"claim\\": \\"implemented\\"\\n\\
+         }}\\n",
+        jstr(&task_id),
         json(&reviewer),
         json(METHOD),
     );
@@ -408,6 +432,8 @@ def constant_string(text, name):
     identity that comes from a `fn`: it reads what is written and returns
     `None` when nothing is, never inventing the value.
     """
+    for declaration in re.finditer(r'\blet\s+' + re.escape(name) + RUNTIME_DEFAULT, text):
+        return read_rust_string(text, declaration.start('default'))
     for declaration in re.finditer(r'\b(?:const|static)\s+' + re.escape(name)
                                    + r'\b[^;{]*=', text):
         quote = text.find('"', declaration.end())
@@ -1312,6 +1338,31 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                          {'X98-B': {'claim': 'implemented', 'identity': None,
                                     'shape': 'runtime',
                                     'via': 'CS_EVIDENCE_REVIEWER'}})
+
+    def test_accept_t388_a_an_env_overridable_task_id_resolves_to_its_default(self):
+        """`let task_id = env::var(..).unwrap_or_else(|_| "X")` is keyed by `"X"`.
+
+        F14-D.1's harness writes its id that way; the reader must resolve it
+        without a quoted `"task_id": "F14-D"` in the module doc.
+        """
+        self.assertEqual(read_harness(ENV_TASK_HARNESS),
+                         {'X95-E': {'claim': 'implemented', 'identity': None,
+                                    'shape': 'runtime',
+                                    'via': 'CS_EVIDENCE_REVIEWER'}})
+
+    def test_accept_t388_a_an_env_task_id_without_a_default_is_still_unresolved(self):
+        """No spelled default, no id: the marker is reported, not guessed."""
+        bare = ENV_TASK_HARNESS.replace('.unwrap_or_else(|_| "X95-E".to_owned())',
+                                        '.unwrap()')
+        self.assertEqual(len(read_harness(bare)), 1)
+        self.assertTrue(next(iter(read_harness(bare))).startswith('unresolved review marker'))
+
+    def test_accept_t388_a_the_f14_d_harness_resolves_without_the_doc_workaround(self):
+        """F14-D resolves from its code alone, as merged, once the module doc is gone."""
+        path = ROOT / 'crates/cs_content/tests/evidence_report_f14_d.rs'
+        code = '\n'.join(line for line in path.read_text().splitlines()
+                         if not line.startswith('//!'))
+        self.assertIn('F14-D', read_harness(code))
 
     def test_accept_m16_a_fu6_one_format_call_over_a_table_writes_one_harness_per_entry(self):
         """A file that writes several reports through one format call cross-checks all of them.
