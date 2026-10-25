@@ -25,13 +25,16 @@ fn game_dir() -> PathBuf {
 /// (`docs/findings/2026-10-10-vs-m01-rt-player-airframe-visual.md` §3): every
 /// mesh-bearing node under `healthy` (slot 149)'s chosen `nearest` band plus
 /// `pirate_hook` (outside every band, inside `healthy`), plus the pinned
-/// `staticprop1` propeller, the `prop1` blur disc (#1667) and the
+/// `staticprop1` propeller, the `prop1` blur disc (#1667) with its sibling
+/// `prop1b` (slot 212, drawn beside it since a63d68cb5, which
+/// `spinprops` makes active) and the
 /// `wing_flare1`/`wing_flare2` fire quads (PARITY-M01-PLAYER-VIEW-C2, 8ee4c6b8:
 /// drawn hidden until a wing's damage record shows the fire) — the draw set
 /// `select_aircraft_parts` produces for the `player` root of `zbd/planes.zbd`.
-const MEASURED_DRAWN_SLOTS: [u32; 37] = [
+const MEASURED_DRAWN_SLOTS: [u32; 38] = [
     151, 152, 153, 156, 157, 158, 161, 163, 165, 167, 168, 171, 173, 175, 177, 178, 179, 180, 185,
-    186, 187, 188, 189, 190, 191, 192, 193, 194, 208, 209, 210, 211, 2330, 2336, 2360, 2511, 3005,
+    186, 187, 188, 189, 190, 191, 192, 193, 194, 208, 209, 210, 211, 212, 2330, 2336, 2360, 2511,
+    3005,
 ];
 
 /// Every `AircraftPart` under `body`, with its stored node slot.
