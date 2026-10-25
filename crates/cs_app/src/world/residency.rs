@@ -61,6 +61,7 @@
 //! leaves no residency, so no [`unload_world`] could ever release them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use bevy::prelude::{App, Component, Entity, Resource, World};
 use cs_content::world::{
@@ -109,7 +110,7 @@ impl From<WorldObjectCondition> for ObjectCondition {
 /// What one loaded world is, right now.
 #[derive(Clone, Debug)]
 pub struct ResidentWorld {
-    definition: WorldDefinition,
+    definition: Arc<WorldDefinition>,
     variant: Resolved<WorldId>,
     population: BTreeSet<WorldObjectId>,
     declared: BTreeSet<SectorId>,
@@ -524,7 +525,7 @@ pub fn load_world(
         .map(|sector| sector.id().clone())
         .collect();
     let mut resident = ResidentWorld {
-        definition: definition.clone(),
+        definition: Arc::new(definition.clone()),
         variant: instance.variant().clone(),
         population: population
             .iter()
@@ -704,10 +705,10 @@ pub fn load_sector(
                 sector: sector.clone(),
             });
         }
-        // The definition is cloned out of the record because spawning needs a
-        // `&mut App` while the record lives in the world, and a world's records
-        // are small next to the geometry they name.
-        let definition = resident.definition.clone();
+        // Spawning needs a `&mut App` while the record lives in the world, so
+        // the sector load holds its own handle on the definition: a reference
+        // count, not a copy of the world's records.
+        let definition = Arc::clone(&resident.definition);
         let records: Vec<_> = resident
             .population
             .iter()
