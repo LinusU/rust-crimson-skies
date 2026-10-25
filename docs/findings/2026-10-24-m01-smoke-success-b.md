@@ -1,4 +1,4 @@
-# `--smoke-success` part B: the drop-off landing reaches a refused record (#2082)
+# `--smoke-success` part B: the drop-off landing and the Kestrel kills (#2082)
 
 Date: 2026-10-24. Capability: `retail`, `gpu`. A scripted run; not `human_play`, nothing
 `verified_original`. Tests: `accept_m01_smoke_success_b_` in
@@ -22,47 +22,29 @@ OBJECTIVE25 (`hydrogen_fire`) and the docking stay with #2083.
    through `MissionCockpitActions`. A Kestrel is down only when `SessionDamageResolver`
    says so. Four framebuffers are judged (`success_near/marked/landed/kestrels`).
 
-## Measured: the run stops at the landing
+## Measured (final, after #2098 and #2100)
 
-`cs --cs-path <retail> --mission M01 --smoke-seconds 400 --smoke-success`: the proximity
-beat passes as in part A. The landing beat then flies 250 placements through `do_approach1`
-(at (-8886.5, 85.2, -4678.0) m, 80 m over the wreck). The host's landing ledger shows the
-consumer **did** land: all six rows attempted at the same tick, nodes armed by
-`enable_dropoff`, no window refusals. Every one of the six activations is
-`ActivationOutcome::Refused`, because the animation player refuses the row:
+`cs --cs-path <retail> --mission M01 --smoke-seconds 400 --smoke-success --capture-dir
+private/evidence/M01-SMOKE-SUCCESS-B` on the branch rebased on main, all seven checks pass
+without tuning any placement constant:
 
-> `Undeclared`: no member of the mission archive, its world group or the shared root
-> declares this animation name; whether the original engine resolved it elsewhere is
-> unmeasured
-
-So no `texdrop` is ever called, OBJECTIVE21 never completes, OBJECTIVE22/23 never run, the
-Kestrels are never woken, and the Kestrel beat never starts. The census (section 1) says the
-`do_approachN` records run `do_direction` and `CALL_ANIMATION texdrop`, so a record exists;
-what is missing is a declaring member that names `do_approach1..6` (and, probably,
-`texdrop`, `do_direction`) for the landing player's join. Nothing was guessed or forced.
-
-## Re-measured after #2098 (declaration fix): the landing completes, the Kestrel kill cannot
-
-`cs --cs-path <retail> --mission M01 --smoke-seconds 400 --smoke-success` on the rebased branch:
-the proximity, mark and landing checks pass. Block 20 (`texdrop` EXECUTED) completed at host
-tick 2773, no player refusals, and block 22 (the Kestrel wake) completed at 3374. Framebuffers
-`success_near`, `success_marked` and `success_landed` arrived.
-
-The Kestrel beat then fails: 5371 guns-key presses from 60 m marks astern (2700 placements)
-destroyed none of `medkestrel_1..3`, and `success_frames_drawn` fails because the
-`success_kestrels` frame is only taken after a kill. Reading the production path shows why this
-is not a tuning problem:
-
-* `mission_actors::designed_frame_node` registers every scripted actor with an **unresolved**
-  integrity pool (claim `m01-actors.damage-pool`: "no M01 damage table is measured (#668)"), so a
-  routed hit is reported unresolved and never destroys the actor.
-* No scripted aircraft carries a `PartSweptBox` (only ground targets, parts and the player do), so a
-  gun round has no volume to hit on a Kestrel.
-
-Making the Kestrels killable needs a designed or measured aircraft integrity pool and a gun-hit
-volume. Both are unmeasured game rules (AGENTS.md rule 4), so the stage does not invent them.
+* Block 11 (shipwreck proximity) completed at host tick 2473, block 26 at 2593.
+* Landing: 130 level passes through `do_approach1`; block 20 (`texdrop` EXECUTED) completed at
+  tick 2773 with no player refusals (the earlier `Undeclared` refusal is fixed by #2098).
+* Block 22 (Kestrel wake) completed at tick 3374.
+* Kestrels: 1148 guns-key presses from 60 m marks astern (588 placements); the damage authority
+  listed `medkestrel_1` (tick 3784), `medkestrel_2` (4168) and `medkestrel_3` (4552) destroyed.
+  This relies on the **designed** aircraft integrity pool and hit box of #2100
+  (`2026-10-25-m01-ai-aircraft-damage.md`), not on a measured original value.
+* All four framebuffers are off black (999 per mille each). `frame_sc04612_success_kestrels.png`
+  shows the astern view of a red Kestrel with the gun tracers and impact flashes on it; the
+  other frames are `frame_sc02501_success_near`, `frame_sc02593_success_marked` and
+  `frame_sc02833_success_landed`. They are in `private/evidence/M01-SMOKE-SUCCESS-B/`, not
+  committed.
 
 ## Not established
 
-* Whether and how the original's guns destroy `medkestrel_1..3` (pool, hit volume).
-* The Kestrel beat's placement constants: no round can hit, so they are untested on retail.
+* Whether the original's guns destroy `medkestrel_1..3` with the same effort: the pool and hit
+  volume are designed placeholders (#2100), so the kill count and timing are not original
+  behaviour.
+* `OBJECTIVE25` (hydrogen fire) and the docking beat: #2083.
