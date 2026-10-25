@@ -31,3 +31,16 @@ here is `verified_original`.
   headless acceptance tests (`accept_parity5_start_flow_succeeded_`) cover the
   caption, the unknowns, the press and the exit. Needs the owner's frame and a
   windowed win.
+
+## Smoke checks (2026-10-25)
+
+`--smoke-success --from-start-flow` now judges `success_debrief_drawn` (the
+debrief was up for the settled frame, off-black floor) and
+`success_returns_to_cabin` (Return to Cabin answers `ReturnToCabin` through the
+screen's own press; not applied, as that ends the process before the report).
+Both apply only in a start-flow run. Retail run, 700 s budget: 5210 frames,
+13 checks, no failures; settled frame 744 per mille off black, showing
+"Mission Completed", Run Time 1:24, Gun Hit Ratio 100%, Overall Planes Downed 4
+and Cash Earned unreadable (unknown). `MissionExitHeld` stays: a win without the
+start flow still ends the process and the plain smoke needs the hold. Frames are
+in `private/evidence/1972/` (not committed). No original frame to compare (#1655).

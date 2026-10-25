@@ -777,9 +777,14 @@ until `OBJECTIVE25` (`hydrogen_fire` RUNNING) completes, flies a level pass
 through `pz_manual_land` until `OBJECTIVE14` (`hooked_to_klondike`) completes,
 and waits for the mission host's own terminal (`OBJECTIVE15`'s `INSTANTWIN`:
 outcome success, source control program). The smoke holds the app exit that
-terminal asks for (`MissionExitHeld`) so the settled screen can be photographed,
-and judges the exit code it asked for. Use `--smoke-seconds 700`. The Mission
-Succeeded debrief does not exist yet (#1972) and is not covered. See
+terminal asks for (`MissionExitHeld`) so the settled screen can be photographed
+when no debrief takes the run over (a run without `--from-start-flow`), and
+judges the exit code it asked for. Add `--from-start-flow` and the won mission
+shows the Mission Completed debrief (#1972): the settled frame is that screen,
+and `success_debrief_drawn` and `success_returns_to_cabin` judge it (the latter
+presses Return to Cabin through the screen's own press path without applying
+it, since the hand-back ends the process; the cabin frame is the start-flow
+smoke's `resumed/` leg). Use `--smoke-seconds 700`. See
 `docs/findings/2026-10-24-m01-smoke-success-a.md`, `-b.md` and
 `2026-10-25-m01-smoke-success-c.md`.
 
