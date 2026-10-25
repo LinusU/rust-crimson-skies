@@ -26,10 +26,21 @@
 //! cockpit-action queue every frame; a Kestrel is down only when the damage
 //! authority says so (the smoke writes no damage).
 //!
-//! `OBJECTIVE13` (all of group 1 down) also needs `OBJECTIVE26` awake, which
-//! waits on `hydrogen_fire` (nothing known starts it,
-//! `2026-10-24-m01-hydrogen-fire-trigger.md`); the docking beat and the
-//! hydrogen tank belong to #2083.
+//! Part C (#2083) adds the end of the route:
+//!
+//! the **tank beat** — the player is placed abeam `hydrogentank1` and presses
+//! the guns key until the host reports `OBJECTIVE25` (`hydrogen_fire` RUNNING,
+//! started by the tank record's `HEALTH` pool emptying,
+//! `2026-10-24-m01-animation-health-consumer.md`) completed; that wakes
+//! `OBJECTIVE26`, which `OBJECTIVE13` (group 1 down) needs awake;
+//!
+//! the **dock beat** — once `OBJECTIVE14` has armed `pz_manual_land` the player
+//! is placed on a level pass through it until the host reports `OBJECTIVE14`
+//! (`hooked_to_klondike` EXECUTED) completed;
+//!
+//! the **settle beat** — the run waits for the mission host's own terminal
+//! (`OBJECTIVE15`'s `INSTANTWIN`: outcome Success, source ControlProgram) and
+//! photographs the screen after it. The smoke writes no flag of its own.
 //!
 //! What the mission host reports as completed is accumulated every fixed tick
 //! by [`record_success_completions`] (the host's per-tick report is replaced by
@@ -100,6 +111,41 @@ const KESTREL_FIRE_AFTER_FRAMES: u32 = 30;
 pub const KESTREL_SETTLE_FRAMES: u32 = 60;
 /// Frames after the landing that the "landed" frame is taken. **Designed.**
 const LANDED_SHOT_OFFSET: u32 = 60;
+/// `OBJECTIVE25` — `hydrogen_fire` RUNNING (block index 24).
+pub const HYDROGEN_BLOCK: u32 = 24;
+/// `OBJECTIVE13` — all of group 1 down, with `OBJECTIVE26` awake (block index 12).
+pub const GROUP_CLEAR_BLOCK: u32 = 12;
+/// `OBJECTIVE14` — `hooked_to_klondike` EXECUTED, the docking (block index 13).
+pub const DOCK_BLOCK: u32 = 13;
+/// `OBJECTIVE15` — the block that carries `INSTANTWIN` (block index 14). The
+/// control lowering numbers a block's symbol by its index
+/// (`control_lowering.rs`), so the terminal's `requested_by` is this number.
+pub const WIN_BLOCK: u32 = 14;
+/// The hydrogen tank the stage shoots; the first to go starts all four.
+pub const TANK: &str = "hydrogentank1";
+/// The docking node the stage flies through (`piratezep`'s manual landing).
+pub const DOCK_NODE: &str = "pz_manual_land";
+/// The horizontal distance the player stands off from the tank, metres.
+/// **Designed:** the gun-hit distance of the Kestrel beat.
+pub const TANK_STANDOFF_M: f32 = 60.0;
+/// The player is put back abeam the tank this often. **Designed.**
+pub const TANK_PLACE_EVERY_FRAMES: u32 = 2;
+/// Frames after the tank beat starts that the guns key goes down. **Designed.**
+const TANK_FIRE_AFTER_FRAMES: u32 = 30;
+/// Frames the tank beat may spend before giving up. **Designed.**
+pub const TANK_BUDGET_FRAMES: u32 = 1_800;
+/// Frames after `OBJECTIVE25` completes that the burning tank is photographed.
+/// **Designed:** time for the fire to show.
+const HYDROGEN_SHOT_OFFSET: u32 = 90;
+/// Frames the dock beat waits for `pz_manual_land` to appear. **Designed:**
+/// `OBJECTIVE14` arms it five seconds after `OBJECTIVE13`.
+pub const DOCK_FIND_BUDGET_FRAMES: u32 = 2_400;
+/// Frames the dock beat may spend flying passes. **Designed.**
+pub const DOCK_BUDGET_FRAMES: u32 = 1_800;
+/// Frames after the docking that the run waits for the terminal. **Designed.**
+pub const TERMINAL_BUDGET_FRAMES: u32 = 9_000;
+/// Frames after the terminal that the settled frame is taken. **Designed.**
+const SETTLED_SHOT_OFFSET: u32 = 120;
 /// `OBJECTIVE12`'s radius, metres (the record's own).
 pub const PROXIMITY_RADIUS_M: f32 = 200.0;
 /// Frames after the player gains control that the stage starts.
@@ -134,6 +180,27 @@ pub enum Beat {
     Landing,
     /// Placed behind each Kestrel, guns key down.
     Kestrels,
+    /// Placed abeam the hydrogen tank, guns key down (block 25).
+    Tank,
+    /// Placed on a level pass through the docking node (block 14).
+    Dock,
+    /// Waiting for the host's terminal, then photographing it.
+    Settle,
+}
+
+/// The terminal the mission host settled, as the stage read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuccessTerminal {
+    /// The outcome's label.
+    pub outcome: String,
+    /// The source's label.
+    pub source: String,
+    /// The objective block (symbol number) that asked for it.
+    pub requested_by: Option<u32>,
+    /// The host tick it settled on.
+    pub tick: u64,
+    /// The script frame the stage first saw it in.
+    pub frame: u32,
 }
 
 /// What the success stage measured.
@@ -192,6 +259,44 @@ pub struct SuccessMetrics {
     pub landed_permille: u32,
     /// The share of the closing Kestrel frame that is off black, per mille.
     pub kestrels_permille: u32,
+    /// The script frame the tank beat began in.
+    pub tank_start: Option<u32>,
+    /// The tank's measured position, metres.
+    pub tank_at: Option<[f32; 3]>,
+    /// Placements made abeam the tank.
+    pub tank_placements: u32,
+    /// Guns-key presses queued at the tank.
+    pub tank_fire_presses: u64,
+    /// The tank never appeared as a ground target.
+    pub tank_never_found: bool,
+    /// The tank beat ended without `OBJECTIVE25` completing.
+    pub tank_gave_up: bool,
+    /// The script frame the burning-tank frame was asked for in.
+    pub hydrogen_shot_frame: Option<u32>,
+    /// The share of the burning-tank frame that is off black, per mille.
+    pub hydrogen_permille: u32,
+    /// The script frame the dock beat began in.
+    pub dock_start: Option<u32>,
+    /// The docking node's latest composed position, metres.
+    pub dock_at: Option<[f64; 3]>,
+    /// Placements made at the docking node.
+    pub dock_placements: u32,
+    /// The host's landing ledger as last seen during the dock beat.
+    pub dock_diag: String,
+    /// The docking node never appeared in the observation.
+    pub dock_node_never_found: bool,
+    /// The dock beat ended without `OBJECTIVE14` completing.
+    pub dock_gave_up: bool,
+    /// The script frame the settle beat began in.
+    pub settle_start: Option<u32>,
+    /// The terminal the host settled.
+    pub terminal: Option<SuccessTerminal>,
+    /// The settle beat ended without a terminal.
+    pub terminal_never: bool,
+    /// The script frame the settled frame was asked for in.
+    pub settled_shot_frame: Option<u32>,
+    /// The share of the settled frame that is off black, per mille.
+    pub settled_permille: u32,
 }
 
 impl SuccessMetrics {
@@ -243,10 +348,15 @@ pub fn record_success_completions(world: &mut World) {
     }
 }
 
-/// The drop-off node's composed position as the production observation writer
-/// reports it (`None` until the node has an in-play row).
+/// The drop-off and docking nodes' composed positions as the production
+/// observation writer reports them (`None` until the node has an in-play row).
 #[derive(Resource, Default)]
-pub struct SuccessNodeRow(pub Option<[f64; 3]>);
+pub struct SuccessNodeRow {
+    /// `do_approach1`.
+    pub landing: Option<[f64; 3]>,
+    /// `pz_manual_land`.
+    pub dock: Option<[f64; 3]>,
+}
 
 /// Reads the drop-off node through the production observation writer — the
 /// same seam the convoy stage uses, because the host consumes the port inside
@@ -267,13 +377,18 @@ pub fn sample_success_node(world: &mut World) {
     let Some(written) = written else {
         return;
     };
-    let row = written
-        .observation
-        .members()
-        .get(&member_chain([LANDING_NODE]))
-        .filter(|row| row.in_play)
-        .map(|row| row.position);
-    world.insert_resource(SuccessNodeRow(row));
+    let row = |name: &str| {
+        written
+            .observation
+            .members()
+            .get(&member_chain([name]))
+            .filter(|row| row.in_play)
+            .map(|row| row.position)
+    };
+    world.insert_resource(SuccessNodeRow {
+        landing: row(LANDING_NODE),
+        dock: row(DOCK_NODE),
+    });
 }
 
 /// The stage's read-only world queries.
@@ -299,21 +414,21 @@ pub struct SuccessWorld<'w, 's> {
 
 /// What the host's landing path says: the drop-off nodes armed so far, and
 /// the landings and refusals on its ledger.
-fn landing_diagnostic(host: &MissionHost) -> String {
+fn landing_diagnostic(host: &MissionHost, prefix: &str) -> String {
     let armed: Vec<&str> = host
         .armed_nodes()
         .iter()
         .flat_map(|armed| armed.nodes().iter().map(String::as_str))
-        .filter(|node| node.starts_with("do_approach"))
+        .filter(|node| node.starts_with(prefix))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
     let ledger = host.landings();
     format!(
-        "armed drop-off nodes {armed:?}; player refusals {:?}; landings {:?}; refusals {:?}",
+        "armed {prefix}* nodes {armed:?}; player refusals {:?}; landings {:?}; refusals {:?}",
         host.animation()
             .refused()
-            .filter(|record| record.identity().starts_with("do_approach"))
+            .filter(|record| record.identity().starts_with(prefix))
             .take(1)
             .map(|record| format!("{}: {:?}", record.identity(), record.refusals()))
             .collect::<Vec<_>>(),
@@ -406,11 +521,36 @@ pub fn smoke_success(
     if metrics.beat == Beat::Landing
         && let Some(host) = world.host.as_deref()
     {
-        metrics.landing_diag = landing_diagnostic(host);
+        metrics.landing_diag = landing_diagnostic(host, "do_approach");
     }
     if metrics.beat == Beat::Landing && metrics.landing_at.is_none() {
-        metrics.landing_at = world.node.as_deref().and_then(|row| row.0);
+        metrics.landing_at = world.node.as_deref().and_then(|row| row.landing);
     }
+    if metrics.beat == Beat::Dock {
+        if let Some(host) = world.host.as_deref() {
+            metrics.dock_diag = landing_diagnostic(host, "pz_");
+        }
+        // The zeppelin moves: the pass follows the node's latest position.
+        if let Some(now) = world.node.as_deref().and_then(|row| row.dock) {
+            metrics.dock_at = Some(now);
+        }
+    }
+    let tank = world
+        .grounds
+        .iter()
+        .find(|ground| ground.node == TANK)
+        .map(|ground| Vec3::from_array(ground.position_m.map(|v| v as f32)));
+    let terminal = world
+        .host
+        .as_deref()
+        .and_then(|host| host.terminal())
+        .map(|terminal| SuccessTerminal {
+            outcome: terminal.outcome.label().to_owned(),
+            source: terminal.source.label().to_owned(),
+            requested_by: terminal.requested_by.map(|symbol| symbol.0),
+            tick: terminal.tick.0,
+            frame,
+        });
     if metrics.beat == Beat::Kestrels
         && metrics.kestrel_actors.is_empty()
         && let Some(report) = world.spawned.as_deref()
@@ -465,6 +605,8 @@ pub fn smoke_success(
         &Inputs {
             destroyed_now: &destroyed_now,
             standing: &standing,
+            tank,
+            terminal: terminal.as_ref(),
         },
     );
     if let Some(mut actions) = actions {
@@ -501,11 +643,15 @@ pub fn smoke_success(
             "success_marked",
             "success_landed",
             "success_kestrels",
+            "success_hydrogen",
+            "success_settled",
         ];
         let asked = [
             metrics.marked_shot_frame,
             metrics.landed_shot_frame,
             metrics.kestrels_shot_frame,
+            metrics.hydrogen_shot_frame,
+            metrics.settled_shot_frame,
         ]
         .into_iter()
         .flatten()
@@ -516,6 +662,8 @@ pub fn smoke_success(
         let required = |label: &str| match label {
             "success_landed" => metrics.landed_shot_frame.is_some(),
             "success_kestrels" => metrics.kestrels_shot_frame.is_some(),
+            "success_hydrogen" => metrics.hydrogen_shot_frame.is_some(),
+            "success_settled" => metrics.settled_shot_frame.is_some(),
             _ => true,
         };
         let missing = wanted
@@ -535,6 +683,8 @@ pub fn smoke_success(
             metrics.marked_permille = permille(find("success_marked"));
             metrics.landed_permille = permille(find("success_landed"));
             metrics.kestrels_permille = permille(find("success_kestrels"));
+            metrics.hydrogen_permille = permille(find("success_hydrogen"));
+            metrics.settled_permille = permille(find("success_settled"));
         }
     }
     data.measurements.success = Some(metrics);
@@ -558,6 +708,10 @@ struct Inputs<'a> {
     destroyed_now: &'a [String],
     /// Kestrels with a live body, in [`KESTRELS`] order.
     standing: &'a [Standing],
+    /// The hydrogen tank's ground-target position.
+    tank: Option<Vec3>,
+    /// The terminal the host has settled, if any.
+    terminal: Option<&'a SuccessTerminal>,
 }
 
 /// The mark: a stand-off from the site, nose on it.
@@ -576,16 +730,35 @@ fn mark(centre: [f32; 3]) -> Placement {
 /// The landing pass: level flight at [`LANDING_SPEED_M_S`] toward the node
 /// from [`LANDING_OFFSET_M`] away, so the player is inside the landing radius.
 fn landing_pass(node: [f64; 3]) -> Placement {
+    pass(node, LANDING_NODE)
+}
+
+/// A level pass at [`LANDING_SPEED_M_S`] through `name` at `node`.
+fn pass(node: [f64; 3], name: &str) -> Placement {
     let side = Vec3::new(FROM_SIDE[0], 0.0, FROM_SIDE[2]).normalize();
     let offset = side * LANDING_OFFSET_M;
     let target = Vec3::new(node[0] as f32, node[1] as f32, node[2] as f32);
     Placement {
-        name: format!("{LANDING_NODE} landing pass (test placement)"),
+        name: format!("{name} pass (test placement)"),
         position_m: (target + offset).to_array(),
         yaw: yaw_toward(-offset),
         pitch: 0.0,
         speed_m_s: LANDING_SPEED_M_S,
         distance_m: f64::from(LANDING_OFFSET_M),
+    }
+}
+
+/// The tank mark: [`TANK_STANDOFF_M`] abeam the tank (south of it, level),
+/// nose on it.
+fn abeam(tank: Vec3) -> Placement {
+    let offset = Vec3::Z * TANK_STANDOFF_M;
+    Placement {
+        name: format!("{TANK} mark (test placement)"),
+        position_m: (tank + offset).to_array(),
+        yaw: yaw_toward(-offset),
+        pitch: 0.0,
+        speed_m_s: 0.0,
+        distance_m: f64::from(TANK_STANDOFF_M),
     }
 }
 
@@ -724,7 +897,89 @@ fn step(
                 step.shots.push("success_kestrels");
                 metrics.kestrels_shot_frame = Some(frame);
             }
-            step.finished = metrics.kestrels_shot_frame.is_some();
+            if metrics.kestrels_shot_frame.is_some() {
+                metrics.beat = Beat::Tank;
+                metrics.tank_start = Some(frame);
+            }
+        }
+        Beat::Tank => {
+            let at = frame - metrics.tank_start.unwrap_or(frame);
+            let Some(tank) = inputs.tank else {
+                if at >= FIND_BUDGET_FRAMES {
+                    metrics.tank_never_found = true;
+                    step.finished = true;
+                }
+                return step;
+            };
+            metrics.tank_at = Some(tank.to_array());
+            let burning = metrics.completed_at(HYDROGEN_BLOCK);
+            if at.is_multiple_of(TANK_PLACE_EVERY_FRAMES) {
+                pending.0 = Some(abeam(tank));
+                metrics.tank_placements += 1;
+            }
+            if burning.is_none() {
+                if at > TANK_BUDGET_FRAMES {
+                    metrics.tank_gave_up = true;
+                    step.finished = true;
+                } else if at >= TANK_FIRE_AFTER_FRAMES {
+                    actions
+                        .actions
+                        .push(Action::Flight(FlightCommand::FirePrimary));
+                    metrics.tank_fire_presses += 1;
+                }
+                return step;
+            }
+            if let Some(burning) = burning
+                && metrics.hydrogen_shot_frame.is_none()
+                && frame >= burning + HYDROGEN_SHOT_OFFSET
+            {
+                step.shots.push("success_hydrogen");
+                metrics.hydrogen_shot_frame = Some(frame);
+                metrics.beat = Beat::Dock;
+                metrics.dock_start = Some(frame);
+            }
+        }
+        Beat::Dock => {
+            let at = frame - metrics.dock_start.unwrap_or(frame);
+            if metrics.has_completed(DOCK_BLOCK) {
+                metrics.beat = Beat::Settle;
+                metrics.settle_start = Some(frame);
+                return step;
+            }
+            let Some(node) = metrics.dock_at else {
+                if at >= DOCK_FIND_BUDGET_FRAMES {
+                    metrics.dock_node_never_found = true;
+                    step.finished = true;
+                }
+                return step;
+            };
+            if at.is_multiple_of(PLACE_EVERY_FRAMES) {
+                pending.0 = Some(pass(node, DOCK_NODE));
+                metrics.dock_placements += 1;
+            }
+            if at >= DOCK_FIND_BUDGET_FRAMES + DOCK_BUDGET_FRAMES {
+                metrics.dock_gave_up = true;
+                step.finished = true;
+            }
+        }
+        Beat::Settle => {
+            let at = frame - metrics.settle_start.unwrap_or(frame);
+            if metrics.terminal.is_none() {
+                metrics.terminal = inputs.terminal.cloned();
+            }
+            let Some(terminal) = &metrics.terminal else {
+                if at >= TERMINAL_BUDGET_FRAMES {
+                    metrics.terminal_never = true;
+                    step.finished = true;
+                }
+                return step;
+            };
+            if metrics.settled_shot_frame.is_none() && frame >= terminal.frame + SETTLED_SHOT_OFFSET
+            {
+                step.shots.push("success_settled");
+                metrics.settled_shot_frame = Some(frame);
+            }
+            step.finished = metrics.settled_shot_frame.is_some();
         }
     }
     step
@@ -813,6 +1068,64 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             ),
         },
         Check {
+            id: "success_hydrogen_fire_block_completed".to_owned(),
+            applies: true,
+            passed: c.has_completed(HYDROGEN_BLOCK) && c.tank_fire_presses > 0 && !c.tank_gave_up,
+            detail: format!(
+                "{} guns-key press(es) were queued from {TANK_STANDOFF_M} m abeam {TANK} at {:?} \
+                 ({} test placements) and the host reported block {HYDROGEN_BLOCK} \
+                 (hydrogen_fire RUNNING) completed at {:?}; tank never found: {}; gave up: {}",
+                c.tank_fire_presses,
+                c.tank_at,
+                c.tank_placements,
+                at(HYDROGEN_BLOCK),
+                c.tank_never_found,
+                c.tank_gave_up
+            ),
+        },
+        Check {
+            id: "success_group_clear_block_completed".to_owned(),
+            applies: true,
+            passed: c.has_completed(GROUP_CLEAR_BLOCK),
+            detail: format!(
+                "the host reported block {GROUP_CLEAR_BLOCK} (group 1 down, block 26 awake) \
+                 completed at {:?}",
+                at(GROUP_CLEAR_BLOCK)
+            ),
+        },
+        Check {
+            id: "success_dock_block_completed".to_owned(),
+            applies: true,
+            passed: c.has_completed(DOCK_BLOCK) && c.dock_placements > 0 && !c.dock_gave_up,
+            detail: format!(
+                "the player flew {} level pass(es) at {LANDING_SPEED_M_S} m/s through {DOCK_NODE} \
+                 at {:?} (test placements) and the host reported block {DOCK_BLOCK} \
+                 (hooked_to_klondike EXECUTED) completed at {:?}; node never found: {}; gave up: \
+                 {}; host: {}",
+                c.dock_placements,
+                c.dock_at,
+                at(DOCK_BLOCK),
+                c.dock_node_never_found,
+                c.dock_gave_up,
+                c.dock_diag
+            ),
+        },
+        Check {
+            id: "success_terminal_is_control_program_success".to_owned(),
+            applies: true,
+            passed: c.terminal.as_ref().is_some_and(|terminal| {
+                terminal.outcome == "success"
+                    && terminal.source == "control_program"
+                    && terminal.requested_by == Some(WIN_BLOCK)
+            }),
+            detail: format!(
+                "the mission host settled {:?} (expected outcome success, source control_program, \
+                 requested by block {WIN_BLOCK}, OBJECTIVE15's INSTANTWIN); the smoke wrote no \
+                 terminal; terminal never came: {}",
+                c.terminal, c.terminal_never
+            ),
+        },
+        Check {
             id: "success_frames_drawn".to_owned(),
             applies: true,
             passed: c.frames_delivered
@@ -821,6 +1134,8 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                     c.marked_permille,
                     c.landed_permille,
                     c.kestrels_permille,
+                    c.hydrogen_permille,
+                    c.settled_permille,
                 ]
                 .iter()
                 .all(|permille| *permille >= MIN_DRAWN_PERMILLE),
@@ -881,6 +1196,28 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
         .gave_up_on
         .as_deref()
         .map_or_else(|| "null".to_owned(), json_string);
+    let tank_at = c.tank_at.map_or_else(
+        || "null".to_owned(),
+        |p| format!("[{},{},{}]", p[0], p[1], p[2]),
+    );
+    let dock_at = c.dock_at.map_or_else(
+        || "null".to_owned(),
+        |p| format!("[{},{},{}]", p[0], p[1], p[2]),
+    );
+    let terminal = c.terminal.as_ref().map_or_else(
+        || "null".to_owned(),
+        |t| {
+            format!(
+                "{{\"outcome\":{},\"source\":{},\"requested_by_block\":{},\"tick\":{},\"frame\":{}}}",
+                json_string(&t.outcome),
+                json_string(&t.source),
+                t.requested_by
+                    .map_or_else(|| "null".to_owned(), |b| b.to_string()),
+                t.tick,
+                t.frame
+            )
+        },
+    );
     format!(
         "{{\"start_frame\":{},\"anchor\":{},\"site_never_found\":{},\"centre_m\":{centre},\
          \"standoff_m\":{STANDOFF_M},\"placements\":{},\"completed\":[{completed}],\
@@ -889,7 +1226,12 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
          \"landing_node_never_found\":{},\"landing_diag\":{},\"kestrels\":{},\"fire_presses\":{},\
          \"kestrel_placements\":{},\"kestrels_destroyed\":[{destroyed}],\
          \"kestrels_never_woken\":{},\"gave_up_on\":{gave_up},\"landed_permille\":{},\
-         \"kestrels_permille\":{}}}",
+         \"kestrels_permille\":{},\"tank\":{},\"tank_at_m\":{tank_at},\"tank_placements\":{},\
+         \"tank_fire_presses\":{},\"tank_never_found\":{},\"tank_gave_up\":{},\
+         \"hydrogen_permille\":{},\"dock_node\":{},\"dock_at_m\":{dock_at},\
+         \"dock_placements\":{},\"dock_node_never_found\":{},\"dock_gave_up\":{},\
+         \"dock_diag\":{},\"terminal\":{terminal},\"terminal_never\":{},\
+         \"settled_permille\":{}}}",
         option_u32(c.start_frame),
         json_string(ANCHOR),
         c.site_never_found,
@@ -907,5 +1249,18 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
         c.kestrels_never_woken,
         c.landed_permille,
         c.kestrels_permille,
+        json_string(TANK),
+        c.tank_placements,
+        c.tank_fire_presses,
+        c.tank_never_found,
+        c.tank_gave_up,
+        c.hydrogen_permille,
+        json_string(DOCK_NODE),
+        c.dock_placements,
+        c.dock_node_never_found,
+        c.dock_gave_up,
+        json_string(&c.dock_diag),
+        c.terminal_never,
+        c.settled_permille,
     )
 }

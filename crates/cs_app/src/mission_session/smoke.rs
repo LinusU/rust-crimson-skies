@@ -158,7 +158,7 @@ pub use camera_modes::{
 pub use convoy_kill::{ConvoyKillMetrics, ConvoyLayoutRow};
 pub use crash::CrashMetrics;
 pub use start_flow::StartFlowMetrics;
-pub use success::SuccessMetrics;
+pub use success::{SuccessMetrics, SuccessTerminal};
 pub use trucks::TrucksMetrics;
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
