@@ -402,10 +402,16 @@ fn accept_m01_lc_lowering_adapter_the_census_reports_complete_rows_and_keeps_the
         })
         .map(|row| row.mission())
         .collect();
+    // Since #2135 every key the corpus spells is either measured or measured
+    // as ignored by the original, so no row holds on an uncovered key; the
+    // gate is held closed by the rows that fail on other requirements.
     assert!(
-        !unmeasured_rows.is_empty(),
-        "the corpus spells at least one key no finding covers, so the gate has \
-         something to hold closed"
+        unmeasured_rows.is_empty(),
+        "no mission spells a key no finding covers: {unmeasured_rows:?}"
+    );
+    assert!(
+        census.measured_rows().any(|row| !row.is_complete()),
+        "the gate still has an incomplete row to hold it closed"
     );
     for mission in &unmeasured_rows {
         assert!(
@@ -686,13 +692,14 @@ fn accept_m01_lc_lowering_adapter_a_nested_argument_stays_nested_through_the_bou
 /// is never complete — no convenient operation is invented for it.
 #[test]
 fn accept_m01_lc_lowering_adapter_an_unmeasured_key_refuses_its_sites_by_name() {
-    // `SET_AI_` is spelled corpus-wide with a handler nobody located — the
-    // corpus's live `MeaningNotMeasured` refusal.
+    // `UNRECORDED_DIRECTIVE` stands for a key no finding records. The corpus
+    // spells none since #2135 (`SET_AI_` is measured as ignored), so the
+    // refusal is exercised synthetically.
     let document = control_record(vec![block(
         1,
         vec![
             directive("WAKE_ANIM", vec![zrd_text("x")]),
-            directive("SET_AI_", vec![zrd_text("trouble")]),
+            directive("UNRECORDED_DIRECTIVE", vec![zrd_text("trouble")]),
             directive("INSTANTWIN", Vec::new()),
         ],
     )]);
@@ -710,7 +717,7 @@ fn accept_m01_lc_lowering_adapter_an_unmeasured_key_refuses_its_sites_by_name() 
         panic!("the unmeasured key's site refuses: {:?}", attempt.calls);
     };
     assert!(
-        reason.contains("SET_AI_"),
+        reason.contains("UNRECORDED_DIRECTIVE"),
         "the refusal names the unmeasured key: {reason}"
     );
     assert!(
@@ -730,7 +737,8 @@ fn accept_m01_lc_lowering_adapter_an_unmeasured_key_refuses_its_sites_by_name() 
         calls
             .unmeasured_fields
             .iter()
-            .any(|field| field.contains("SET_AI_") && field.contains("meaning_not_measured")),
+            .any(|field| field.contains("UNRECORDED_DIRECTIVE")
+                && field.contains("meaning_not_measured")),
         "the calls row names the unmeasured key and its reason: {:?}",
         calls.unmeasured_fields
     );

@@ -1445,7 +1445,7 @@ fn accept_m01_lc_every_mission_is_measured_and_the_gate_reports_who_lowers() {
         census
             .unmeasured_fields()
             .iter()
-            .any(|field| field.contains("IDENTITY")),
+            .any(|field| field.contains("WAKEUP_SOUND_GROUP")),
         "the corpus still names the measured key's residual unknowns wherever a \
          row they ride on stays unmet"
     );

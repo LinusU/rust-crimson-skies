@@ -57,29 +57,24 @@ fn accept_m14_b_fu1_block_25_lowers_and_the_m14_row_is_complete() {
     );
 }
 
-/// The other incomplete row holds on a different cause: a host call whose
-/// name the reader truncated, not a TRAVELERS radius. (`zbd/c4/m01` held on an
-/// unquoted phrase until #2134, which the original ignores.)
+/// The other row that held at the census (`zbd/c5/m04`, a truncated
+/// `SET_AI_` key) has a different cause from the int radius, and the original
+/// ignores that key (#2135): it is complete now, with one dropped site.
+/// (`zbd/c4/m01` held on an unquoted phrase until #2134.)
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m14_b_fu1_other_incomplete_rows_do_not_fail_on_the_int_radius() {
+fn accept_m14_b_fu1_other_formerly_incomplete_rows_were_not_the_int_radius() {
     let census = census();
-    let (mission, refused_call) = ("zbd/c5/m04", "unknown host call `SET_AI_`");
+    let mission = "zbd/c5/m04";
     let row = census.row(mission).expect("a census row");
-    assert!(!row.is_complete(), "{mission}");
     let lowered = row.lowering_attempt().expect("measured").attempt();
     assert!(
         lowered
             .conditions
             .iter()
             .all(|c| *c == ConditionOutcome::Lowered),
-        "{mission}: every condition lowers, so the radius is not the cause"
+        "{mission}: every condition lowers"
     );
-    assert!(
-        lowered
-            .calls
-            .iter()
-            .any(|c| matches!(c, CallOutcome::Refused(why) if why.contains(refused_call))),
-        "{mission}: the refused call is {refused_call}"
-    );
+    assert_eq!(lowered.ignored_sites, 1, "{mission}: the truncated key");
+    assert!(row.is_complete(), "{mission}");
 }

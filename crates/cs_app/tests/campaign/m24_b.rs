@@ -50,14 +50,14 @@
 //!   (OBJECTIVE39) by two naps, 15 seconds from OBJECTIVE38 and 20 from
 //!   OBJECTIVE62. Nothing addresses OBJECTIVE1, and M24 is the campaign's
 //!   last row, so no successor mission follows the win.
-//! * **The record does not lower, by one named gap.**
+//! * **The record lowers once its one truncated key is ignored (#2135).**
 //!   `STOP_QUEUED_SOUNDS` is spelled six times with 1, 9, 7, 8, 7 and 8
 //!   names; its name list is one list argument (M16-B-FU1), so all six
-//!   sites bind. `SET_AI_`, the
-//!   single site of block 19's five-pair list, is a truncated spelling no
-//!   finding covers; the engine-image test shows it absent from the
-//!   directive-key table the original parser looks names up in, exactly
-//!   where M16-B found its four comment words.
+//!   sites bind. `SET_AI_`, the single site of block 19's five-pair list, is
+//!   a truncated spelling; the engine-image test shows it absent from the
+//!   directive-key table the original parser looks names up in, and the
+//!   lookup compares whole strings, so the original never visits it (the
+//!   same reading as the four comment words M16-B found).
 //!
 //! Nothing here is `verified_original` (AGENTS.md rule 8): the work-order ↔
 //! mission join remains M24-A's inference, directive *effects* are the
@@ -130,8 +130,8 @@ const BLOCKS: u32 = 63;
 const SITES: u32 = 267;
 /// The distinct directive keys of the control member.
 const KEYS: usize = 40;
-/// The one `SET_AI_` site that refuses.
-const REFUSED: usize = 1;
+/// The one `SET_AI_` site the original never looks up.
+const IGNORED: u32 = 1;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -1852,17 +1852,17 @@ fn accept_m24_b_the_campaign_ending_is_one_win_and_one_loss_latch_with_measured_
 // Retail: the record does not lower, by two named gaps
 // ---------------------------------------------------------------------------
 
-/// **M24's record does not lower, and the refusal is exactly one named
-/// call.** All 63 conditions lower and 266 of 267 calls bind: the six
-/// `STOP_QUEUED_SOUNDS` sites — 1, 9, 7, 8, 7 and 8 names — carry their
-/// spelled list as one `Value::List` argument, so the 9-name shape no longer
-/// exceeds `MAX_CALL_ARGS`. The truncated `SET_AI_` refuses `unknown host
-/// call`, because an unmeasured key registers nothing by design. No program
-/// is assembled, `validation` never runs and the only unmet row is
-/// `call_arguments`; the mission is not complete.
+/// **M24's record lowers: the truncated `SET_AI_` site is dropped as the
+/// original drops it, and the other 266 calls bind.** All 63 conditions
+/// lower and 266 calls bind: the six `STOP_QUEUED_SOUNDS` sites — 1, 9, 7, 8,
+/// 7 and 8 names — carry their spelled list as one `Value::List` argument.
+/// `SET_AI_` equals none of the parser's three `SET_AI_*` keys under its
+/// whole-string lookup (`docs/findings/2026-10-25-c5-m04-fu-truncated-set-ai.md`,
+/// #2135), so its site is counted as ignored and registers nothing. The
+/// program assembles, validates, and the row is complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m24_b_m24s_record_does_not_lower_and_its_truncated_key_refuses() {
+fn accept_m24_b_m24s_record_lowers_and_its_truncated_key_is_ignored() {
     let row = census_row();
     let lowered = row
         .lowering_attempt()
@@ -1887,69 +1887,36 @@ fn accept_m24_b_m24s_record_does_not_lower_and_its_truncated_key_refuses() {
         "a condition refused: {:?}",
         attempt.conditions
     );
-    assert_eq!(attempt.calls.len(), SITES as usize, "one call per site");
-
-    // The refused calls, pinned by their flat site index — the record order
-    // the lowering walks: six sound-cleanup sites and the one truncated key.
-    let refused: Vec<(usize, &str)> = attempt
-        .calls
-        .iter()
-        .enumerate()
-        .filter_map(|(index, call)| match call {
-            CallOutcome::Bound => None,
-            CallOutcome::Refused(text) => Some((index, text.as_str())),
-        })
-        .collect();
     assert_eq!(
-        refused.len(),
-        REFUSED,
-        "exactly {REFUSED} of M24's {SITES} calls refuse: {refused:?}"
+        attempt.ignored_sites, IGNORED,
+        "the truncated SET_AI_ site is dropped"
     );
-    for (index, _) in &refused {
-        assert!(
-            refused_sites().contains(index),
-            "site {index} refused but is not the truncated key: {refused:?}"
-        );
-    }
-    for (index, text) in &refused {
-        let key = "SET_AI_";
-        assert!(
-            text.contains(&format!(
-                "mission/ch5-m04 objective#{} call {}: unknown host call `{key}`",
-                refused_block(*index) - 1,
-                refused_within_block(*index)
-            )),
-            "{text}"
-        );
-    }
+    assert_eq!(
+        attempt.calls.len(),
+        SITES as usize - IGNORED as usize,
+        "one call per site that is not ignored"
+    );
+    assert!(
+        attempt
+            .calls
+            .iter()
+            .all(|call| matches!(call, CallOutcome::Bound)),
+        "a call refused: {:?}",
+        attempt.calls
+    );
     assert!(
         attempt.unbound_keys.is_empty(),
-        "the sound key registers and the truncated SET_AI_ was never \
-         registered, so no key names a binding error: {:?}",
+        "{:?}",
         attempt.unbound_keys
     );
     assert!(
-        lowered.program().is_none(),
-        "refused calls mean no program is assembled — validation never runs"
-    );
-    assert!(
-        attempt.validation.is_none(),
-        "no program, so no validation verdict"
+        lowered.program().is_some() && attempt.validation.is_some(),
+        "the program assembles and validates"
     );
 
     let lowering = row.lowering().expect("the accounting is derived");
-    let unmet: Vec<String> = lowering
-        .unmet()
-        .map(|row| row.kind.code().to_owned())
-        .collect();
-    assert_eq!(
-        unmet,
-        ["call_arguments"],
-        "the one unmet row is the call binding — the conditions all lowered"
-    );
-    assert!(!row.is_complete());
-    assert!(!lowering.complete());
-    assert!(!row.is_complete());
+    assert_eq!(lowering.unmet().count(), 0, "no requirement is unmet");
+    assert!(row.is_complete() && lowering.complete());
 
     // The sound-cleanup name counts the list argument carries.
     let (document, _) = control_document();
@@ -1972,66 +1939,19 @@ fn accept_m24_b_m24s_record_does_not_lower_and_its_truncated_key_refuses() {
     );
 }
 
-/// The flat site index of the one refused call, as the record order spells
-/// it: the truncated key.
-fn refused_sites() -> Vec<usize> {
-    vec![109]
-}
-
-/// The numbered block a flat site index sits in, from the record's own
-/// site accounting.
-fn refused_block(flat: usize) -> u32 {
-    refused_locations()
-        .into_iter()
-        .find(|(index, _, _)| *index == flat)
-        .unwrap_or_else(|| panic!("site {flat} is one of the refused sites"))
-        .1
-}
-
-/// A refused site's zero-based position inside its own block.
-fn refused_within_block(flat: usize) -> u32 {
-    refused_locations()
-        .into_iter()
-        .find(|(index, _, _)| *index == flat)
-        .unwrap_or_else(|| panic!("site {flat} is one of the refused sites"))
-        .2
-}
-
-/// `(flat index, block number, position in block)` of every refused site,
-/// re-derived from the independent document walk so the pinned flat indices
-/// above cannot drift from the record they describe.
-fn refused_locations() -> Vec<(usize, u32, u32)> {
-    let (document, _) = control_document();
-    let blocks = blocks_of(&document);
-    let mut flat = 0;
-    let mut found = Vec::new();
-    for block in &blocks {
-        for (position, (key, _)) in block.sites.iter().enumerate() {
-            if key == "SET_AI_" {
-                found.push((flat, number_of(block), position as u32));
-            }
-            flat += 1;
-        }
-    }
-    found
-}
-
-/// **M24 is not campaign-ready and the census does not hide it.**
+/// **M24's row is complete, and the census still holds the gate closed.**
+/// The truncated key no longer blocks `call_arguments` (#2135); the gate
+/// stays shut on the rows that fail for other causes.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m24_b_m24_stays_unready_while_its_truncated_key_refuses() {
+fn accept_m24_b_m24_is_complete_while_the_gate_stays_closed_on_other_rows() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
+    assert!(census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
     let unmet = census.unmet_by_requirement();
-    assert!(
-        unmet
-            .get("call_arguments")
-            .is_some_and(|missions| missions.iter().any(|mission| mission == MISSION)),
-        "the census reports M24 under call_arguments: {unmet:?}"
-    );
     for requirement in [
+        "call_arguments",
         "objective_condition",
         "mission_identity",
         "objective_identity",
@@ -2040,13 +1960,11 @@ fn accept_m24_b_m24_stays_unready_while_its_truncated_key_refuses() {
             !unmet
                 .get(requirement)
                 .is_some_and(|missions| missions.iter().any(|mission| mission == MISSION)),
-            "M24 must not appear under {requirement}: its conditions all lower \
-             and its identity resolves — {unmet:?}"
+            "M24 must not appear under {requirement}: {unmet:?}"
         );
     }
-    // The campaign's last row being incomplete is exactly why the gate
-    // cannot open: M24-A left every other cell unknown, and this stage adds
-    // one measured gap beside them.
+    // The mission binding is a separate gate: M24-A left its checklist
+    // entries unknown.
     let binding = context()
         .bind(m24(), &m24_title())
         .expect("M24's mission binding resolves");
@@ -2292,17 +2210,17 @@ fn accept_m24_b_the_nine_name_sound_site_binds_as_one_list_argument() {
     );
 }
 
-/// **The truncated `SET_AI_` site refuses like any unknown call, and the
-/// same pairs under the measured `SET_AI_NET` key bind — beside a
+/// **The truncated `SET_AI_` site is ignored like the original ignores it,
+/// and the same pairs under the measured `SET_AI_NET` key bind — beside a
 /// two-latch, nap-armed program that validates clean.**
 ///
-/// OBJECTIVE19's site is a truncated spelling of a net assignment: the same
-/// `{actor, net}` pairs the record's five measured `SET_AI_NET` sites carry.
-/// This authors both shapes and pins the refusal arm (the truncated name
-/// registers nothing, the site refuses, no program assembles) and the
-/// binding arm (the measured key emits the pairs field for field).
+/// OBJECTIVE19's `SET_AI_` equals none of the parser's three `SET_AI_*` keys
+/// under its whole-string lookup, so the site has no effect; no net is
+/// assigned in its place. This authors both shapes and pins the ignore arm
+/// (one ignored site, nothing refused) and the binding arm (the measured key
+/// emits the pairs field for field).
 #[test]
-fn accept_m24_b_the_truncated_set_ai_site_refuses_but_the_measured_net_site_binds() {
+fn accept_m24_b_the_truncated_set_ai_site_is_ignored_but_the_measured_net_site_binds() {
     let pairs = |key: &str| {
         control_record(vec![block(
             19,
@@ -2319,41 +2237,43 @@ fn accept_m24_b_the_truncated_set_ai_site_refuses_but_the_measured_net_site_bind
         )])
     };
 
-    // The retail shape: the truncated key refuses as an unknown call.
+    // The retail shape: the truncated key is dropped.
     let document = pairs("SET_AI_");
     let record = measure_control_record(&document);
     assert_eq!(
         record
             .unmeasured()
             .into_iter()
-            .map(|(key, _)| key.key.as_str())
+            .map(|(key, disposition)| (key.key.as_str(), disposition.refusal().map(|r| r.code())))
             .collect::<Vec<_>>(),
-        ["SET_AI_"],
-        "the truncated spelling is the record's only unmeasured key"
+        [("SET_AI_", Some("ignored_by_original"))],
+        "the truncated spelling is measured as ignored by the original"
     );
     let lowered = lower(&document);
     let attempt = lowered.attempt();
-    let refused: Vec<&str> = attempt
-        .calls
-        .iter()
-        .filter_map(|call| match call {
-            CallOutcome::Bound => None,
-            CallOutcome::Refused(text) => Some(text.as_str()),
-        })
-        .collect();
-    assert_eq!(refused.len(), 1, "the truncated site refuses: {refused:?}");
+    assert_eq!(attempt.ignored_sites, 1, "the truncated site is dropped");
+    assert_eq!(attempt.calls.len(), 1, "only BEGIN_DORMANT remains");
     assert!(
-        refused[0].contains("unknown host call `SET_AI_`"),
-        "{}",
-        refused[0]
+        attempt
+            .calls
+            .iter()
+            .all(|call| matches!(call, CallOutcome::Bound)),
+        "{:?}",
+        attempt.calls
     );
     assert!(
         attempt.unbound_keys.is_empty(),
-        "an unmeasured key registers nothing, so it names no binding error: \
-         {:?}",
+        "{:?}",
         attempt.unbound_keys
     );
-    assert!(lowered.program().is_none(), "no program assembles");
+    let raw = lowered.raw_program().expect("the program assembles");
+    assert!(
+        raw.objectives[0]
+            .calls
+            .iter()
+            .all(|call| call.name != "SET_AI_NET"),
+        "no net assignment is invented for the truncated key"
+    );
 
     // The measured key: the same pairs bind and arrive as spelled.
     let document = pairs("SET_AI_NET");

@@ -2111,7 +2111,7 @@ mod tests {
             zrd_text("INSTANTWIN"),
             zrd_text("WAKE_ANIM"),
             zrd_list(&[zrd_text("runwayanim")]),
-            zrd_text("SET_AI_"),
+            zrd_text("NO_SUCH_DIRECTIVE"),
             zrd_list(&[zrd_text("x")]),
         ]);
         zrd_list(&[zrd_list(&[zrd_text("OBJECTIVE1"), block])])
@@ -2157,7 +2157,7 @@ mod tests {
             "{report}"
         );
         assert!(
-            report.contains("{\"key\": \"SET_AI_\", \"status\": \"unknown\""),
+            report.contains("{\"key\": \"NO_SUCH_DIRECTIVE\", \"status\": \"unknown\""),
             "{report}"
         );
         assert!(report.contains("\"reason\": \"meaning_not_measured\""));

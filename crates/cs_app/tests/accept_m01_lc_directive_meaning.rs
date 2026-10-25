@@ -350,8 +350,8 @@ fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cite
 ///
 /// The negative case, synthetic so CI runs it without the installation: one
 /// record spells a measured key, a terminal key and a key whose effect
-/// nothing measured (`SET_AI_`, spelled in the corpus whose handler was never
-/// located). The measured key must still cite a document the repository
+/// nothing measured (`UNRECORDED_DIRECTIVE`, a key no finding records; the
+/// corpus spells none since #2135). The measured key must still cite a document the repository
 /// holds, the uncovered key must keep its `meaning_not_measured` refusal, and
 /// the record must not report complete — so no shortcut can lift the gate
 /// that the mission_program / mission_objectives surfaces read.
@@ -362,7 +362,7 @@ fn accept_m01_lc_directive_meaning_a_key_no_finding_recorded_refuses_the_gate() 
         ("INSTANTWIN", None),
         ("WAKE_ANIM", Some(vec![text("runwayanim")])),
         ("SET_AI_NET", Some(vec![list(vec![text("a"), text("b")])])),
-        ("SET_AI_", Some(vec![text("x")])),
+        ("UNRECORDED_DIRECTIVE", Some(vec![text("x")])),
     ]);
     let record = measure_control_record(&document);
 
@@ -399,7 +399,7 @@ fn accept_m01_lc_directive_meaning_a_key_no_finding_recorded_refuses_the_gate() 
         .collect();
     assert_eq!(
         unmeasured,
-        [("SET_AI_", "meaning_not_measured")],
+        [("UNRECORDED_DIRECTIVE", "meaning_not_measured")],
         "exactly the one key no finding records, refused by its measured reason"
     );
 
@@ -427,7 +427,7 @@ fn accept_m01_lc_directive_meaning_a_key_no_finding_recorded_refuses_the_gate() 
         lowering
             .unmeasured_fields()
             .iter()
-            .any(|field| field.contains("SET_AI_")),
+            .any(|field| field.contains("UNRECORDED_DIRECTIVE")),
         "the unmet row names the key no finding covers"
     );
     assert!(
