@@ -724,6 +724,7 @@ fn accept_f27_c_fx_release_spawns_a_reload_leaves_no_stale_muzzle_effect() {
         origin: WorldPosition::try_new([0.0, 0.0, f64::from(MUZZLE_Z)])
             .expect("a finite muzzle position"),
         at: Tick(0),
+        forward: None,
     };
     let stale = spawn_muzzle_effect(&mut world, &effect, SceneGeneration(0));
     assert!(

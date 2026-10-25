@@ -432,7 +432,7 @@ pub fn spawn_muzzle_effect(
                 at: effect.at,
                 generation,
             },
-            muzzle_transform(effect.origin),
+            muzzle_transform(effect.origin, effect.forward),
         ))
         .id()
 }
@@ -463,9 +463,31 @@ pub fn release_muzzle_effects(world: &mut World) -> usize {
 /// the authoritative position stays f64 on the effect record, and every
 /// spawn's pose comes from it (the same rule
 /// [`crate::weapons::sync_round_mirrors`] states for round mirrors).
-fn muzzle_transform(position: WorldPosition) -> Transform {
+fn muzzle_transform(position: WorldPosition, forward: Option<[f64; 3]>) -> Transform {
     let [x, y, z] = position.to_array();
-    Transform::from_translation(bevy::prelude::Vec3::new(x as f32, y as f32, z as f32))
+    let transform =
+        Transform::from_translation(bevy::prelude::Vec3::new(x as f32, y as f32, z as f32));
+    match forward {
+        Some(forward) => transform.with_rotation(muzzle_burst_rotation(forward)),
+        None => transform,
+    }
+}
+
+/// The pose weapon fire gives an animation's root node
+/// (`docs/findings/2026-10-25-f27-c-fx-orig-muzzle-burst-pose.md`, items 2–3):
+/// `yaw = atan2(-dir.x, -dir.z)`, `pitch = asin(dir.y)`, roll 0, which puts the
+/// node's local **-Z** on the fire direction `dir`. A zero or non-finite
+/// direction keeps the identity (no pose is invented).
+fn muzzle_burst_rotation(forward: [f64; 3]) -> bevy::prelude::Quat {
+    let [x, y, z] = forward;
+    let length = (x * x + y * y + z * z).sqrt();
+    if !length.is_finite() || length <= f64::EPSILON {
+        return bevy::prelude::Quat::IDENTITY;
+    }
+    let (x, y, z) = (x / length, y / length, z / length);
+    let yaw = (-x).atan2(-z) as f32;
+    let pitch = y.clamp(-1.0, 1.0).asin() as f32;
+    bevy::prelude::Quat::from_euler(bevy::math::EulerRot::YXZ, yaw, pitch, 0.0)
 }
 
 // ------------------------------------------------------ the session schedule ----

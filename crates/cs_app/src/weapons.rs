@@ -1035,6 +1035,10 @@ pub struct WeaponEffect {
     pub origin: WorldPosition,
     /// The tick the shot was accepted on.
     pub at: Tick,
+    /// The firing mount's canonical forward direction at that tick, read from
+    /// the same live mount pose the shot was resolved from. `None` when the
+    /// effect was not built from a live pose (a hand-made effect).
+    pub forward: Option<[f64; 3]>,
 }
 
 impl WeaponEffect {
@@ -1054,7 +1058,16 @@ impl WeaponEffect {
             sound: shot.sound.clone(),
             origin: shot.projectile.origin,
             at,
+            forward: None,
         }
+    }
+
+    /// The effect with the mount's forward direction, as the live pose that
+    /// produced the shot read it.
+    #[must_use]
+    pub const fn with_forward(mut self, forward: [f64; 3]) -> Self {
+        self.forward = Some(forward);
+        self
     }
 }
 
@@ -1997,14 +2010,23 @@ pub fn step_weapon_session(
                                 reason: reason.clone(),
                             }));
                         for event in &resolution.accepted {
+                            let forward = mounts
+                                .transforms
+                                .get(&event.mount)
+                                .map(|mount| mount.forward.to_array());
+                            let with_forward = |effect: WeaponEffect| match forward {
+                                Some(forward) => effect.with_forward(forward),
+                                None => effect,
+                            };
                             match session.accept(event, step.at) {
-                                Ok(effect) => tick.effects.push(effect),
+                                Ok(effect) => tick.effects.push(with_forward(effect)),
                                 Err(refusal) => {
                                     // The shot happened and consumed its round,
                                     // so its effect is still the gun's declared
                                     // one — but a round nothing can admit is
                                     // reported instead of being swept blind.
-                                    tick.effects.push(WeaponEffect::of(event, step.at));
+                                    tick.effects
+                                        .push(with_forward(WeaponEffect::of(event, step.at)));
                                     tick.routing_refused.push(refusal);
                                 }
                             }
