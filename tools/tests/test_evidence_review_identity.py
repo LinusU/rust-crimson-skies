@@ -1310,6 +1310,73 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         self.assertLessEqual(task['implementer']['claim_started'], task['reviewer']['review_claim_started'])
         self.assertLessEqual(task['reviewer']['review_claim_started'], merge['at'])
 
+    # -- EVID-SNAPSHOT-BACKLOG (#580): the F09 stages whose facts were never recorded ---
+
+    BACKLOG_580 = {'F09-D': (40, 'deepseek-1'), 'F09-PAINTSHOP': (485, 'bunny-alpha-2')}
+
+    def test_accept_evid_snapshot_backlog_580_stages_are_no_longer_advisories(self):
+        """Each stage added under #580 is resolved, names both agents and is a self-review."""
+        problems, unrecorded = review_problems(self.snapshots, self.harnesses, self.reports)
+        for key, (number, agent) in self.BACKLOG_580.items():
+            with self.subTest(key):
+                self.assertNotIn(key, unrecorded, f'{key} is still an advisory')
+                recorded = self.non_campaign_by_key()[key]
+                self.assertEqual(recorded['rally_task'], number)
+                self.assertEqual(recorded['evidence_report'], f'docs/findings/evidence/{key}.json')
+                identity = self.reports[key]['review']['identity']
+                for role in ('implementer', 'reviewer'):
+                    self.assertEqual(recorded[role]['actor'], agent, role)
+                    self.assertEqual(recorded[role]['rally_actor'], f'{agent}/{agent}', role)
+                    self.assertIn(recorded[role]['actor'], identity, role)
+                self.assertIn('not independent', identity.lower())
+                reviewer = recorded['reviewer']
+                self.assertEqual(reviewer['merge_event']['type'], 'task.merged')
+                self.assertEqual(reviewer['merge_event']['actor'], reviewer['rally_actor'])
+                # `report_written_by` is checked against the report's own `created_at`.
+                created = self.reports[key]['created_at']
+                self.assertLessEqual(reviewer['review_claim_started'], created)
+                self.assertLessEqual(created, reviewer['merge_event']['at'])
+                self.assertEqual(recorded['report_written_by'], 'reviewer')
+                self.assertIs(recorded['report_regenerated_on_reviewed_commit'], True)
+        self.assertEqual([problem for problem in problems
+                          if any(key in problem for key in self.BACKLOG_580)], [])
+
+    def test_accept_evid_snapshot_backlog_580_detects_drift(self):
+        """Dropping an entry, its reviewer, its independence claim or its context words must fail."""
+        for key in self.BACKLOG_580:
+            with self.subTest(key):
+                recorded = self.non_campaign_by_key()[key]
+                reviewer = recorded['reviewer']['actor']
+
+                problems, unrecorded = review_problems(drop_task(self.snapshots, key),
+                                                       self.harnesses, self.reports)
+                self.assertIn(key, unrecorded, 'removing the entry did not downgrade the stage')
+
+                nameless = with_task(self.non_campaign, key, 'reviewer',
+                                     {**recorded['reviewer'], 'actor': ''})
+                self.assertTrue(any('records no implementer or no reviewer' in problem for problem in
+                                    review_problems(nameless, self.harnesses, self.reports)[0]))
+
+                renamed = copy_reports(self.reports)
+                renamed[key]['review']['identity'] = renamed[key]['review']['identity'].replace(
+                    reviewer, 'agent-9')
+                self.assertTrue(any('does not name the reviewer' in problem for problem in
+                                    review_problems(self.snapshots, self.harnesses, renamed)[0]))
+
+                silent = copy_reports(self.reports)
+                silent[key]['review']['identity'] = re.sub(
+                    r'(?i)not independent', 'independent', silent[key]['review']['identity'])
+                self.assertTrue(any('does not say the review is not independent' in problem
+                                    for problem in
+                                    review_problems(self.snapshots, self.harnesses, silent)[0]))
+
+                quiet = copy_reports(self.reports)
+                quiet[key]['review']['identity'] = re.sub(
+                    r'(?i)context|fresh', 'that review', quiet[key]['review']['identity'])
+                self.assertTrue(any("whether the reviewer's context was fresh" in problem
+                                    for problem in
+                                    review_problems(self.snapshots, self.harnesses, quiet)[0]))
+
     # -- M16-A-FU6 (#523): harnesses whose identity or task id is filled in at run time ---
 
     def test_accept_m16_a_fu6_a_json_encoder_reads_as_a_jstr_encoder(self):
