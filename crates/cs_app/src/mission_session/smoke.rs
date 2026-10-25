@@ -3838,10 +3838,13 @@ fn smoke_rounds(
 /// player body's frame, so the burst is photographed from a few metres.
 fn smoke_muzzle_camera(
     data: Res<SmokeData>,
-    view: Res<super::view_cycle::MissionViewMode>,
-    mut held: ResMut<super::external_view::HeldPoint>,
+    view: Option<Res<super::view_cycle::MissionViewMode>>,
+    held: Option<ResMut<super::external_view::HeldPoint>>,
     bodies: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
 ) {
+    let (Some(view), Some(mut held)) = (view, held) else {
+        return;
+    };
     if data.phase != Phase::Guns || *view != super::view_cycle::MissionViewMode::HeldPoint {
         return;
     }
