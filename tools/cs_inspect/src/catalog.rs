@@ -56,8 +56,7 @@
 //! collection without one cannot be told from a family that was never read.
 //! Which collections exist and what each one's parser reads is recorded in
 //! `cs_content::catalog::baseline` (`retail_baseline` and `CollectionStatus`),
-//! not repeated here. Without an
-//! installation the commands keep the F14-C behavior and report the
+//! not repeated here. Without an installation the commands keep the F14-C behavior and report the
 //! synthetic fixture with `"source":"synthetic-fixture"` and
 //! `"retail":false`, so a synthetic row is never presented as a retail
 //! catalog entry.

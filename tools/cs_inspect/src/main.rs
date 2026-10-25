@@ -213,10 +213,10 @@ COMMANDS
         string image names), and a collection_status array with one record per
         collection: its source file, language, row count, the gaps the parser
         kept and, when it holds no rows, the diagnostic saying why. A
-        collection never silently holds nothing. Without an installation the rows are the validated
-        synthetic catalog fixture, whose report names its source and is never
-        retail-ready, so a synthetic row is never presented as a retail
-        catalog entry. Exits 0 when the report is written, 2 on invalid
+        collection never silently holds nothing. Without an installation the
+        rows are the validated synthetic catalog fixture, whose report names
+        its source and is never retail-ready, so a synthetic row is never
+        presented as a retail catalog entry. Exits 0 when the report is written, 2 on invalid
         input, 3 when the installation declares no campaign mission or a
         declared mission has no program archive, and 1 on a runtime failure.
 
