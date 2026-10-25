@@ -83,3 +83,50 @@ fn accept_parity5_start_flow_succeeded_without_the_start_flow_the_exit_is_unchan
     assert!(!app.world().contains_resource::<DebriefScreen>());
     teardown(&mut app);
 }
+
+mod smoke_checks {
+    use cs_app::mission_session::{SmokeMeasurements, evaluate_mission_smoke};
+
+    fn checks(
+        start_flow: bool,
+        shown: bool,
+        answer: Option<&str>,
+        permille: u32,
+    ) -> Vec<(String, bool, bool)> {
+        let mut metrics = super::super::accept_m01_smoke_success_c::full();
+        metrics.start_flow = start_flow;
+        metrics.debrief_shown = shown;
+        metrics.cabin_answer = answer.map(str::to_owned);
+        metrics.settled_permille = permille;
+        let measured = SmokeMeasurements {
+            success: Some(metrics),
+            ..SmokeMeasurements::default()
+        };
+        evaluate_mission_smoke(&measured)
+            .into_iter()
+            .map(|c| (c.id, c.applies, c.passed))
+            .collect()
+    }
+
+    fn get(list: &[(String, bool, bool)], id: &str) -> (bool, bool) {
+        list.iter()
+            .find(|c| c.0 == id)
+            .map(|c| (c.1, c.2))
+            .unwrap_or_else(|| panic!("no check {id}"))
+    }
+
+    #[test]
+    fn accept_parity5_start_flow_succeeded_smoke_checks_pass_and_fail_on_their_own_piece() {
+        let ok = checks(true, true, Some("return_to_cabin"), 900);
+        assert_eq!(get(&ok, "success_debrief_drawn"), (true, true));
+        assert_eq!(get(&ok, "success_returns_to_cabin"), (true, true));
+        let none = checks(true, false, None, 900);
+        assert_eq!(get(&none, "success_debrief_drawn"), (true, false));
+        assert_eq!(get(&none, "success_returns_to_cabin"), (true, false));
+        let dark = checks(true, true, Some("return_to_cabin"), 0);
+        assert_eq!(get(&dark, "success_debrief_drawn"), (true, false));
+        let plain = checks(false, false, None, 900);
+        assert!(!get(&plain, "success_debrief_drawn").0);
+        assert!(!get(&plain, "success_returns_to_cabin").0);
+    }
+}

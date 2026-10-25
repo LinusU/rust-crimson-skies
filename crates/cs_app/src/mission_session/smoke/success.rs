@@ -53,7 +53,9 @@ use bevy::prelude::{ClearColor, Commands, Query, Res, ResMut, Resource, Vec3, Wi
 use cs_sim::damage::ActorId;
 use cs_types::input::{Action, FlightCommand};
 
+use super::super::ReturnToFrontEnd;
 use super::super::compose::MissionPlayerBody;
+use super::super::debrief_screen::{DebriefResponse, DebriefScreen};
 use super::super::host::{
     MissionExitHeld, MissionHost, MissionHostReport, MissionWorldObservation,
 };
@@ -313,6 +315,14 @@ pub struct SuccessMetrics {
     pub settled_shot_frame: Option<u32>,
     /// The share of the settled frame that is off black, per mille.
     pub settled_permille: u32,
+    /// The Mission Completed debrief screen was up when the settled frame was
+    /// asked for.
+    pub debrief_shown: bool,
+    /// The run was handed over by the start flow (a cabin to return to).
+    pub start_flow: bool,
+    /// What pressing the shown debrief's Return to Cabin answered
+    /// (`--from-start-flow` runs only), as the screen's own press path says.
+    pub cabin_answer: Option<String>,
 }
 
 impl SuccessMetrics {
@@ -426,6 +436,8 @@ pub struct SuccessWorld<'w, 's> {
     >,
     resolver: Option<Res<'w, SessionDamageResolver>>,
     host: Option<Res<'w, MissionHost>>,
+    debrief: Option<ResMut<'w, DebriefScreen>>,
+    front_end: Option<Res<'w, ReturnToFrontEnd>>,
 }
 
 /// What the host's landing path says: the drop-off nodes armed so far, and
@@ -483,7 +495,7 @@ pub fn smoke_success(
     frames: Res<FlightCheckFrames>,
     mut commands: Commands,
     clear: Option<Res<ClearColor>>,
-    world: SuccessWorld,
+    mut world: SuccessWorld,
 ) {
     if config.mode != super::MissionSmokeMode::Success
         || matches!(data.phase, Phase::Final | Phase::Ended)
@@ -656,6 +668,28 @@ pub fn smoke_success(
     );
     if let Some(mut actions) = actions {
         actions.actions.append(&mut queue.actions);
+    }
+
+    // The settled frame is the debrief when the run is a windowed one: record
+    // that it is up, and in a start-flow run press its Return to Cabin the way
+    // a click would (the screen's own press; the hand-back itself is the F45
+    // path the start-flow smoke's `resumed/` leg draws).
+    if result.shots.contains(&"success_settled") {
+        metrics.debrief_shown = world.debrief.is_some();
+        metrics.start_flow = world.front_end.is_some();
+        if metrics.start_flow
+            && let Some(screen) = world.debrief.as_deref_mut()
+        {
+            let answer = screen.press_hotspot("SB_B_RETURNPC");
+            metrics.cabin_answer = Some(
+                if answer == DebriefResponse::ReturnToCabin {
+                    "return_to_cabin"
+                } else {
+                    "other"
+                }
+                .to_owned(),
+            );
+        }
     }
 
     let clear_colours = clear.as_deref().map(clear_colour_encodings);
@@ -1213,6 +1247,29 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             },
         },
         Check {
+            id: "success_debrief_drawn".to_owned(),
+            applies: c.start_flow,
+            passed: !c.start_flow || (c.debrief_shown && c.settled_permille >= MIN_DRAWN_PERMILLE),
+            detail: format!(
+                "the Mission Completed debrief was up for the settled frame: {}; {} per mille of \
+                 it is off black (floor {MIN_DRAWN_PERMILLE}); SB_T_COMPLETETITLE and Cash \
+                 Earned stay recorded unknown",
+                c.debrief_shown, c.settled_permille
+            ),
+        },
+        Check {
+            id: "success_returns_to_cabin".to_owned(),
+            applies: c.start_flow,
+            passed: !c.start_flow || c.cabin_answer.as_deref() == Some("return_to_cabin"),
+            detail: format!(
+                "pressing the debrief's Return to Cabin (SB_B_RETURNPC) answered {:?}; it ends \
+                 the flight as MissionLeft(ReturnedToCabin) and the front end reopens on the \
+                 cabin (the smoke does not apply the press, which would end the process before \
+                 the report)",
+                c.cabin_answer
+            ),
+        },
+        Check {
             id: "smoke_shots_delivered".to_owned(),
             applies: true,
             passed: m.missing_shots.is_empty(),
@@ -1295,7 +1352,7 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
          \"tank_permille\":{},\"tank_diag\":{},\"hydrogen_permille\":{},\"dock_node\":{},\"dock_at_m\":{dock_at},\
          \"dock_placements\":{},\"dock_node_never_found\":{},\"dock_gave_up\":{},\
          \"dock_diag\":{},\"terminal\":{terminal},\"terminal_never\":{},\
-         \"settled_permille\":{}}}",
+         \"settled_permille\":{},\"debrief_shown\":{},\"start_flow\":{},\"cabin_answer\":{}}}",
         option_u32(c.start_frame),
         json_string(ANCHOR),
         c.site_never_found,
@@ -1328,5 +1385,10 @@ pub fn success_json(metrics: Option<&SuccessMetrics>) -> String {
         json_string(&c.dock_diag),
         c.terminal_never,
         c.settled_permille,
+        c.debrief_shown,
+        c.start_flow,
+        c.cabin_answer
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), json_string),
     )
 }
