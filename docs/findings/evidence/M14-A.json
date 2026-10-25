@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M14-A",
+ "candidate_tree": "72bfd06ed60b737c2789032c4ecebc4175750065",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-25T11:18:17Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--test", "cs_app_tests_d", "--", "accept_m14_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 7, "executed": 7, "passed": 7, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m14_a_the_committed_ruling_names_m14_with_rows_the_record_cites", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m14_a_without_the_ruling_m14_stays_unresolved", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m14_a_the_ruled_spelling_is_carried_exactly_and_the_declared_one_is_not", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m14_a_the_committed_record_is_what_the_installation_derives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m14_a_the_campaign_keeps_everything_else_unresolved_and_unready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m14_a_a_ruling_with_the_wrong_spelling_or_row_refuses", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m14_a_source_derived_binding_has_no_unresolved_critical_dependencies", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "470aa745e2d95d9089c2b7bf400acc9c6edcb5ad3aa09966b6493924e91bad52", "kind": "log"}, {"path": "m14-binding.json", "sha256": "d8529240e36b5eb308fd54b7abae7aa33275996c8ce13dbacc31c89136a95d45", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: sonnet-1 (Rally #297, session of 2026-10-25). The reviewing agent is the Rally reviewer of #297; its identity and whether its context was fresh are recorded in that review's complete_review notes, not asserted here. An agent review is not independent original-reference evidence and replaces no human approval", "method": "acceptance suite run locally with the retail capability by the implementer; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five critical dependencies resolved; checklist entries still unknown are recorded in missions/bindings/M14.json, not dropped). M14's declared title 'Clash of the Dreadnaughts' is carried by no retail row, so the TitleString, MissionId and WorldGroupVariant dependencies rest on the owner's per-work-order ruling (Rally #470, note 22711; missions/bindings/title-rulings.tsv; docs/findings/2026-10-25-owner-ruling-guide-titles.md): the ruled retail spelling is confirmed exactly at rows 3493/3463 and the record is Inferred, never verified_original, and carries a 'title ruling:' unknown. No production code changed at M14-A. See docs/findings/2026-10-25-m14-a-source-binding.md. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite ran on: the only later delta is this report's own copy under docs/findings/evidence/, whose bytes are this file"},
+ "claim": "implemented"
+}
