@@ -681,12 +681,25 @@ fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initia
     // measured gun sound's member when the stage measured them
     // (VS-M01-RT-EVIDENCE-B, M01-WINDOW-FIRE-GUN-LOADOUT #1628): all are
     // delivered, none invented.
+    // Since then the same announce also carries the launch cinematic's
+    // resolved `SOUND` members (#1863, e1b5c1ef5), the bullet-hit ricochet
+    // members (#1865) and the ambient loops' members (#1864), one binding per
+    // member each.
     let expected_bindings = 1
         + usize::from(stage.launch_sound.is_some())
         + usize::from(stage.gun_sound.is_some())
         + stage.flak_sound.as_ref().map_or(0, |flak| {
             1 + usize::from(flak.shot.content != flak.burst.content)
-        });
+        })
+        + stage
+            .launch_sound
+            .as_ref()
+            .map_or(0, |launch| launch.scene_sounds.len())
+        + stage.hit_sound.as_ref().map_or(0, |hit| hit.voices.len())
+        + stage
+            .ambient_sound
+            .as_ref()
+            .map_or(0, |ambient| ambient.members.len());
     assert_eq!(
         bindings_before, expected_bindings,
         "the announced items were delivered"
