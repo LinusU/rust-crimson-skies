@@ -297,6 +297,27 @@ No retail pose of the cruise (level, no stall) changes.
 622eec: 69666f6e00  # 'ifon'
 ```
 
+## Review addendum: the `--smoke-no-teleport` wingman check (designed, not CI)
+
+Measured on the branch with the release `cs` (`--mission M01 --smoke-seconds 45
+--smoke-no-teleport`, retail). Main passes `wingmen_near_player` (wingman 188 m
+at t+15, 446 m at t+30, sampled at the 500 m threshold by luck); the branch
+fails it (wingman 607 m from t+18). A temporary per-second position print (not
+committed) shows why: the idle-input player dives from 131 m to 3 m between
+t+4 and t+7 (the same crash as on main, see #1845), `wingman_1` follows the
+leader down, reaches y = 5 m at t+8 (sea level) and stays at that point while the
+player slides on at about 100 m/s. So the freeze is the AI wingman following a
+crashed leader into the sea, not a numerical fault.
+
+Attribution (each experiment reverted afterwards): the AI +5 m/s, the player-only
+stall, the approximate square root, the fake-dynamics fade/lambda/yaw factors and
+the fake-dynamics bank-coupling skip, each reverted alone and the first three
+together, all still freeze, only at a different distance (579..1288 m). The
+outcome is therefore a sensitive consequence of the combined image-proven
+changes (wingman geometry at the moment the leader crashes), not of one term.
+The wingman controller itself is a designed port (`mission_ai`); it has no
+image-derived sea avoidance. No law constant was tuned to restore the pass.
+
 ## Reproduction
 
 ```sh
