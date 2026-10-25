@@ -912,7 +912,10 @@ mod tests {
     fn unmeasured_directive_payload() -> Vec<u8> {
         control_document(vec![block(vec![
             directive("WAKE_ANIM", Some(zrd_list(vec![zrd_text("x")]))),
-            directive("SET_AI_", Some(zrd_list(vec![zrd_text("trouble")]))),
+            directive(
+                "UNRECORDED_DIRECTIVE",
+                Some(zrd_list(vec![zrd_text("trouble")])),
+            ),
             directive("INSTANTWIN", None),
         ])])
     }
@@ -1159,7 +1162,7 @@ mod tests {
         match error {
             MountError::ProgramRejected { reason, .. } => {
                 assert!(
-                    reason.contains("SET_AI_"),
+                    reason.contains("UNRECORDED_DIRECTIVE"),
                     "the refusal names the key nobody measured: {reason}"
                 );
             }
