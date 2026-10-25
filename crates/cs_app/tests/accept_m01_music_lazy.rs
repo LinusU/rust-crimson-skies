@@ -156,12 +156,30 @@ fn accept_m01_music_lazy_prepare_names_tracks_and_decodes_on_request() {
     let radio = MissionRadio::read(&root, declared_sound_groups(&engine)).expect("radio reads");
     eprintln!("MissionRadio::read took {:?}", started.elapsed());
 
-    // All 19 selectable tracks are named by their owner-ruled ids.
+    // M01 "The Lost Treasure" is `ZBD/C3/M01` (#1565, `dd19ce9dd`): its
+    // objectives cue four music states (`music_battlesuccess_sg` is declared
+    // only by `ZBD/C1C/M01`, the M06 archive this pin was first measured on),
+    // and those four select 13 tracks: 6 missionsuccess, 3 distinct prebattle
+    // names, 2 primaryobj, 2 secondaryobj.
+    let music_states: Vec<String> = declared_sound_groups(&engine)
+        .into_iter()
+        .filter(|group| group.starts_with("music_"))
+        .collect();
+    assert_eq!(
+        music_states,
+        [
+            "music_missionsuccess_sg",
+            "music_prebattle_sg",
+            "music_primaryobj_sg",
+            "music_secondaryobj_sg"
+        ]
+    );
+    // Every selectable track is named by its owner-ruled id.
     let sources = radio.music_tracks();
     assert_eq!(
         sources.len(),
-        19,
-        "M01's five music states select 19 tracks"
+        13,
+        "M01's four music states select 13 tracks"
     );
     assert_eq!(radio.failures().count(), 0);
     for source in sources {
