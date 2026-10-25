@@ -827,6 +827,7 @@ pub mod ui {
     pub mod mods;
     pub mod scrapbook;
 }
+pub mod user_data;
 pub mod weapon_effects;
 pub mod weapons;
 pub mod world;

@@ -35,6 +35,40 @@ fn main() -> ExitCode {
             return ExitCode::from(cli::EXIT_INVALID_INPUT);
         }
     }
+    let profile = match cs_app::user_data::take_flag(&mut args) {
+        Ok(None) => None,
+        Ok(Some(value)) => match cs_app::user_data::open_profile_dir(&value) {
+            Ok(session) => Some(session),
+            Err(error @ cs_app::user_data::ProfileDirError::Refused(_)) => {
+                eprintln!("cs: {error}");
+                return ExitCode::from(cli::EXIT_INVALID_INPUT);
+            }
+            Err(error) => {
+                eprintln!("cs: {error}");
+                return ExitCode::from(cli::EXIT_RUNTIME_FAILURE);
+            }
+        },
+        Err(reason) => {
+            eprintln!("{}", cli::invalid_message(&reason));
+            return ExitCode::from(cli::EXIT_INVALID_INPUT);
+        }
+    };
+    let code = dispatch(args);
+    if let Some(session) = profile {
+        // The session held the private population for the whole run; its
+        // teardown report says where that was and whether anything was lost.
+        match session.finish() {
+            Ok(report) => eprintln!("cs: profile population {}", report.population.display()),
+            Err(error) => {
+                eprintln!("cs: {error}");
+                return ExitCode::from(cli::EXIT_RUNTIME_FAILURE);
+            }
+        }
+    }
+    code
+}
+
+fn dispatch(args: Vec<String>) -> ExitCode {
     match cli::parse(args) {
         CliRequest::Help => {
             print!("{}", cli::HELP_TEXT);

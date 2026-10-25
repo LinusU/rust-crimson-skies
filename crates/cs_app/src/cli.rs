@@ -1074,8 +1074,16 @@ installation.
 
 This stage runs no window and no renderer, so --synthetic must be combined
 with --headless. The remaining run modes of docs/contracts/CLI-EVIDENCE.md
-(--input-replay, --cam, --screenshot,
---profile-dir) are not implemented here yet and exit 2.
+(--input-replay, --cam, --screenshot) are not
+implemented here yet and exit 2.
+
+--profile-dir <dir>
+    With any run mode: use <dir> as a private profile base. The run holds the
+    synthetic population under it (a sibling of the production one, which an
+    automated run never opens). The value is refused with exit 2 when it is
+    empty, contains `..`, or is or lies inside the player's real user-data
+    directory (%APPDATA%\\CrimsonSkies, ~/Library/Application Support/CrimsonSkies,
+    $XDG_DATA_HOME/crimson-skies).
 ";
 
 /// Version line printed on stdout for `--version`; always exit 0.

@@ -156,6 +156,7 @@ mod accept_f48_a_profile_dirs;
 mod accept_f48_b_profile_path;
 mod accept_f48_c_profile_ownership;
 mod accept_f48_d_crash_recovery_matrix;
+mod accept_f48_e_user_data_base;
 mod accept_f49_a_preset_spawn;
 mod accept_f49_b_scenario_normalization;
 mod accept_f49_c1_ia_record_persistence;
