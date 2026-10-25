@@ -162,6 +162,7 @@ mod records;
 mod residency;
 mod residual_roles;
 mod scene_ids;
+mod sector_load_cost;
 mod sensor_layer;
 mod shared_asset;
 mod shear;
