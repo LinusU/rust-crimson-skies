@@ -94,6 +94,7 @@ mod accept_t1601_status_bit_consumers;
 mod accept_t1602_blast_exclusion_domain;
 mod accept_t2116_projectile_target_writers;
 mod accept_t2120_lock_on_target_source;
+mod accept_t2121_beeper_target_values;
 mod accept_t442_shared_damage_key;
 mod accept_t454_guidance_loss;
 mod accept_t548_retail_blast;
