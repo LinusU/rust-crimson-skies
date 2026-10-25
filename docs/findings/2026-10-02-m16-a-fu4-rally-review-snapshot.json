@@ -78,6 +78,34 @@
       "added_by": "Devin SWE-2/swe2-max-1",
       "read_at": "2026-10-16T15:14:00Z",
       "note": "The committed report's `review.identity` still carried the hand-over placeholder ('the Rally reviewer regenerates it on the rebased commit') after #1436 merged, so the stage sat in the unrecorded advisory list while five checks named the file. The entry was added in the same commit that corrected the report's `review.identity` and the harness that writes it: the harness no longer reads the identity from `CS_EVIDENCE_REVIEWER` at run time but records it in `review_identity()`, the shape F14-D.7's harness uses, so a regeneration cannot put the placeholder back. The review of #1436 was done by a different agent instance and model than the implementer, and the branch landed through Rally's landing queue, so `merge_event` is the system `task.merged` event and `approval_event` names the reviewer's own `task.approved`. Read with the `rally` MCP server (get_task and get_activity for #1436) from the activity log, not from the hand-over summaries."
+    },
+    {
+      "task_key": [
+        "M02-B",
+        "M07-B",
+        "M10-B",
+        "M12-B",
+        "M02-B-FU2",
+        "M02-B-FU3",
+        "M07-B-FU1",
+        "M01-ARCHIVE-DECISION",
+        "F49-D.03-FU-RULES-TYPE-ORDER"
+      ],
+      "rally_task": [
+        262,
+        277,
+        286,
+        292,
+        801,
+        802,
+        813,
+        1565,
+        2037
+      ],
+      "added_under": "EVID-IDENTITY-TESTS-RED (#2115)",
+      "added_by": "sonnet-2/sonnet-2",
+      "read_at": "2026-10-25T07:00:00Z",
+      "note": "Nine committed reports named no real reviewer ('none yet' / 'not yet assigned' / 'pending:'), M10-B's disagreed with the harness that writes it, or the stage had never been recorded, after the corrected-layout re-pin tasks #1565, #1594, #1597, #1599 and #1620 and the later #2037 landed. Each entry records the actors of the task that wrote the committed report; `rally_task` is the stage's own task, which keeps the one-entry-per-task rule. The report identities and the two literal harnesses (m10_b.rs, m01_archive_decision.rs) were corrected in the same commit. Read with the `rally` MCP server (get_task and get_activity for #262, #277, #286, #292, #801, #802, #813, #1565, #1594, #1597, #1599, #1620, #2037)."
     }
   ],
   "tasks": [
@@ -225,6 +253,126 @@
       "report_regenerated_on_reviewed_commit": false
     },
     {
+    "task_key": "M02-B",
+    "rally_task": 262,
+    "report_written_under": "#1594 M02-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M02-B.json",
+    "merged_sha": "475ea45cb90b8a98fc078e6b87b7f6d0ee1c93e1",
+    "implementer": {
+      "actor": "sonnet-2/sonnet-2",
+      "claim_started": "2026-10-18T09:23:19Z",
+      "submitted": "2026-10-18T10:09:44Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-2/sonnet-2",
+      "review_claim_started": "2026-10-18T10:09:55Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T10:32:03Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-2/sonnet-2",
+        "at": "2026-10-18T10:21:19Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Actors are those of #1594, the corrected-layout re-pin task that regenerated the committed report; `rally_task` is the stage's own task (implemented by bunny-2, reviewed by claude-2 on the wrong archive; superseded). #1594's approval says the reviewer's context was fresh, same agent."
+    },
+    {
+    "task_key": "M07-B",
+    "rally_task": 277,
+    "report_written_under": "#1597 M07-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M07-B.json",
+    "merged_sha": "98e9c31491eb21e30dd01a007e5be0408c00654c",
+    "implementer": {
+      "actor": "sonnet-2/sonnet-2",
+      "claim_started": "2026-10-18T10:21:32Z",
+      "submitted": "2026-10-18T10:44:18Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-2/sonnet-2",
+      "review_claim_started": "2026-10-18T10:44:27Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T11:03:35Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-2/sonnet-2",
+        "at": "2026-10-18T10:52:01Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Actors are those of #1597, the re-pin task that regenerated the committed M07-B and M07-B-FU1 reports; `rally_task` is the stage's own task (its original reviews measured the wrong archive and are superseded). #1597's approval says the review context was fresh, same agent."
+    },
+    {
+    "task_key": "M10-B",
+    "rally_task": 286,
+    "report_written_under": "#1620 M10-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M10-B.json",
+    "merged_sha": "66088e73c5f64b65c45186e98931e67347c4af6e",
+    "implementer": {
+      "actor": "sonnet-1/sonnet-1",
+      "claim_started": "2026-10-18T14:35:04Z",
+      "submitted": "2026-10-18T14:45:05Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-1/sonnet-1",
+      "review_claim_started": "2026-10-18T14:45:18Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T15:05:07Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-1/sonnet-1",
+        "at": "2026-10-18T14:52:58Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Actors are those of #1620, the re-pin task; `rally_task` is the stage's own task (implemented by claude-2, reviewed by bunny-alpha-2 on the wrong archive; superseded). #1620's approval says the review context was not fresh. #1620 did not run the evidence-report test, so the committed report was regenerated under #2115 on the re-pinned suite."
+    },
+    {
+    "task_key": "M12-B",
+    "rally_task": 292,
+    "report_written_under": "#1599 M12-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M12-B.json",
+    "merged_sha": "244fbabfb7ad88f41fb5748345ab57e5fdf49f8a",
+    "implementer": {
+      "actor": "sonnet-1/sonnet-1",
+      "claim_started": "2026-10-18T10:37:06Z",
+      "submitted": "2026-10-18T11:16:47Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-1/sonnet-1",
+      "review_claim_started": "2026-10-18T11:16:56Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T11:40:02Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-1/sonnet-1",
+        "at": "2026-10-18T11:25:16Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Actors are those of #1599, the re-pin task; `rally_task` is the stage's own task (implemented and reviewed by swe2-max-1 on the wrong archive; superseded). #1599's approval says the context was not fresh."
+    },
+    {
       "task_key": "T340",
       "rally_task": 340,
       "evidence_report": "docs/findings/evidence/T340.json",
@@ -344,6 +492,21 @@
       },
       "report_written_by": "reviewer",
       "report_regenerated_on_reviewed_commit": true,
+      "later_regenerations": [
+        {
+          "rally_task": 579,
+          "key": "F14-D.13",
+          "implementer": "sonnet-1/sonnet-1",
+          "claim_started": "2026-10-18T11:25:28Z",
+          "submitted": "2026-10-18T12:19:26Z",
+          "reviewer": "sonnet-1/sonnet-1",
+          "review_claim_started": "2026-10-18T12:19:38Z",
+          "approval_at": "2026-10-18T12:50:00Z",
+          "merged_at": "2026-10-18T13:06:02Z",
+          "merged_sha": "8226c7aa4e3760913e13f8f635fbbc3620f3e1d7",
+          "note": "#579 applied the owner ruling of 2026-10-12 and regenerated this report (`created_at` 2026-10-18T11:49:40Z, inside #579's implement claim, after #490 had merged). The same instance implemented and reviewed it, not independent, context not fresh; the report's `review.identity` says the change has no independent review yet. The #490 facts above stay true of the stage as merged."
+        }
+      ],
       "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #490 recorded the same in its `complete_review` notes.",
       "notes": "`merge_event` is a system event: the reviewer approved the stage at `approval_event` and Rally's landing queue rebased the branch onto main and fast-forwarded main to `merged_sha`, so the copy of the report on main is the one the reviewer's own run wrote (`created_at` 2026-10-03T08:32:27Z, inside the review claim). See `actor_spelling` for why `actor` is the agent-instance name rather than Rally's `<instance>/<session>` string."
     },
@@ -434,6 +597,96 @@
       "notes": "The report's `created_at` (2026-10-11T19:16:09Z) is inside sonnet-1's implement claim, so the committed copy is the implementer's: the reviewer's `task.merged` notes say it confirmed the branch was already a descendant of origin/main and that CI was green on `merged_sha`, made no changes, and did not rerun the four local checks in the review session - they were the same agent's green pre-push runs. `claim_started` is the `task.resumed` event, per `claim_started_source`."
     },
     {
+    "task_key": "M02-B-FU2",
+    "rally_task": 801,
+    "report_written_under": "#1594 M02-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M02-B-FU2.json",
+    "merged_sha": "475ea45cb90b8a98fc078e6b87b7f6d0ee1c93e1",
+    "implementer": {
+      "actor": "sonnet-2/sonnet-2",
+      "claim_started": "2026-10-18T09:23:19Z",
+      "submitted": "2026-10-18T10:09:44Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-2/sonnet-2",
+      "review_claim_started": "2026-10-18T10:09:55Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T10:32:03Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-2/sonnet-2",
+        "at": "2026-10-18T10:21:19Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Same re-pin task as M02-B (#1594); the report was regenerated there."
+    },
+    {
+    "task_key": "M02-B-FU3",
+    "rally_task": 802,
+    "report_written_under": "#1594 M02-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M02-B-FU3.json",
+    "merged_sha": "475ea45cb90b8a98fc078e6b87b7f6d0ee1c93e1",
+    "implementer": {
+      "actor": "sonnet-2/sonnet-2",
+      "claim_started": "2026-10-18T09:23:19Z",
+      "submitted": "2026-10-18T10:09:44Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-2/sonnet-2",
+      "review_claim_started": "2026-10-18T10:09:55Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T10:32:03Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-2/sonnet-2",
+        "at": "2026-10-18T10:21:19Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Same re-pin task as M02-B (#1594); the report was regenerated there."
+    },
+    {
+    "task_key": "M07-B-FU1",
+    "rally_task": 813,
+    "report_written_under": "#1597 M07-B-REPIN-CORRECTED-LAYOUT",
+    "evidence_report": "docs/findings/evidence/M07-B-FU1.json",
+    "merged_sha": "98e9c31491eb21e30dd01a007e5be0408c00654c",
+    "implementer": {
+      "actor": "sonnet-2/sonnet-2",
+      "claim_started": "2026-10-18T10:21:32Z",
+      "submitted": "2026-10-18T10:44:18Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-2/sonnet-2",
+      "review_claim_started": "2026-10-18T10:44:27Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-18T11:03:35Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-2/sonnet-2",
+        "at": "2026-10-18T10:52:01Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "Same re-pin task as M07-B (#1597); the report was regenerated there."
+    },
+    {
       "task_key": "M01-PLAY-AI",
       "rally_task": 1436,
       "evidence_report": "docs/findings/evidence/M01-PLAY-AI.json",
@@ -457,6 +710,73 @@
       "report_written_by": "implementer",
       "report_regenerated_on_reviewed_commit": false,
       "notes": "The report's `created_at` (2026-10-15T15:04:08Z) is inside mimo-1's implement claim, so the committed copy is the implementer's own run on the submitted tree; the reviewer did not regenerate it. The reviewer's `task.approved` notes record: two real review fixes (a hold-course aircraft steers along hold_course_direction(nose); a stored primary target of 'player' resolves to TargetRule::Player), each with a unit test; on 8e805a22 fmt/clippy/CI were green and the retail acceptance prefix passed (one transient soundsh.zbd Permission denied, rerun passed); after the landing queue's rebase conflict the reviewer hand-rebased to 35ef11ea (fmt clean, clippy -D warnings, prefix lib tests 6/6, CI green) and did not rerun the retail campaign acceptance for the conflict-only rebase. The reviewer's context was fresh: it is a different agent instance and model (Sonnet 5.5) than the implementer (MiMo). The owner-preserved bunny-alpha-1 review WIP (d5666728, the MissionAiFireOrders reset) was not cherry-picked and is follow-up work, not part of this review."
+    },
+    {
+    "task_key": "M01-ARCHIVE-DECISION",
+    "rally_task": 1565,
+    "report_written_under": "#1565",
+    "evidence_report": "docs/findings/evidence/M01-ARCHIVE-DECISION.json",
+    "merged_sha": "b597efd0be77fea922cf4df2339c27020a49ef7e",
+    "implementer": {
+      "actor": "claude-2/claude-2",
+      "claim_started": "2026-10-17T22:25:04Z",
+      "submitted": "2026-10-17T23:02:41Z",
+      "earlier_implement_claims": [
+        {
+          "actor": "Devin SWE-2/swe2-max-1",
+          "claim_started": "2026-10-17T18:06:00Z",
+          "outcome": "the implement lease expired on 2026-10-17T21:52:00Z; claude-2 resumed the stage"
+        }
+      ]
+    },
+    "reviewer": {
+      "actor": "claude-2/claude-2",
+      "review_claim_started": "2026-10-17T23:02:51Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-17T23:46:02Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "claude-2/claude-2",
+        "at": "2026-10-17T23:34:18Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "claude-2 resumed #1565 (task.resumed) after Devin SWE-2/swe2-max-1's implement lease expired and also reviewed it; the approval notes say it was not independent and the context was not fresh. The report was generated by the original implementer before the rebase and the reviewer did not regenerate it (created_at 2026-10-17T22:08:28Z precedes claude-2's resume)."
+    },
+    {
+    "task_key": "F49-D.03-FU-RULES-TYPE-ORDER",
+    "rally_task": 2037,
+    "report_written_under": "#2037",
+    "evidence_report": "docs/findings/evidence/F49-D.03-FU-RULES-TYPE-ORDER.json",
+    "merged_sha": "f2417f68081e16d866beb55508a0656788411da6",
+    "implementer": {
+      "actor": "sonnet-1/sonnet-1",
+      "claim_started": "2026-10-24T18:54:30Z",
+      "submitted": "2026-10-24T19:18:41Z"
+    },
+    "reviewer": {
+      "actor": "sonnet-1/sonnet-1",
+      "review_claim_started": "2026-10-24T19:19:04Z",
+      "merge_event": {
+        "type": "task.merged",
+        "actor": "rally",
+        "at": "2026-10-24T19:44:35Z"
+      },
+      "approval_event": {
+        "type": "task.approved",
+        "actor": "sonnet-1/sonnet-1",
+        "at": "2026-10-24T19:33:54Z"
+      }
+    },
+    "report_written_by": "implementer",
+    "report_regenerated_on_reviewed_commit": false,
+    "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the report keeps saying so.",
+    "notes": "The report was written by the implementer (created_at 2026-10-24T19:05:17Z, inside the implement claim) with the harness's built-in `pending:` identity and was never regenerated. The reviewer's approval says the two are the same instance and the context was fresh."
     }
   ]
 }

@@ -1233,7 +1233,14 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         created = self.reports[key]['created_at']
         self.assertRegex(created, r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z')
         self.assertLessEqual(reviewer['review_claim_started'], created)
-        self.assertLessEqual(created, approval['at'])
+        # The copy on main is the stage's own review run unless a later task, recorded
+        # here with its claim window, regenerated it: #579 applied the owner ruling of
+        # 2026-10-12 and wrote the report again after #490 had merged.
+        windows = [(reviewer['review_claim_started'], approval['at'])]
+        windows += [(later['claim_started'], later['merged_at'])
+                    for later in recorded.get('later_regenerations', [])]
+        self.assertTrue(any(start <= created <= end for start, end in windows),
+                        f'{created} is in no recorded claim window: {windows}')
         self.assertEqual(recorded['report_written_by'], 'reviewer')
         self.assertIs(recorded['report_regenerated_on_reviewed_commit'], True)
 
