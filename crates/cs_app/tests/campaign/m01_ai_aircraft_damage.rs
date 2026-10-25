@@ -31,6 +31,14 @@ use crate::campaign::m01_convoy_gun_hits::{
     MAX_FRAMES, aim_player_at, destroyed, fire, game_dir, idle,
 };
 
+/// The frame budget of the fire-key kill. The Kestrel flies on and is hit by
+/// the aimed rounds only along its path, so the kill frame moves with anything
+/// that perturbs the run: it was frame 381 of the shared `MAX_FRAMES` (400)
+/// when `d9d6e6ef9` (#2106) added the muzzle burst's drawn quads to the stage,
+/// and frame 453 afterwards (measured, retail, 2026-10-25). The assertion that
+/// the kill happens, and the group count that follows it, are unchanged.
+const KILL_FRAMES: usize = MAX_FRAMES * 3;
+
 /// A one-objective program that spells the wake M01's OBJECTIVE23 spells
 /// (`WAKEUP_ENEMIES medkestrel_1..3`) and completes on its first tick. The
 /// real site is reached only after a landing, 15+ s into a flown route
@@ -141,7 +149,7 @@ fn accept_m01_ai_aircraft_damage_retail_the_fire_key_destroys_medkestrel_1() {
     assert!(!destroyed(&app, actor));
     // Each frame re-aims at the box centre, which follows the body.
     let mut killed = false;
-    for _ in 0..MAX_FRAMES {
+    for _ in 0..KILL_FRAMES {
         let centre = {
             let world = app.world_mut();
             world
