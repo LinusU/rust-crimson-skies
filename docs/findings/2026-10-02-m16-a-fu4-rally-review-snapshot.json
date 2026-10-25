@@ -16,6 +16,22 @@
   "report_written_by_meaning": "Derived from the report's own `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
   "entries_added_after_writing": [
     {
+      "task_key": "F09-D",
+      "rally_task": 40,
+      "added_under": "EVID-SNAPSHOT-BACKLOG (#580)",
+      "added_by": "sonnet-2/sonnet-2",
+      "read_at": "2026-10-25T06:30:00Z",
+      "note": "The report already named both agents and said the review is not independent; only the Rally facts were missing. Read with the `rally` MCP server (get_task for #40) from the activity log."
+    },
+    {
+      "task_key": "F09-PAINTSHOP",
+      "rally_task": 485,
+      "added_under": "EVID-SNAPSHOT-BACKLOG (#580)",
+      "added_by": "sonnet-2/sonnet-2",
+      "read_at": "2026-10-25T06:30:00Z",
+      "note": "The report already named both agents and said the review is not independent; only the Rally facts were missing. Read with the `rally` MCP server (get_task for #485) from the activity log."
+    },
+    {
       "task_key": "F14-D.7",
       "rally_task": 490,
       "added_under": "F14-D.7-SNAPSHOT (#578)",
@@ -144,6 +160,32 @@
       "report_regenerated_on_reviewed_commit": true
     },
     {
+      "task_key": "F09-D",
+      "rally_task": 40,
+      "evidence_report": "docs/findings/evidence/F09-D.json",
+      "merged_sha": "084211208af27d44904f25e1b691195ab062775b",
+      "implementer": {
+        "actor": "deepseek-1",
+        "rally_actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-09-29T18:39:49Z",
+        "submitted": "2026-09-29T19:18:15Z"
+      },
+      "reviewer": {
+        "actor": "deepseek-1",
+        "rally_actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-09-29T19:19:14Z",
+        "merge_event": {
+          "type": "task.merged",
+          "actor": "deepseek-1/deepseek-1",
+          "at": "2026-09-29T19:47:38Z"
+        }
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the check requires the report to keep saying so.",
+      "notes": "The report's `created_at` is 2026-09-29T19:36:10Z, inside the review claim, so the copy on main is the reviewer's regeneration; the branch fast-forwarded directly, so `merge_event` is the reviewer's own `task.merged`. See `actor_spelling` for why `actor` is the agent-instance name rather than Rally's `<instance>/<session>` string."
+    },
+    {
       "task_key": "F10-D",
       "rally_task": 44,
       "evidence_report": "docs/findings/evidence/F10-D.json",
@@ -253,6 +295,32 @@
       },
       "report_written_by": "implementer",
       "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F09-PAINTSHOP",
+      "rally_task": 485,
+      "evidence_report": "docs/findings/evidence/F09-PAINTSHOP.json",
+      "merged_sha": "c8cd6f43f0faf7695ad11af7527b95523c223b67",
+      "implementer": {
+        "actor": "bunny-alpha-2",
+        "rally_actor": "bunny-alpha-2/bunny-alpha-2",
+        "claim_started": "2026-10-02T23:30:40Z",
+        "submitted": "2026-10-03T01:12:33Z"
+      },
+      "reviewer": {
+        "actor": "bunny-alpha-2",
+        "rally_actor": "bunny-alpha-2/bunny-alpha-2",
+        "review_claim_started": "2026-10-03T01:12:56Z",
+        "merge_event": {
+          "type": "task.merged",
+          "actor": "bunny-alpha-2/bunny-alpha-2",
+          "at": "2026-10-03T02:09:19Z"
+        }
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent instance, so this review is not independent evidence and the check requires the report to keep saying so.",
+      "notes": "The report's `created_at` is 2026-10-03T02:00:48Z, inside the review claim, so the copy on main is the reviewer's regeneration; the branch fast-forwarded directly, so `merge_event` is the reviewer's own `task.merged`. See `actor_spelling` for why `actor` is the agent-instance name rather than Rally's `<instance>/<session>` string."
     },
     {
       "task_key": "F14-D.7",
