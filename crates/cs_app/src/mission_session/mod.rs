@@ -130,6 +130,7 @@ mod lens_flare;
 mod letterbox;
 mod lifecycles;
 mod look_view;
+pub mod muzzle_burst_art;
 mod observation;
 mod ordinance_screen;
 mod ordinance_stage;

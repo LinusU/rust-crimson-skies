@@ -25,6 +25,7 @@ mod campaign {
     mod accept_trucks_smoke;
     mod common;
     mod f27_c_fx_orig_draw_a;
+    mod f27_c_fx_orig_draw_b;
     mod f27_c_fx_orig_engine;
     mod f27_c_fx_render;
     mod f29_c_3b_score;
