@@ -155,13 +155,13 @@ fn accept_m01_handover_dynamics_step_level_equilibrium_formula() {
     assert!((thrust - drag).abs() / drag < 1e-9, "T {thrust} D {drag}");
 }
 
-fn stage() -> cs_app::mission_session::MissionStage {
+pub(super) fn stage() -> cs_app::mission_session::MissionStage {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plan");
     stage_for(&root, &plan).expect("stage")
 }
 
-fn speed(v: [f64; 3]) -> f64 {
+pub(super) fn speed(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
@@ -214,7 +214,7 @@ fn accept_m01_handover_dynamics_step_held_level_matches_the_formula() {
 /// command (actual = command, as the tail of `0x47f1f0` leaves it), a start
 /// speed `forward` along the nose and zero angular momentum. Returns the
 /// state every second for `seconds`.
-fn fly(throttle: f64, forward: f64, seconds: usize) -> Vec<OriginalState> {
+pub(super) fn fly(throttle: f64, forward: f64, seconds: usize) -> Vec<OriginalState> {
     let stage = stage();
     let orientation =
         Quaternion::from_axis_angle(UnitVec3::UP, Radians(f64::from(stage.start.heading)))
@@ -249,7 +249,9 @@ fn fly(throttle: f64, forward: f64, seconds: usize) -> Vec<OriginalState> {
 
 /// The cinematic placement state (`0x47f1f0` with `veh+0x91d` set: throttle
 /// 0.4, velocity `-20` along the body +Z, i.e. 20 forward) never reaches the
-/// 111.8-113.6 m/s of the capture: it settles at 82.8 m/s, sinking 9.35 m/s.
+/// 111.8-113.6 m/s of the capture: it settles at 82.8 m/s, sinking 9.35 m/s
+/// (9.73 m/s since #2071 corrected the force block, finding
+/// `2026-10-25-force-block-reread.md`, section 3).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_handover_dynamics_step_placement_state_settles_below_the_capture() {
@@ -263,7 +265,7 @@ fn accept_m01_handover_dynamics_step_placement_state_settles_below_the_capture()
         assert!(speed(sample.velocity_mps) < 90.0);
     }
     let sink = -samples[20].velocity_mps[1];
-    assert!((sink - 9.35).abs() < 0.3, "sink {sink}");
+    assert!((sink - 9.73).abs() < 0.3, "sink {sink}");
 }
 
 /// The release state (throttle 0, velocity the zero vector) has no thrust and
