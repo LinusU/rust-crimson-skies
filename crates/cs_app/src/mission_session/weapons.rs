@@ -145,12 +145,18 @@ pub const MISSION_FACTION_HOSTILE: &str = "designed.m01.hostile";
 pub const MISSION_FACTION_NEUTRAL: &str = "designed.m01.neutral";
 
 /// The mounted position of the nose gun, in metres, relative to the player
-/// body. Designed: the original's hardpoint offsets are unmeasured.
+/// body. Designed: fire group 0 of the original has two firepoints and none is
+/// a nose point, so this third gun has no measured muzzle (recorded unknown in
+/// the #2113 finding).
 const NOSE_MOUNT_OFFSET_M: [f32; 3] = [0.0, -0.4, -4.0];
-/// The left wing gun's designed offset.
-const WING_LEFT_OFFSET_M: [f32; 3] = [-3.2, -0.2, -0.4];
-/// The right wing gun's designed offset.
-const WING_RIGHT_OFFSET_M: [f32; 3] = [3.2, -0.2, -0.4];
+/// The left wing gun's muzzle: the stored position of `firepoint7` of the
+/// player Devastator (`player_pfighter`), the first slot of fire group 0 (task
+/// #2113, `docs/findings/2026-10-25-f27-c-fx-orig-muzzle-mounts.md`).
+/// Measured from `planes.zbd`; not `verified_original`.
+pub const WING_LEFT_OFFSET_M: [f32; 3] = [-1.165_008_1, -0.620_576_6, -1.199_481_9];
+/// The right wing gun's muzzle: `firepoint8`, the second slot of fire group 0.
+/// Measured from `planes.zbd`.
+pub const WING_RIGHT_OFFSET_M: [f32; 3] = [1.204_927_2, -0.584_683_77, -1.199_481_9];
 /// The rocket launcher's designed offset.
 const ROCKET_OFFSET_M: [f32; 3] = [0.0, -1.0, -2.0];
 
@@ -808,8 +814,9 @@ const GUN_RIG_MOUNTS: usize = RIG_MOUNTS.len() - 1;
 ///
 /// The mounts hang under the body, so `live_mount_transforms` reads a pose
 /// that tracks the animated airframe and the inherited airframe velocity from
-/// the same live hierarchy — F27 non-negotiable 2. The offsets are designed:
-/// the original's hardpoint positions are unmeasured.
+/// the same live hierarchy — F27 non-negotiable 2. The two wing offsets are the
+/// measured `firepoint7`/`firepoint8` points; the nose and rocket offsets are
+/// designed.
 ///
 /// # Errors
 ///
