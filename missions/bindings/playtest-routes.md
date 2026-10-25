@@ -20,10 +20,11 @@ fingerprint the campaign was read under. Each work order therefore needs only
 one row: its five reentries are identical by construction, and the acceptance
 suite asserts exactly that against a fresh production pass.
 
-A **refused** route is a work order whose identity the installation carries
-in neither display form: there is no mission to re-enter, so the route names
+A **refused** route is a work order whose identity cannot be resolved (today
+none, since the owner's title ruling; without it, seven): there is no mission
+to re-enter, so the route names
 its refusal, stays in the table and can never be read as probed (spec F50
-non-negotiable behavior 5). The refusals are listed below the table with the
+non-negotiable behavior 5). Any refusal is listed below the table with the
 reason production plans.
 
 ## How a human plays one
@@ -64,33 +65,30 @@ recorded in the task's evidence report
 | M06 | 5 | `mission/ch2-m01` | `world/c1c` | `script/c1c-m01-zrdr` | ready |
 | M07 | 6 | `mission/ch2-m02` | `world/c1` | `script/c1-m02-zrdr` | ready |
 | M08 | 7 | `mission/ch2-m03` | `world/c1b` | `script/c1b-m03-zrdr` | ready |
-| M09 | — | — | — | — | refused |
+| M09 | 8 | `mission/ch2-m04` | `world/c1` | `script/c1-m04-zrdr` | ready |
 | M10 | 9 | `mission/ch2-m05` | `world/c1` | `script/c1-m05-zrdr` | ready |
-| M11 | — | — | — | — | refused |
+| M11 | 10 | `mission/ch3-m01` | `world/c2` | `script/c2-m02-zrdr` | ready |
 | M12 | 11 | `mission/ch3-m02` | `world/c2` | `script/c2-m01-zrdr` | ready |
 | M13 | 12 | `mission/ch3-m03` | `world/c2` | `script/c2-m03-zrdr` | ready |
-| M14 | — | — | — | — | refused |
-| M15 | — | — | — | — | refused |
+| M14 | 13 | `mission/ch3-m04` | `world/c2b` | `script/c2b-m04-zrdr` | ready |
+| M15 | 14 | `mission/ch3-m05` | `world/c2` | `script/c2-m05-zrdr` | ready |
 | M16 | 15 | `mission/ch4-m01` | `world/c4` | `script/c4-m01-zrdr` | ready |
 | M17 | 16 | `mission/ch4-m02` | `world/c4` | `script/c4-m02-zrdr` | ready |
 | M18 | 17 | `mission/ch4-m03` | `world/c4` | `script/c4-m03-zrdr` | ready |
 | M19 | 18 | `mission/ch4-m04` | `world/c4` | `script/c4-m04-zrdr` | ready |
-| M20 | — | — | — | — | refused |
+| M20 | 19 | `mission/ch4-m05` | `world/c4` | `script/c4-m05-zrdr` | ready |
 | M21 | 20 | `mission/ch5-m01` | `world/c5` | `script/c5-m01-zrdr` | ready |
-| M22 | — | — | — | — | refused |
-| M23 | — | — | — | — | refused |
+| M22 | 21 | `mission/ch5-m02` | `world/c5` | `script/c5-m02-zrdr` | ready |
+| M23 | 22 | `mission/ch5-m03` | `world/c5` | `script/c5-m03-zrdr` | ready |
 | M24 | 23 | `mission/ch5-m04` | `world/c5` | `script/c5-m04-zrdr` | ready |
 
 ## Refusals
 
-- **M09** — M09 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-- **M11** — M11 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-- **M14** — M14 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-- **M15** — M15 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-- **M20** — M20 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-- **M22** — M22 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-- **M23** — M23 has no probe route to run: the mission identity is incomplete, the installation located no mission_id, world_group_variant, program_source_map
-
-Which retail mission each refused work order names is not established here;
-see `docs/findings/2026-10-01-m05-a-source-binding.md`. A refused route is
-never dropped from this document and never counted as probed.
+None. All 24 work orders resolve their identity on the installation. Seven of
+them (M09, M11, M14, M15, M20, M22, M23) declare a guide title the installation
+spells differently; they resolve through the owner's title ruling (Rally #470,
+`missions/bindings/title-rulings.tsv`), recorded as inferred rather than
+`verified_original`, and the retail spelling is still confirmed exactly. With
+that ruling withdrawn the same seven are refused routes again — named in the
+table, never dropped and never counted as probed — and the acceptance suite
+pins that case. See `docs/findings/2026-10-25-owner-ruling-guide-titles.md`.
