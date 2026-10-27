@@ -191,7 +191,8 @@ unit conversion, no rounding — and each field the record does not state is
 | which slot holds a record with no `ROCKET` flag | `t452_04.limit.rocket_flag_missing` | `wep_25` |
 
 `accept_t452_04_retail_every_unknown_names_the_rows_it_affects` pins each claim
-and its row count (15, 2, 15, 16, 1, 4, 7, 15, 11) so this table and the code
+and its row count — 15, 2, 15, 16, 1, 4, 7, 15, 11 for the nine per-row claims,
+and 0 for the table-level `per_airframe_layout` — so this table and the code
 cannot drift apart, and every unknown carries a nonempty reason.
 
 ## Test sensitivity (measured, one mutation at a time)
