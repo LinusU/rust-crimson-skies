@@ -12,6 +12,10 @@
 //!   [`navigation::Navigator::decide`] — a pure function of one typed tick
 //!   that emits the same flight command a player's controls produce.
 //!
+//! [`navigation::StationKeeper`] (task #556) is the consumer of the
+//! [`combat::FormationUpdate`] stations: it steers a follower to its
+//! station through the same navigator, with no pose of its own.
+//!
 //! The provenance-carrying producer record a route importer will emit is
 //! `cs_content::routes`; this crate cannot depend on `cs_content`
 //! (`docs/01-ARCHITECTURE.md`), so the consumer declares its own normalized

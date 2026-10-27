@@ -37,3 +37,4 @@ mod accept_f32_d_combat_failures;
 mod accept_f32_fd_combat;
 mod accept_f32_pg_combat;
 mod accept_f32_r_combat;
+mod accept_f32_station_consume;

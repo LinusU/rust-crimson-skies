@@ -78,6 +78,7 @@ use cs_types::Tick;
 use cs_types::net::SessionId;
 use cs_types::random::SplitMix64;
 
+use crate::ai::combat::{FormationId, FormationUpdate, StationAnchor, StationAssignment};
 use crate::damage::ActorId;
 use crate::flight::{FlightEnvironment, FlightInput};
 
@@ -2199,6 +2200,258 @@ impl NavigationSet {
             // clears the blocker on the same side keeps going that way.
             AvoidanceState::Blocked => {}
         }
+    }
+
+    fn check_session(&self, generation: u64) -> Result<(), NavigationError> {
+        if generation != self.session {
+            return Err(NavigationError::ForeignSession {
+                expected: self.session,
+                found: generation,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Whether a follower has reached the station it is flying to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StationStatus {
+    /// The aircraft is farther from the station than its radius.
+    Approaching,
+    /// The aircraft is within the station's radius.
+    OnStation,
+}
+
+/// What one [`FormationUpdate`] changed for one follower's station.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StationChange {
+    /// The follower had no station and now has one.
+    Assigned {
+        /// The follower.
+        actor: ActorId,
+        /// What its station is anchored on.
+        anchor: StationAnchor,
+    },
+    /// The follower's station moved to a different anchor (a promoted leader,
+    /// or a regroup point), so it departs the old one.
+    Reanchored {
+        /// The follower.
+        actor: ActorId,
+        /// The anchor it was keeping station on.
+        from: StationAnchor,
+        /// The anchor it keeps station on now.
+        to: StationAnchor,
+    },
+    /// The update no longer reports the follower's station (released, retired
+    /// or the formation dissolved); route navigation takes it back.
+    Withdrawn {
+        /// The follower.
+        actor: ActorId,
+    },
+}
+
+/// One follower's typed station-keeping input for one tick.
+///
+/// It is [`NavigationRequest`] minus the route and progress: the station is
+/// the route, a single world node.
+#[derive(Clone, Copy, Debug)]
+pub struct StationRequest<'a> {
+    /// The follower.
+    pub actor: ActorId,
+    /// The simulation tick this decision belongs to.
+    pub tick: Tick,
+    /// The command generation; it must equal the keeper's session.
+    pub generation: u64,
+    /// The aircraft's current state.
+    pub state: NavState,
+    /// The world blockers to avoid.
+    pub blockers: &'a [Blocker],
+    /// The minimum clearance to keep from every blocker, in meters.
+    pub clearance_m: f64,
+    /// The fixed simulation step, in seconds.
+    pub dt_s: f64,
+}
+
+/// A follower's decision while it holds a station.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StationDecision {
+    /// The station that was flown to.
+    pub station: StationAssignment,
+    /// Whether the aircraft is within the station's radius.
+    pub status: StationStatus,
+    /// The bounded navigation decision toward the station.
+    pub decision: NavigationDecision,
+}
+
+/// The consumer of F32-C's [`FormationUpdate`] stations (task #556).
+///
+/// A [`StationAssignment`] is only a world point and a radius. The keeper
+/// stores the latest one per follower and, each tick, turns it into a
+/// one-node world route for the same [`Navigator`] route followers use, so a
+/// follower is steered by the existing envelope, avoidance and flight command
+/// and this type owns no pose and no formation geometry of its own
+/// (`docs/contracts/FLIGHT-PHYSICS.md`).
+///
+/// Project design, not original behavior: the original game's wingman
+/// station-keeping is **unmeasured** (it needs F32-D). In particular the
+/// follower flies the navigator's cruise speed toward the point and does not
+/// match its leader's speed, and `OnStation` is a distance test against
+/// `radius_m`, not a measured original arrival rule.
+#[derive(Clone, Debug)]
+pub struct StationKeeper {
+    session: u64,
+    navigator: Navigator,
+    stations: BTreeMap<ActorId, (FormationId, StationAssignment)>,
+    last_applied: BTreeMap<FormationId, Tick>,
+}
+
+impl StationKeeper {
+    /// A keeper for session `session` bounded by `navigator`.
+    #[must_use]
+    pub fn new(session: u64, navigator: Navigator) -> Self {
+        Self {
+            session,
+            navigator,
+            stations: BTreeMap::new(),
+            last_applied: BTreeMap::new(),
+        }
+    }
+
+    /// The station currently held by `actor`, if any.
+    #[must_use]
+    pub fn station(&self, actor: ActorId) -> Option<StationAssignment> {
+        self.stations.get(&actor).map(|(_, station)| *station)
+    }
+
+    /// Every follower holding a station, in ascending actor order.
+    pub fn actors(&self) -> impl Iterator<Item = ActorId> + '_ {
+        self.stations.keys().copied()
+    }
+
+    /// Applies one formation update and reports what it changed, ascending by
+    /// actor.
+    ///
+    /// Followers of that formation the update does not name are withdrawn, so
+    /// a dissolved formation or a retired member leaves no stale station. An
+    /// update older than the last one applied for the formation is ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`NavigationError::ForeignSession`] when a station belongs to another
+    /// session; nothing is applied.
+    pub fn apply(
+        &mut self,
+        update: &FormationUpdate,
+    ) -> Result<Vec<StationChange>, NavigationError> {
+        for station in &update.stations {
+            self.check_session(station.actor.session.get())?;
+        }
+        if self
+            .last_applied
+            .get(&update.formation)
+            .is_some_and(|last| update.now < *last)
+        {
+            return Ok(Vec::new());
+        }
+        self.last_applied.insert(update.formation, update.now);
+
+        let mut changes = Vec::new();
+        let withdrawn: Vec<ActorId> = self
+            .stations
+            .iter()
+            .filter(|(actor, (formation, _))| {
+                *formation == update.formation && update.station(**actor).is_none()
+            })
+            .map(|(actor, _)| *actor)
+            .collect();
+        for actor in withdrawn {
+            self.stations.remove(&actor);
+            changes.push(StationChange::Withdrawn { actor });
+        }
+        for station in &update.stations {
+            let previous = self
+                .stations
+                .insert(station.actor, (update.formation, *station));
+            match previous {
+                None => changes.push(StationChange::Assigned {
+                    actor: station.actor,
+                    anchor: station.anchor,
+                }),
+                Some((_, old)) if old.anchor != station.anchor => {
+                    changes.push(StationChange::Reanchored {
+                        actor: station.actor,
+                        from: old.anchor,
+                        to: station.anchor,
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        if update.dissolved {
+            self.last_applied.remove(&update.formation);
+        }
+        changes.sort_by_key(|change| match change {
+            StationChange::Assigned { actor, .. }
+            | StationChange::Reanchored { actor, .. }
+            | StationChange::Withdrawn { actor } => *actor,
+        });
+        Ok(changes)
+    }
+
+    /// Drops `actor`'s station (a retired member); `false` when it had none.
+    pub fn withdraw(&mut self, actor: ActorId) -> bool {
+        self.stations.remove(&actor).is_some()
+    }
+
+    /// One follower's decision toward its current station, or `None` when it
+    /// holds none and the caller keeps following its route.
+    ///
+    /// # Errors
+    ///
+    /// [`NavigationError::ForeignSession`] for a foreign actor or generation,
+    /// and every error [`Navigator::decide`] can raise.
+    pub fn decide(
+        &self,
+        request: &StationRequest<'_>,
+    ) -> Result<Option<StationDecision>, NavigationError> {
+        self.check_session(request.actor.session.get())?;
+        self.check_session(request.generation)?;
+        let Some((_, station)) = self.stations.get(&request.actor).copied() else {
+            return Ok(None);
+        };
+        let route = RouteGraph::try_new(
+            RouteFrame::World,
+            request.clearance_m,
+            vec![RouteNode {
+                id: RouteNodeId(0),
+                sequence: 0,
+                mandatory: true,
+                position_m: station.position.to_array(),
+                arrival_radius_m: station.radius_m,
+            }],
+        )?;
+        let decision = self.navigator.decide(&NavigationRequest {
+            tick: request.tick,
+            generation: request.generation,
+            state: request.state,
+            route: &route,
+            progress: RouteProgress::start(),
+            frame: ReferenceFrameSample::IDENTITY,
+            blockers: request.blockers,
+            dt_s: request.dt_s,
+        })?;
+        let status = if distance(request.state.position_m, station.position.to_array())
+            <= station.radius_m
+        {
+            StationStatus::OnStation
+        } else {
+            StationStatus::Approaching
+        };
+        Ok(Some(StationDecision {
+            station,
+            status,
+            decision,
+        }))
     }
 
     fn check_session(&self, generation: u64) -> Result<(), NavigationError> {
