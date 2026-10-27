@@ -530,7 +530,7 @@ pub struct DeclaredProjectile {
 /// declared record. Which rule the original used is unmeasured, so it is a
 /// [`Resolved`] option and an unresolved one refuses to lower rather than
 /// becoming "while held".
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DeclaredNitroActivationRule {
     /// Active on every tick the control is held and capacity remains.
     WhileHeld,
@@ -539,6 +539,16 @@ pub enum DeclaredNitroActivationRule {
         /// The declared burn length.
         ticks: Resolved<u64>,
     },
+    /// The measured original rule: a start needs the control and at least
+    /// `start_min_fraction` of capacity; a running burn latches and ends only
+    /// when charge falls below `stop_below_fraction` (releasing the control
+    /// does not stop it).
+    UntilCharge {
+        /// Fraction of capacity a start needs.
+        start_min_fraction: Resolved<f64>,
+        /// Fraction of capacity below which a running burn is cut.
+        stop_below_fraction: Resolved<f64>,
+    },
 }
 
 impl fmt::Display for DeclaredNitroActivationRule {
@@ -546,6 +556,7 @@ impl fmt::Display for DeclaredNitroActivationRule {
         match self {
             Self::WhileHeld => f.write_str("while_held"),
             Self::FixedTicks { .. } => f.write_str("fixed_ticks"),
+            Self::UntilCharge { .. } => f.write_str("until_charge"),
         }
     }
 }
@@ -1146,6 +1157,25 @@ fn validate_nitro(parameters: &DeclaredNitroParameters) -> Result<(), OrdnanceSc
     {
         return Err(OrdnanceSchemaError::ZeroNitroBurn);
     }
+    if let Resolved::Known(known) = &parameters.activation
+        && let DeclaredNitroActivationRule::UntilCharge {
+            start_min_fraction,
+            stop_below_fraction,
+        } = &known.value
+        && let (Resolved::Known(start), Resolved::Known(stop)) =
+            (start_min_fraction, stop_below_fraction)
+        && !(start.value.is_finite()
+            && stop.value.is_finite()
+            && start.value > 0.0
+            && start.value <= 1.0
+            && stop.value >= 0.0
+            && stop.value < start.value)
+    {
+        return Err(OrdnanceSchemaError::CorruptNitroValue {
+            field: "activation",
+            reason: "charge fractions must satisfy 0 <= stop < start <= 1",
+        });
+    }
     Ok(())
 }
 
@@ -1586,6 +1616,17 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
                     value: DeclaredNitroActivationRule::FixedTicks { ticks },
                     ..
                 }) => walk.value("nitro.activation.ticks", ticks),
+                Resolved::Known(Known {
+                    value:
+                        DeclaredNitroActivationRule::UntilCharge {
+                            start_min_fraction,
+                            stop_below_fraction,
+                        },
+                    ..
+                }) => {
+                    walk.value("nitro.activation.start_min_fraction", start_min_fraction);
+                    walk.value("nitro.activation.stop_below_fraction", stop_below_fraction);
+                }
                 _ => walk.value("nitro.activation", &parameters.activation),
             }
             walk.value(

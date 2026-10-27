@@ -461,6 +461,19 @@ fn lower_nitro_activation(
         DeclaredNitroActivationRule::FixedTicks { ticks } => NitroActivationRule::FixedTicks {
             ticks: known_or_refuse("nitro.activation.fixed_ticks", &ticks)?,
         },
+        DeclaredNitroActivationRule::UntilCharge {
+            start_min_fraction,
+            stop_below_fraction,
+        } => NitroActivationRule::UntilCharge {
+            start_min_fraction: known_or_refuse(
+                "nitro.activation.start_min_fraction",
+                &start_min_fraction,
+            )?,
+            stop_below_fraction: known_or_refuse(
+                "nitro.activation.stop_below_fraction",
+                &stop_below_fraction,
+            )?,
+        },
     })
 }
 
