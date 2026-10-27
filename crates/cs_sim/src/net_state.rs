@@ -52,8 +52,9 @@
 //! The damage domain emits one
 //! [`KillAwarded`](crate::damage::DamageEventKind::KillAwarded) per
 //! destruction; nothing scored it. [`NetStateLedger`] is the score consumer
-//! that event was missing: [`Self::apply_kill_awards`] takes a resolution's
-//! events and [`Self::record_kill_award`] is the single awarding entry point
+//! that event was missing: [`NetStateLedger::apply_kill_awards`] takes a
+//! resolution's events and [`NetStateLedger::record_kill_award`] is the single
+//! awarding entry point
 //! behind it. An award is keyed by the victim's session-qualified
 //! [`ActorId`] and rides the same once-per-generation destruction record the
 //! network path already keeps, so there is one answer to "has this kill been
@@ -80,7 +81,8 @@
 //! numbers are unmeasured (F29 "Research boundary"), so the number this
 //! ledger awards travels in a provenance-carrying [`KillScoreValue`] whose
 //! [`ClaimId`] names the design, and a caller that holds a measured value
-//! supplies it with [`Self::set_kill_score`] instead of the ledger inventing
+//! supplies it with [`NetStateLedger::set_kill_score`] instead of the ledger
+//! inventing
 //! one. The designed value and the unknowns around it are recorded in
 //! `docs/findings/2026-10-05-f29-c-3-kill-award-scoring.md`.
 //!

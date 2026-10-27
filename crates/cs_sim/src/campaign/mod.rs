@@ -5,20 +5,20 @@
 //! stage `### F43-A`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
-//! * [`identity`] — the persisted identities the contract's outcome tuple
+//! * `identity` — the persisted identities the contract's outcome tuple
 //!   names: [`ProfileId`], [`CampaignRunId`], [`DifficultyId`] and
 //!   [`OutcomeId`] = `(profile, run, session, terminal event)`, the key the
 //!   dedup ledger refuses to apply twice.
-//! * [`graph`] — the runtime [`CampaignGraph`]: `cs_sim` cannot depend on
+//! * `graph` — the runtime [`CampaignGraph`]: `cs_sim` cannot depend on
 //!   `cs_content`, so this is the sim's own validated node/edge vocabulary
 //!   the `cs_app` lowering fills. Outcomes are `cs_script::Outcome`s —
 //!   the same terminal vocabulary the mission runtime emits.
-//! * [`outcome`] — [`MissionOutcome`], the single immutable transaction
+//! * `outcome` — [`MissionOutcome`], the single immutable transaction
 //!   input, and [`OutcomeAuthority`]: whether the evidence that produced it
 //!   was an authorized playthrough or a modified/synthetic run (spec F43
 //!   non-negotiable behavior 1 — modified runs mark progression, they do
 //!   not silently mix).
-//! * [`state`] — [`CampaignState`]: current node, per-node completion
+//! * `state` — [`CampaignState`]: current node, per-node completion
 //!   records (best *and* latest — replay never overwrites progression,
 //!   spec F43 behavior 3), currency in minor units, unlocks, the
 //!   [`OutcomeId`] dedup ledger and the monotonic profile revision.

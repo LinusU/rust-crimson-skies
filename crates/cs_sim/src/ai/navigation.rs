@@ -9,11 +9,12 @@
 //! here; the provenance-carrying producer record a route importer will emit is
 //! `cs_content::routes`. The conversion boundary between them is F31-C.
 //!
-//! [`navigation`] declares:
+//! `navigation` declares:
 //!
 //! * [`RouteGraph`], the Bevy-free normalized route the follower consumes —
 //!   nodes with stable [`RouteNodeId`]s **and** authored sequences, an
-//!   arrival radius per node and the route's minimum [`clearance`].
+//!   arrival radius per node and the route's minimum
+//!   [`clearance_m`](RouteGraph::clearance_m).
 //! * [`ManeuverEnvelope`], the aircraft's bounded turn/climb/speed
 //!   capabilities. Every lookahead, pursuit and avoidance command is bounded
 //!   by it (spec non-negotiable behavior 2); the type names its turn radius so
@@ -454,7 +455,7 @@ impl std::error::Error for RouteGraphError {}
 /// How far a follower has progressed along a route.
 ///
 /// Progression is monotonic **by construction**: the only mutator,
-/// [`advanced`](Self::advanced), moves the target forward by exactly one
+/// `advanced`, moves the target forward by exactly one
 /// authored node, so a follower can never rewind onto a marker it has already
 /// passed out of order and, because the target is always the next sequence, it
 /// can never skip a mandatory one.

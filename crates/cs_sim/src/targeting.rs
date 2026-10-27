@@ -1286,7 +1286,7 @@ impl TargetStore {
     /// Records a lifecycle transition for the actor.
     ///
     /// Destruction, despawn and mission removal end targetability;
-    /// bailout and capture do not (see [`ends_targeting`]). Recording is
+    /// bailout and capture do not (see `ends_targeting`). Recording is
     /// idempotent — two authoritative reporters may observe the same
     /// transition.
     ///

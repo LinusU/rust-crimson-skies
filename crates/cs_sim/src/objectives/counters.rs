@@ -15,7 +15,7 @@
 //! actor-count category for either, and the compiled mission program that would
 //! carry a counter is still undecoded (F13-B/C, F38), so nothing measurable
 //! produces them. They are therefore **reachable only from a caller that
-//! reports them**, which is what [`Self::needs_declared_reporter`] says in
+//! reports them**, which is what [`CountKind::needs_declared_reporter`] says in
 //! queryable form. A caller that invents a producer to make the count reachable
 //! would be reporting a category the original never declares, so the declared
 //! schema refuses an original record that counts one

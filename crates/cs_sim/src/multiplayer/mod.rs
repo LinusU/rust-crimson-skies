@@ -15,7 +15,8 @@
 //! supplies a default.
 //!
 //! [`objective`] is the server-authoritative possession state machine
-//! (F56-B): every claim, drop, return and score is an [`EventId`]-identified
+//! (F56-B): every claim, drop, return and score is an
+//! [`EventId`](cs_types::net::EventId)-identified
 //! event queued on submission and adjudicated in id order at tick close, so
 //! two clients claiming one objective can never both hold it — only the
 //! server-accepted claim applies — and a retransmitted event is a duplicate,

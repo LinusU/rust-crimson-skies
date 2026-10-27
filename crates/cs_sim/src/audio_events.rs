@@ -361,7 +361,7 @@ impl AudioAssetSpec {
     /// # Errors
     ///
     /// [`AudioEventError::NotAnAudioAsset`] for a non-audio id and the gain
-    /// errors of [`validate_gain`].
+    /// errors of `validate_gain`.
     pub fn try_new(
         asset: ContentId,
         bus: AudioBus,
@@ -955,7 +955,7 @@ impl VoiceLevel {
         Self { gain, pitch }
     }
 
-    /// Applies the same gain rules as [`validate_gain`] and requires a
+    /// Applies the same gain rules as `validate_gain` and requires a
     /// strictly positive pitch ratio.
     ///
     /// # Errors
@@ -992,7 +992,8 @@ impl VoiceLevel {
 ///
 /// F41 non-negotiable behavior 1 requires engine pitch and volume to depend on
 /// *measured* throttle/engine state with stable smoothing "not render FPS".
-/// The state it depends on is the caller-supplied [`EngineState`] spool
+/// The state it depends on is the caller-supplied
+/// [`EngineState`](crate::flight::EngineState) spool
 /// (below); the law itself is **designed, not measured**: the original engine
 /// audio's attack, release and pitch range are unmeasured (see
 /// `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md` and the F41

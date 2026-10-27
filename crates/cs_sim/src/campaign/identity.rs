@@ -88,7 +88,7 @@ macro_rules! identity {
             ///
             /// # Errors
             ///
-            /// [`IdentityError`].
+            /// `IdentityError`.
             pub fn new(text: &str) -> Result<Self, IdentityError> {
                 validate_id(text, $what).map(Self)
             }

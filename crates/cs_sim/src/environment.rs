@@ -13,8 +13,10 @@
 //! "The seam this stage ran into: the wind conversion lived above the
 //! simulation"): the crate graph runs `cs_app -> cs_sim` and never the reverse,
 //! so the code that *applies* a wind —
-//! [`flight::FlightEnvironment::wind_velocity_mps`] and the subtraction in
-//! [`flight::FlightModel::compute`] — could not call the conversion that lived
+//! [`flight::FlightEnvironment::wind_velocity_mps`](crate::flight::FlightEnvironment::wind_velocity_mps)
+//! and the subtraction in
+//! [`flight::FlightModel::compute`](crate::flight::FlightModel::compute) —
+//! could not call the conversion that lived
 //! above it in `cs_app::environment::air`. Every new consumer of a wind inside
 //! the simulation would then have had to carry its own copy of the subtraction,
 //! and F27-B needs exactly that for swept ballistics in `cs_sim::weapons`.
@@ -46,7 +48,8 @@
 ///
 /// This is the `FLIGHT-PHYSICS` convention applied component-wise, and it is
 /// the **only** implementation of that subtraction in the workspace:
-/// [`flight::FlightEnvironment::air_relative_velocity_m_s`] (which the flight
+/// [`flight::FlightEnvironment::air_relative_velocity_m_s`](crate::flight::FlightEnvironment::air_relative_velocity_m_s)
+/// (which the flight
 /// models call), `cs_app::environment::air::AuthoritativeWind::air_relative`
 /// and every future weapon consumer all route through it.
 ///

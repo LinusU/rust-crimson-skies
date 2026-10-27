@@ -18,7 +18,7 @@
 //! `cs_app::ai::combat`, which is **not** in this task's owner paths and is
 //! filed separately as #551 `F32-LOWERING`.
 //!
-//! [`combat`] declares:
+//! `combat` declares:
 //!
 //! * [`CombatRole`], the seven behaviors the F32 sheet names, and
 //!   [`RoleAssignment`], the *script-assigned* role of one actor together
@@ -2458,7 +2458,7 @@ impl fmt::Display for AceId {
 /// not inflated health (F32 "Deliverable and interfaces", non-negotiable 1).
 ///
 /// The declared counterpart is `cs_content::ai::DeclaredAceProfile`; the
-/// boundary (#551) turns its [`SkillKnob`](cs_content_ai::SkillKnob)
+/// boundary (#551) turns its `cs_content::ai::SkillKnob`
 /// overrides into this profile. This crate never re-applies an override list,
 /// so an ace can never be lowered twice.
 #[derive(Clone, Debug, PartialEq)]

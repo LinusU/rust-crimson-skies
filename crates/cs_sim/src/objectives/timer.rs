@@ -10,7 +10,7 @@
 //!
 //! Shared contract: `docs/contracts/SCRIPT-MISSION.md`, "IR requirements" and
 //! `docs/contracts/FLIGHT-PHYSICS.md` via `cs_sim::time`'s
-//! [`ClockPolicy`](crate::time::ClockPolicy).
+//! [`ClockPolicy`].
 //!
 //! # The three things this module makes structural
 //!
@@ -19,7 +19,7 @@
 //!    [`TimerState::NotArmed`], consumes no tick and cannot expire. There is no
 //!    way to have a running deadline whose beginning nobody declared.
 //! 2. **A time domain is data, and only gameplay domains are accepted.**
-//!    [`MissionTimer::new`] refuses a [`ClockPolicy`](crate::time::ClockPolicy)
+//!    [`MissionTimer::new`] refuses a [`ClockPolicy`]
 //!    whose domain is UI wall or unscaled media, because a mission deadline
 //!    that a menu frame or a cutscene advances is not a gameplay deadline. The
 //!    timer also carries the policy's pause rule, so a caller can read whether
@@ -38,7 +38,7 @@
 //! declares one timer per deadline, each with its own start condition and its
 //! own domain, and none of them may be re-armed by an unrelated frame. So this
 //! is the program's timer *table*: it keeps its own whole-tick countdown and
-//! borrows [`TimeDomain`](crate::time::TimeDomain) for the domain vocabulary
+//! borrows [`TimeDomain`] for the domain vocabulary
 //! instead of a second copy of the clock.
 //!
 //! Like [`TickTimer`](crate::time::TickTimer) it has **no wall-time entry

@@ -10,10 +10,10 @@
 //!
 //! # What F39-A left and what this stage adds
 //!
-//! F39-A shipped the vocabulary — [`ObjectiveCell`](super::state::ObjectiveCell),
-//! [`SweptTrigger`](super::trigger::SweptTrigger),
-//! [`ActorCounters`](super::counters::ActorCounters) and
-//! [`EmissionLedger`](super::spawn::EmissionLedger) — each usable on its own.
+//! F39-A shipped the vocabulary — [`ObjectiveCell`],
+//! [`SweptTrigger`],
+//! [`ActorCounters`] and
+//! [`EmissionLedger`] — each usable on its own.
 //! What a mission needs on top of that is the *continuous* part, and this
 //! module is it:
 //!
@@ -31,21 +31,21 @@
 //!   the table then sits in: a deadline that ran out on tick 4 does not re-grant
 //!   its reward, re-raise its signal or re-request its wave on ticks 5, 6 and 7
 //!   after that. Only a declared start or a fresh [`TimerRequest::Arm`] runs it
-//!   again. The [`EmissionLedger`](super::spawn::EmissionLedger) would hide the
+//!   again. The [`EmissionLedger`] would hide the
 //!   repeat for a spawn or a cue, and for nothing else.
 //! * **A named reference is never dropped.** A request that names a timer or an
 //!   objective this runtime does not have applies nothing and is *reported*, so
 //!   "the program asked for something" and "the world did nothing" are
 //!   distinguishable from the stream alone.
 //! * **Terminal precedence is declared, not incidental.**
-//!   [`TerminalPrecedence::SyntheticConservative`](super::terminal::TerminalPrecedence::SyntheticConservative)
+//!   [`TerminalPrecedence::SyntheticConservative`]
 //!   resolves the whole set of requests a tick made, and the
-//!   [`TerminalLatch`](super::terminal::TerminalLatch) then holds exactly one
+//!   [`TerminalLatch`] then holds exactly one
 //!   answer forever. A request after the latch is refused by name instead of
 //!   changing a result the player has already been shown.
 //! * **A protected actor is a declared roster, not a heuristic.** A
 //!   [`CountCondition`] names the actors and the single
-//!   [`CountKind`](super::counters::CountKind) that satisfies it, and its
+//!   [`CountKind`] that satisfies it, and its
 //!   [`CountReaction`] names what satisfying it means. There is no operation
 //!   anywhere in this module that turns "no enemies alive" into a mission
 //!   outcome.
@@ -56,7 +56,7 @@
 //!
 //! | phase | what it applies | why there |
 //! | --- | --- | --- |
-//! | 1 counters | [`LifecycleKind`](crate::damage::LifecycleKind) transitions through the [`MissionTransitions`](super::bailout::MissionTransitions) ledger into [`ActorCounters`](super::counters::ActorCounters) | a counter is a fact about this tick before anything may depend on it, and the ledger is what keeps a destruction arriving after a bailout from becoming one |
+//! | 1 counters | [`LifecycleKind`] transitions through the [`MissionTransitions`] ledger into [`ActorCounters`] | a counter is a fact about this tick before anything may depend on it, and the ledger is what keeps a destruction arriving after a bailout from becoming one |
 //! | 2 conditions | a satisfied [`CountCondition`] latches once and applies its declared [`CountReaction`] | a condition is a decision, so it follows its facts |
 //! | 3 triggers | swept crossings from this tick's real movement segments | a crossing is a fact; a program sees it, and it never applies an effect itself |
 //! | 4 signals | this tick's declared signals are collected | a signal raised now is eligible next tick |
@@ -79,7 +79,7 @@
 //! reach the placed range, a declared actor's id can never name a wave
 //! instance, and lifecycle facts, trigger watches and counter attribution stay
 //! unambiguous in the one [`ActorId`] space they share. The declared half —
-//! the [`cs_content`] schema that keeps placed references out of the band and
+//! the `cs_content` schema that keeps placed references out of the band and
 //! spawned references inside the program's computed wave capacity — lives in
 //! `cs_content::objectives`; the decision record is
 //! `docs/findings/2026-10-13-f39-e-actorid-space.md`.
@@ -104,7 +104,8 @@
 //!   so `WAKE` then `NAP` on one target leaves it napping, as the engine does.
 //! * **A wake is a guarded move.** It skips a target that is not
 //!   [`present`](ObjectiveRuntime::is_present) or has completed (a final
-//!   state), and a target that is already [`Active`] stops the rest of that
+//!   state), and a target that is already [`ObjectiveState::Active`] stops the
+//!   rest of that
 //!   completion's wake list ([`ObjectiveEventKind::WakeStopped`]).
 //! * **A nap is a timed pause.** It moves the target to
 //!   [`ObjectiveState::Napping`] and stores the declared nap time
@@ -197,8 +198,8 @@ use super::trigger::{Movement, SweptTrigger, TriggerError, TriggerEvent};
 /// Actor identity is not a program symbol, so counted events share one reserved
 /// source and are ordered among themselves by their `sequence`. No declaration
 /// may use this symbol — [`ObjectiveRuntime::add_objective`],
-/// [`add_condition`](Self::add_condition), [`add_timer`](Self::add_timer) and
-/// [`add_trigger`](Self::add_trigger) all refuse it — so a counted event can
+/// [`ObjectiveRuntime::add_condition`], [`ObjectiveRuntime::add_timer`] and
+/// [`ObjectiveRuntime::add_trigger`] all refuse it — so a counted event can
 /// never be mistaken for a declaration's event.
 ///
 /// The reserved value is `u32::MAX` because `0` is a real symbol: a record's
@@ -221,7 +222,7 @@ pub const ACTOR_EVENT_SOURCE: SymbolId = SymbolId(u32::MAX);
 /// (the k-th admitted instance is `ActorId(SPAWNED_ACTOR_BASE + k - 1)`).
 ///
 /// The split is enforced by allocation, not by a check that could be skipped:
-/// [`ObjectiveRuntime::admit_spawn`] never hands out an id below this value, so
+/// `ObjectiveRuntime::admit_spawn` never hands out an id below this value, so
 /// a declared actor such as `ActorId(2)` can never *be* a wave instance — its
 /// trigger watches, roster membership, lifecycle attribution and objective
 /// counts stay its own no matter what the waves admit. The declared schema
@@ -1115,7 +1116,7 @@ impl Default for RuntimeLimits {
 /// The continuous objective runtime of one mission session.
 ///
 /// One session owns one runtime. A retry is a new
-/// [`SessionGeneration`](cs_script::runtime::SessionGeneration) and a new
+/// [`SessionGeneration`] and a new
 /// runtime: no objective state, counter, trigger, timer, ledger entry or latch
 /// survives, because none of them is reachable from the old one — which is
 /// F39-C's retry acceptance case's precondition, and this stage's reason for
@@ -1626,7 +1627,7 @@ impl ObjectiveRuntime {
     /// [`RuntimeError::NotAdvancing`] for a tick at or before the last stepped
     /// one, and [`RuntimeError::Trigger`] for a refused movement — a non-finite
     /// segment, a repeated watched actor, or an observation that would not
-    /// advance. Every one of them is decided in [`validate_movements`] before any
+    /// advance. Every one of them is decided in `validate_movements` before any
     /// effect is applied, so a refused tick changes nothing at all: counters keep
     /// their counts, conditions do not latch, no deadline runs and no spawn is
     /// admitted. A bound is not an error: it is reported in [`ObjectiveTick::stop`]

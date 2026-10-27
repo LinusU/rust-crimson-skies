@@ -387,7 +387,7 @@ impl MissionSession {
 
     /// Submits this session's directive log to `runtime` — the family's
     /// [`ObjectiveRuntime::submit_directives`] executor — the way
-    /// [`Countdown::apply_new`] feeds the timer directives to this
+    /// `Countdown::apply_new` feeds the timer directives to this
     /// session's own countdown.
     ///
     /// `runtime` stays the caller's: the control program this session
@@ -1888,7 +1888,9 @@ struct BlockLifecycle {
 /// The writer for [`MissionFacts::objectives`] — the numbered block's
 /// measured lifecycle state, keyed by its zero-based record index.
 ///
-/// It answers the fact [`Condition::ObjectiveAwake`] reads, which is the
+/// It answers the fact
+/// [`Condition::ObjectiveAwake`](cs_script::ir::Condition::ObjectiveAwake)
+/// reads, which is the
 /// original's pass-2 gate: a block that is dormant, napping or done evaluates
 /// nothing. Seeding comes from the record's own spelling
 /// ([`LifecycleDecl`]), and the transitions this table drives are the
@@ -1921,7 +1923,8 @@ pub struct BlockLifecycleTable {
 
 impl BlockLifecycleTable {
     /// An empty table: no block declared, so no block is awake and every
-    /// [`Condition::ObjectiveAwake`] answers `false` (fail-closed).
+    /// [`Condition::ObjectiveAwake`](cs_script::ir::Condition::ObjectiveAwake)
+    /// answers `false` (fail-closed).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -2077,7 +2080,8 @@ impl BlockLifecycleTable {
     /// The [`MissionFacts`] for the next evaluation: every declared block at
     /// its current lifecycle state. Blocks nobody declared are absent, and an
     /// absent block is not awake — the fail-closed read
-    /// [`Condition::ObjectiveAwake`] is documented to make.
+    /// [`Condition::ObjectiveAwake`](cs_script::ir::Condition::ObjectiveAwake) is
+    /// documented to make.
     #[must_use]
     pub fn facts(&self) -> MissionFacts {
         MissionFacts {

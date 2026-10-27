@@ -24,7 +24,8 @@ use super::subsystem::SubsystemKey;
 #[derive(Clone, Debug, PartialEq)]
 pub struct EngineSpec {
     /// The subsystem this engine is; it must be an
-    /// [`SubsystemKind::Engine`] of the ship's graph.
+    /// [`SubsystemKind::Engine`](super::subsystem::SubsystemKind::Engine) of the
+    /// ship's graph.
     pub key: SubsystemKey,
     /// The engine's rated thrust in newtons, or an explicit unknown.
     pub thrust_n: Resolved<f64>,

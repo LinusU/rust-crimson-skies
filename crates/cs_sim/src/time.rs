@@ -547,7 +547,7 @@ impl TimerKind {
 /// A gameplay duration measured in whole fixed ticks: a weapon cooldown or an
 /// objective timer.
 ///
-/// The timer has **no wall-time entry point**. [`commit`](Self::commit) is
+/// The timer has **no wall-time entry point**. `commit` is
 /// private to this module, so the only way a timer can move is whole ticks
 /// that some clock already committed — which is the structural form of AC04:
 /// a paused frame commits zero ticks, so a paused frame cannot shorten a
@@ -921,7 +921,7 @@ impl SessionDriver {
     /// fed to the gameplay timeline.
     ///
     /// The frame is **all-or-nothing**: it is projected with
-    /// [`project`](SimClock::project) first and every clock that must take it
+    /// `SimClock::project` first and every clock that must take it
     /// is checked to have room before the first commit, so an overflowing
     /// frame leaves the session clock and the gameplay timers it feeds exactly
     /// where they were — they can never drift apart on an error path.

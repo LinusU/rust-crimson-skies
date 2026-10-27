@@ -11,8 +11,9 @@
 //! A [`DirectiveEmission`](cs_script::runtime::DirectiveEmission) of the family
 //! carries addresses *as the record spelled them*. This module decodes each one
 //! the way the original's parse stores it and resolves every address through
-//! [`resolve_objective_address`], so [`OUT_OF_RANGE_OBJECTIVE_ADDRESS`] has a
-//! live call site:
+//! [`resolve_objective_address`], so
+//! [`OUT_OF_RANGE_OBJECTIVE_ADDRESS`](super::address::OUT_OF_RANGE_OBJECTIVE_ADDRESS)
+//! has a live call site:
 //!
 //! * **Lists** (`WakeObjectives`, `SleepObjectives`, `KillObjectives`,
 //!   `WakeObjectivesOnTransition`) arrive as the one `Value::List` the lowering
@@ -21,7 +22,7 @@
 //!   `−1` terminator one slot past the last, so an authored `0` stores the
 //!   `−1` the walk stops on: it ends the walk and the children after it
 //!   are never reached, which is not a refusal — but they are still
-//!   *stored*, so [`ENGINE_LIST_WINDOW`] or more spelled children leave
+//!   *stored*, so `ENGINE_LIST_WINDOW` or more spelled children leave
 //!   the appended terminator no slot, the shape `TargetList::from_record`
 //!   refuses, and the whole list gets [`RuntimeError::DirectiveListTooLong`],
 //!   never a truncated walk.

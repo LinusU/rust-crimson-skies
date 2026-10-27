@@ -20,14 +20,14 @@
 //!    ([`StuntMovement::Teleport`]), while a rebase keeps the same physical
 //!    flight and still counts ([`StuntMovement::Rebased`], sheet behavior 1);
 //! 2. a crossing of the gate's mid-plane inside the aperture
-//!    ([`PassRefusal::MissedGate`]). The segment must actually *reach* the
+//!    ([`GateRefusal::MissedGate`]). The segment must actually *reach* the
 //!    plane: one that stops inside the slab, turns back before it or runs
 //!    parallel to it did not fly through anything, however deep inside the
 //!    hole its endpoints happen to sit;
 //! 3. a travel direction at least as aligned with the gate normal as the
-//!    authored rule ([`PassRefusal::WrongDirection`]); and
+//!    authored rule ([`GateRefusal::WrongDirection`]); and
 //! 4. the authored margin from the nearest rim
-//!    ([`PassRefusal::InsufficientClearance`]). A margin wider than the hole
+//!    ([`GateRefusal::InsufficientClearance`]). A margin wider than the hole
 //!    itself is refused as an unusable rule
 //!    ([`GateRefusal::UnsatisfiableClearance`]) rather than as a near miss.
 //!

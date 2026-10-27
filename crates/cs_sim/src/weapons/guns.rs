@@ -36,7 +36,8 @@
 //! * [`SweepCandidate`] — one world candidate: a swept box, the damage node a
 //!   contact with it lands on, and the declared relation the rules filter it
 //!   under.
-//! * [`WeaponRules::admitted`] — the declared-policy half of the query, and
+//! * [`WeaponRules::admit_candidates`] — the declared-policy half of the query,
+//!   and
 //!   [`Ballistics::sweep_with_sources`] its geometry half, kept as two
 //!   functions so neither can grow the other's rules.
 //! * [`GunHitRouter`] — the conversion: one accepted shot's contacts become
@@ -3474,7 +3475,7 @@ pub const ORIGINAL_GUN_GROUP_NAMES_LAST_ID: u32 = 3080;
 /// The label is **not** an assertion about where the group sits. Deciding which
 /// side an inner- or outer-wing group belongs to needs the per-airframe gun
 /// tables inside the executable, which no agent can read; so
-/// [`GunMountKind::original_group_ids`] covers only the groups whose kind the
+/// [`original_groups_for`] covers only the groups whose kind the
 /// label itself determines, and [`ORIGINAL_GUN_GROUPS`] keeps every group
 /// addressable whether it is covered or not. The uncovered ones are reported by
 /// name rather than assigned a side.

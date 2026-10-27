@@ -16,15 +16,15 @@
 //! # Session and instance identity
 //!
 //! Every session generation here is the shared nonzero
-//! [`SessionId`](cs_types::net::SessionId), and every stable instance id —
+//! [`SessionId`], and every stable instance id —
 //! a status effect, a triggered area — is the shared
-//! [`ActorId`](cs_types::net::ActorId) of
+//! [`ActorId`] of
 //! `docs/contracts/IDENTITY-CONTENT.md`, named under its ordnance-facing
 //! aliases [`StatusEffectInstanceId`] and [`AreaInstanceId`]. A
 //! generation-zero sentinel is unrepresentable, and a foreign generation is
 //! refused by name (task #601, the follow-up #397/#442/#496 set). One
 //! identity is deliberately still *not* the shared type: a
-//! [`ProjectileId`](crate::weapons::guns::ProjectileId) carries F27's own
+//! [`ProjectileId`] carries F27's own
 //! bare `u64` generation stamp until the guns module migrates, which is why
 //! [`OrdnanceRuntimeError::ForeignSession`] reports generation numbers
 //! rather than the shared newtype.
@@ -3498,7 +3498,7 @@ impl StatusEffectLedger {
 /// This is the shared [`ActorId`] itself — the `cs_types::net` type
 /// `crate::damage` re-exports (task #442), not a second struct — the same
 /// shape and the same never-recycled-serial promise
-/// [`StatusEffectInstanceId`](StatusEffectInstanceId) carries (task #601).
+/// [`StatusEffectInstanceId`] carries (task #601).
 /// An alias cannot carry its own [`fmt::Display`], so an id displays in the
 /// shared `actor s:n` form rather than the retired `area/s#n` one.
 pub type AreaInstanceId = ActorId;

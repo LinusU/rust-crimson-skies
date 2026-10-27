@@ -58,7 +58,7 @@
 //! Avian integrate. This law is the contract's documented exception
 //! ("Exceptional airframes implement the same input/output boundary but can
 //! use a different control law"), added as
-//! [`ModelKind::OriginalFixedWing`](super::tuning::ModelKind::OriginalFixedWing)
+//! [`ModelKind::OriginalFixedWing`]
 //! rather than by bending the designed `CL(alpha)` law:
 //!
 //! * **Linear** — the law integrates velocity itself, so a consumer that hands

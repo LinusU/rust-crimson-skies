@@ -562,7 +562,8 @@ impl CampaignState {
     /// generation), and a defeat cannot burn the victory grant before the
     /// first success earns it.
     ///
-    /// The rule's [`DifficultyScope`] is deliberately **not** consulted
+    /// The rule's [`DifficultyScope`](crate::records::DifficultyScope) is
+    /// deliberately **not** consulted
     /// here: this state is one run under one difficulty
     /// ([`Self::difficulty`]), so its per-node record is per difficulty by
     /// construction. The profile-level store — the scrapbook's

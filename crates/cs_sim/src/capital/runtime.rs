@@ -30,14 +30,16 @@
 //! # The F35-C pass
 //!
 //! One tick pass is the single writer of the wiring in
-//! [`wiring::ShipWiring`], and it runs in this order: move the ships, release
+//! [`wiring::ShipWiring`](super::wiring::ShipWiring), and it runs in this
+//! order: move the ships, release
 //! or cancel their launches, advance the destruction countdowns. Because the
 //! release pass is the only path that turns a [`LaunchId`] into an aircraft,
 //! a launch resolves exactly once — destroyed bay, destroyed carrier or not
 //! — which is what AC03 measures end to end. The discrete commands
-//! ([`Self::schedule_launch`], [`Self::release_launch`], [`Self::begin_capture`],
-//! [`Self::advance_capture`], [`Self::load_cargo`], [`Self::unload_cargo`],
-//! [`Self::despawn_ship`]) return their own result and never leave a
+//! ([`CapitalShipSet::schedule_launch`], [`CapitalShipSet::release_launch`],
+//! [`CapitalShipSet::begin_capture`], [`CapitalShipSet::advance_capture`],
+//! [`CapitalShipSet::load_cargo`], [`CapitalShipSet::unload_cargo`],
+//! [`CapitalShipSet::despawn_ship`]) return their own result and never leave a
 //! half-applied state, so a caller that ordered them knows the outcome
 //! without reading the event stream.
 //!
@@ -247,7 +249,7 @@ pub enum CapitalRuntimeError {
         at: Tick,
     },
     /// A live ship was asked to despawn. Only a destroyed ship leaves the
-    /// world through [`Self::despawn_ship`]: removing an intact ship is a
+    /// world through [`CapitalShipSet::despawn_ship`]: removing an intact ship is a
     /// mission removal, a different transition this runtime does not own.
     NotDestroyed {
         /// The ship that is still intact.
