@@ -117,11 +117,13 @@ Three imported entry points sit just outside the writer list and were accounted
 for rather than overlooked: `RegCreateKeyExA`/`RegSetValueExA`/`RegDeleteKeyA`
 (4/6/2 sites) write **registry** values under the game's own key — settings,
 not files, and not an asset store; `ShellExecuteA` (1 site) hands a document or
-URL to an external handler — a child process is already clause (b) of the
-unknown below; and `SetFilePointer`, `fseek`, `fflush`, `fclose`,
-`GetSaveFileNameA` and `GetPrivateProfileStringA` only position, flush, close,
-name or read handles the audited entry points produced. The MFC42.DLL import
-block (203 ordinals, nameless in the image) is covered by clause (b) as well.
+URL to an external handler — a child process writing on the engine's behalf is
+clause (b) of the unknown below, same as a DLL; and `SetFilePointer`, `fseek`,
+`fflush`, `fclose`, `GetSaveFileNameA` and `GetPrivateProfileStringA` only
+position, flush or close an audited handle, answer a save-dialog path, or read
+an `.ini` — any write behind them still goes through the entry points above.
+The MFC42.DLL import block (203 ordinals, nameless in the image) is covered by
+clause (b) as well.
 
 Two `fopen` sites in the resolver at `0x59d270` take their mode from a register
 the labeler cannot see; all four call sites (`0x5104b8`, `0x511019`,
@@ -264,9 +266,10 @@ This is recorded as an explicit **unknown**, not as "the original had no cache":
 > normal mission load, and if so what it keyed it on, is unmeasured. In the
 > measured image no writer, path string, import or vocabulary supports such a
 > store, but a negative over static spans cannot exclude (a) an output path
-> assembled only at run time from user or registry input, (b) a DLL writing on
-> the engine's behalf, or (c) a mechanism reached only through a code path this
-> bounded audit did not enumerate.
+> assembled only at run time from user or registry input, (b) a DLL — the MFC
+> block's 203 ordinal imports are nameless in the image — or a child process
+> writing on the engine's behalf, or (c) a mechanism reached only through a
+> code path this bounded audit did not enumerate.
 
 What was searched is the whole import surface above (every reference of every
 file-creating/writing entry point the image imports), every string in the image
