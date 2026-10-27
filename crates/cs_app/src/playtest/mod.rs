@@ -23,9 +23,9 @@
 //!   the keyboard is read by Bevy, converted to device events, gated by the
 //!   session's focus/pause/context policy and only then read back as a
 //!   [`cs_sim::flight::FlightInput`] by [`command::flight_command`].
-//! * **Camera** is the F21 [`crate::camera::CameraRig`] in its chase rig,
-//!   resolved each frame from the aircraft's authoritative `Position` and
-//!   `Rotation`.
+//! * **Camera** is the F21 [`crate::camera::CameraSession`] over its chase rig,
+//!   fed each frame from the aircraft's authoritative `Position` and
+//!   `Rotation`; the session's frame moves the camera entity.
 //! * **Collision** is Avian contact with a static wall and the ground, reported
 //!   through [`crate::physics::ContactReports`].
 //!
@@ -67,7 +67,10 @@ use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, WorldPosition};
 
 use crate::camera::chase_preset::declared_capture_fitted_chase_modes;
-use crate::camera::{CameraPose, CameraRig, RigFrame, RigInputs, ViewRig, lower_camera_modes};
+use crate::camera::{
+    BodyPose, CameraEvent, CameraPose, CameraRig, CameraSession, RigFrame, SessionError,
+    SessionFrame, SessionFrameInputs, ViewRig, lower_camera_modes,
+};
 use crate::input::platform::{BevyInputPlugin, PlatformInput};
 use crate::input::{InputSession, PauseReason, SessionMode};
 use crate::origin::OriginChange;
@@ -271,12 +274,27 @@ impl Default for PlaytestState {
     }
 }
 
-/// The chase camera: the F21 rig and its latest resolved frame.
+/// The chase camera: the F21 [`CameraSession`] and its latest frame.
+///
+/// [`follow_camera`] is the render-frame loop that feeds the session and the
+/// one consumer of what it produces (task #537, F21-F); the decision is
+/// recorded in `docs/findings/2026-10-27-f21-f-camera-session-producer.md`.
 #[derive(Resource)]
 pub struct PlaytestCamera {
-    rig: CameraRig,
-    /// The frame the rig resolved most recently.
+    session: CameraSession,
+    /// The rig's own frame from the most recent session frame, when the
+    /// player's rig drew it.
     pub frame: Option<RigFrame>,
+    /// The session frame produced most recently: the authority, the view the
+    /// camera entity was moved to and the events of that frame.
+    pub session_frame: Option<SessionFrame>,
+    /// The refusal of the most recent frame that could not be drawn. Cleared by
+    /// the next frame that can; a refusal is never swallowed silently.
+    pub last_error: Option<SessionError>,
+    /// Every event the session reported, in order, since the playtest began.
+    pub events: Vec<CameraEvent>,
+    /// Session frames produced.
+    pub frames: u64,
     teleport: bool,
     /// The viewport aspect the next frame is framed at.
     pub aspect: AspectRatio,
@@ -291,6 +309,13 @@ impl PlaytestCamera {
     pub fn reseat(&mut self) {
         self.teleport = true;
         self.frame = None;
+        self.session_frame = None;
+    }
+
+    /// The camera session the render-frame loop drives.
+    #[must_use]
+    pub const fn session(&self) -> &CameraSession {
+        &self.session
     }
 
     pub(crate) fn new() -> Self {
@@ -309,9 +334,14 @@ impl PlaytestCamera {
         let mut rig = CameraRig::new(modes).expect("the synthetic mode set builds a rig");
         rig.set_rig(ViewRig::Chase)
             .expect("the synthetic mode set declares a chase view");
+        let session = CameraSession::new(rig).expect("the rig's response rate is valid");
         Self {
-            rig,
+            session,
             frame: None,
+            session_frame: None,
+            last_error: None,
+            events: Vec::new(),
+            frames: 0,
             teleport: true,
             aspect: AspectRatio::SIXTEEN_NINE,
         }
@@ -619,14 +649,19 @@ fn perform_reset(world: &mut World) {
         .throttle_mut()
         .set_position(CRUISE_THROTTLE)
         .expect("the cruise throttle is inside the range");
+    // A new session generation: the session forgets the previous pilot's
+    // camera and reports what that dropped.
     let mut camera = world.resource_mut::<PlaytestCamera>();
-    camera.rig.reset();
+    let dropped = camera.session.reset();
+    camera.events.extend(dropped);
     camera
-        .rig
-        .set_rig(ViewRig::Chase)
+        .session
+        .select_rig(ViewRig::Chase)
         .expect("the chase rig exists");
     camera.teleport = true;
     camera.frame = None;
+    camera.session_frame = None;
+    camera.last_error = None;
     let mut state = world.resource_mut::<PlaytestState>();
     state.resets += 1;
     state.command = FlightInput::NEUTRAL;
@@ -740,6 +775,7 @@ fn follow_camera(
     aircraft: Query<(&Position, &Rotation), With<PlaytestAircraft>>,
     time: Res<Time<Real>>,
     state: Res<PlaytestState>,
+    ledger: Res<PhysicsTickLedger>,
     mut camera: ResMut<PlaytestCamera>,
     mut cameras: Query<&mut Transform, With<PlaytestCameraMarker>>,
 ) {
@@ -756,26 +792,38 @@ fn follow_camera(
     } else {
         OriginChange::Rebase
     };
-    let inputs = RigInputs {
-        at: Tick(0),
-        subject: ActorId {
-            session: SessionId::new(1).expect("session generation 1 is valid"),
-            serial: u64::from(state.resets) + 1,
-        },
-        aircraft: pose,
+    // The player body is stated every frame; a reset spawns a new aircraft,
+    // which is a different serial and so a different camera binding.
+    let player = ActorId {
+        session: SessionId::new(1).expect("session generation 1 is valid"),
+        serial: u64::from(state.resets) + 1,
+    };
+    let bodies = [BodyPose::new(player, pose)];
+    let inputs = SessionFrameInputs {
+        at: Tick(ledger.ticks),
+        player,
+        bodies: &bodies,
         aspect: camera.aspect,
         elapsed: time.delta(),
         look: None,
         spyglass: None,
         origin_change,
     };
-    let Ok(frame) = camera.rig.resolve(&inputs) else {
-        return;
+    let frame = match camera.session.frame(&inputs) {
+        Ok(frame) => frame,
+        Err(error) => {
+            camera.last_error = Some(error);
+            return;
+        }
     };
     camera.teleport = false;
-    camera.frame = Some(frame);
-    let eye = frame.pose.position();
-    let [x, y, z, w] = frame.pose.rotation().components();
+    camera.last_error = None;
+    camera.frames += 1;
+    camera.events.extend(frame.events.iter().cloned());
+    camera.frame = frame.rig;
+    let eye = frame.view.pose.position();
+    let [x, y, z, w] = frame.view.pose.rotation().components();
+    camera.session_frame = Some(frame);
     for mut transform in &mut cameras {
         transform.translation = Vec3::new(eye.x() as f32, eye.y() as f32, eye.z() as f32);
         transform.rotation = Quat::from_xyzw(x as f32, y as f32, z as f32, w as f32);

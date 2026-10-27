@@ -30,6 +30,7 @@ mod accept_f20_c_scene_teardown;
 mod accept_f20_c_stale_consumer_docs;
 mod accept_f20_c_wired_session;
 mod accept_f20_d_validation;
+mod accept_f21_f_session_producer;
 mod accept_f22_b_device_adapters;
 mod accept_f22_c_focus_ui_replay_ownership;
 mod accept_f22_d_device_families_and_command_coverage;
