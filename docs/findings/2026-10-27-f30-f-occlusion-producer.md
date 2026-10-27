@@ -27,7 +27,10 @@ Task F30-F (Rally #535), follow-up of F30-D.
   ignored so an actor is not hidden by its own mount. Scenery therefore does
   not occlude.
 - The segment runs camera to the actor's pose point, not to its extent.
-- The mission publisher (`mission_session::weapons`) still calls
-  `apply_selection_edges` directly; it does not publish `TargetingFrameInputs`
-  for `TargetingSchedulePlugin`, so the per-frame consumer pass is not yet run
-  by the mission session. Filed as a follow-up task.
+- The mission publisher (`mission_session::weapons`) still called
+  `apply_selection_edges` directly; it did not publish `TargetingFrameInputs`
+  for `TargetingSchedulePlugin`, so the per-frame consumer pass was not run by
+  the mission session. Filed as a follow-up task. **Resolved by F30-G (Rally
+  #2139)**: the mission session installs the plugin and publishes the frame's
+  inputs itself; see
+  `2026-10-27-f30-g-mission-targeting-schedule.md`.

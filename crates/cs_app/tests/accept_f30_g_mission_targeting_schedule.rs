@@ -1,8 +1,12 @@
 //! Acceptance scenario F30-G: the mission session's targeting runs through
 //! [`TargetingSchedulePlugin`] once per rendered frame.
 //!
-//! Spec: `specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-G`. Task test prefix: `accept_f30_g_`.
+//! Follow-up of F30-C (`### F30-C` of
+//! `specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`) and of
+//! the F30-F finding `docs/findings/2026-10-27-f30-f-occlusion-producer.md`
+//! (Rally #2139). The sheet has no `F30-G` stage: this stage only wires the
+//! rendered-frame schedule into the mission session and claims no new
+//! targeting behavior. Task test prefix: `accept_f30_g_`.
 //!
 //! Before this stage `mission_session::weapons` invoked
 //! [`apply_selection_edges`] itself on the tick's action list, so nothing
