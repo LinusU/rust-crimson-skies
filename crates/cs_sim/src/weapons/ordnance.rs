@@ -533,6 +533,58 @@ impl fmt::Display for ArmingRule {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProximityFuse {
     trigger_radius_m: f64,
+    sampling: ProximitySampling,
+}
+
+/// How a proximity fuse samples the target over one simulation step.
+///
+/// The trigger **shape** the original uses is a sphere of radius
+/// `DETONATION_DISTANCE` around the target, tested with a squared distance
+/// (task T452.02, `docs/findings/2026-10-25-t452-02-proximity-fuse-shape-and-arming.md`).
+/// The *sampling* is the remaining question, and the same static measurement
+/// answered it: the original samples the item's position **once at the start of
+/// the step** against the target's current position and compares that single
+/// squared distance, so it misses a pass that happens entirely inside a step.
+/// The swept relative-path model below is a **designed** alternative, not the
+/// original's rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ProximitySampling {
+    /// The closest approach of the item's segment to the target's swept path
+    /// over the step — the designed model that cannot miss a crossing inside a
+    /// step (`FLIGHT-PHYSICS`, "Check relative movement").
+    SweptRelativePath,
+    /// One sample per step: the item's position at the **start** of the step
+    /// against the target's position at its end. The measured original rule
+    /// (T452.02), which misses a crossing that happens entirely between two
+    /// samples.
+    StartOfStepSample,
+}
+
+impl ProximitySampling {
+    /// Every sampling model, in a stable order.
+    pub const ALL: &'static [ProximitySampling] =
+        &[Self::SweptRelativePath, Self::StartOfStepSample];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SweptRelativePath => "swept_relative_path",
+            Self::StartOfStepSample => "start_of_step_sample",
+        }
+    }
+
+    /// Whether this is the model the original's engine implements.
+    #[must_use]
+    pub const fn is_measured_original(self) -> bool {
+        matches!(self, Self::StartOfStepSample)
+    }
+}
+
+impl fmt::Display for ProximitySampling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 impl ProximityFuse {
@@ -542,6 +594,11 @@ impl ProximityFuse {
     /// A zero-radius fuse is refused rather than treated as "triggers on
     /// contact": that is what [`FuseRule::Impact`] is for, and two spellings
     /// of the same behavior would let a catalogue contradict itself.
+    ///
+    /// The sampling defaults to the **designed** [`ProximitySampling::SweptRelativePath`];
+    /// a caller with original evidence says which one it wants with
+    /// [`with_sampling`](Self::with_sampling). Nothing here picks the original
+    /// rule on a record's behalf.
     ///
     /// # Errors
     ///
@@ -554,13 +611,29 @@ impl ProximityFuse {
         if trigger_radius_m <= 0.0 {
             return Err(OrdnanceDefinitionError::NonPositiveTriggerRadius { trigger_radius_m });
         }
-        Ok(Self { trigger_radius_m })
+        Ok(Self {
+            trigger_radius_m,
+            sampling: ProximitySampling::SweptRelativePath,
+        })
+    }
+
+    /// The same radius with an explicit sampling model.
+    #[must_use]
+    pub const fn with_sampling(mut self, sampling: ProximitySampling) -> Self {
+        self.sampling = sampling;
+        self
     }
 
     /// The declared effective trigger radius, in meters.
     #[must_use]
     pub const fn trigger_radius_m(self) -> f64 {
         self.trigger_radius_m
+    }
+
+    /// How this fuse samples the target over a step.
+    #[must_use]
+    pub const fn sampling(self) -> ProximitySampling {
+        self.sampling
     }
 }
 
@@ -2046,6 +2119,468 @@ impl OrdnanceComponent {
     }
 }
 
+// ------------------------------------------------- catalogued components ----
+
+/// One value a catalogued component does not state, named by the claim it is
+/// recorded under.
+///
+/// A catalogue entry is not a runtime component: it records the original's
+/// **family and behaviour** and names every parameter no shipped file states,
+/// rather than defaulting one so the entry would lower. The field is part of
+/// the record so a report can say *which* value of *which* component is
+/// missing, not merely that something is.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CatalogueUnknown {
+    /// The catalogue field the value belongs to (`launch.velocity_unit`).
+    pub field: String,
+    /// The claim id the unknown is recorded under.
+    pub claim: String,
+    /// Why the value is not known, and what it affects.
+    pub reason: String,
+}
+
+impl CatalogueUnknown {
+    /// Assembles one named unknown, refusing an empty field, claim or reason.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogueError::EmptyField`], [`CatalogueError::EmptyClaim`] or
+    /// [`CatalogueError::EmptyReason`].
+    pub fn try_new(
+        field: impl Into<String>,
+        claim: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Result<Self, CatalogueError> {
+        let field = field.into();
+        if field.trim().is_empty() {
+            return Err(CatalogueError::EmptyField);
+        }
+        let claim = claim.into();
+        if claim.trim().is_empty() {
+            return Err(CatalogueError::EmptyClaim { field });
+        }
+        let reason = reason.into();
+        if reason.trim().is_empty() {
+            return Err(CatalogueError::EmptyReason { field });
+        }
+        Ok(Self {
+            field,
+            claim,
+            reason,
+        })
+    }
+}
+
+/// Where a catalogued component mounts, as the installation's own screens
+/// state it.
+///
+/// This is a *slot kind*, not a position: which of an airframe's slots a
+/// component fills is a per-airframe plane-record value, and it is unmeasured
+/// (`t452_04.limit.per_airframe_layout`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CataloguedMount {
+    /// A rocket-slot component: one of the measured `slots` slots.
+    RocketSlot {
+        /// The slot count the ordnance screen declares.
+        slots: u32,
+    },
+    /// No screen states a slot for it, so the mount is unknown rather than
+    /// assumed. `wep_25`, the glidebomb, declares every projectile key but no
+    /// `ROCKET` flag and is the measured instance.
+    Unknown {
+        /// The claim id the unknown is recorded under.
+        claim: String,
+    },
+}
+
+impl CataloguedMount {
+    /// The slot count, or `None` when no screen states one.
+    #[must_use]
+    pub const fn slots(&self) -> Option<u32> {
+        match self {
+            Self::RocketSlot { slots } => Some(*slots),
+            Self::Unknown { .. } => None,
+        }
+    }
+}
+
+/// When a catalogued component's fuse becomes live.
+///
+/// [`ArmingRule`] cannot express the measured original rule: it has no
+/// "armed from release, no delay" state (its `Disarmed` never arms at all), so
+/// the catalogue has its own vocabulary rather than spelling the original's
+/// answer as a rule it does not mean.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CataloguedArming {
+    /// No arming delay: the fuse is live from release, and only the fuse's own
+    /// live conditions gate it. The measured original rule (T452.02).
+    OnRelease,
+    /// Armed once the item has lived this many ticks.
+    AfterTicks(u64),
+    /// Armed once the item has travelled this many meters.
+    AfterTravelMetres(f64),
+}
+
+impl CataloguedArming {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OnRelease => "on_release",
+            Self::AfterTicks(_) => "after_ticks",
+            Self::AfterTravelMetres(_) => "after_travel_m",
+        }
+    }
+}
+
+/// The trigger shape of a catalogued proximity fuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ProximityShape {
+    /// A sphere of the trigger radius centred on the target, boundary
+    /// inclusive. The measured original shape (T452.02): a squared-distance
+    /// comparison with no directional or shaped term.
+    Sphere,
+}
+
+impl ProximityShape {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Sphere => "sphere",
+        }
+    }
+}
+
+/// How a catalogued component ends, in the units the record states.
+///
+/// A timed fuse keeps the record's **seconds**, not a tick count: converting to
+/// ticks needs a tick rate, and no file states which rate the original used, so
+/// the conversion belongs to a later lowering step with its own evidence
+/// (`t452_04.limit.no_expires_key` records that the member states no lifetime
+/// key at all).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CataloguedFuse {
+    /// Ends on contact.
+    Impact,
+    /// Ends when a target comes within the fuse's radius, with the measured
+    /// trigger shape and sampling carried explicitly.
+    Proximity {
+        /// The radius and sampling.
+        fuse: ProximityFuse,
+        /// The measured trigger shape.
+        shape: ProximityShape,
+    },
+    /// Ends after the duration the record states.
+    TimedSeconds {
+        /// The stated duration.
+        seconds: f64,
+    },
+    /// The record states no trigger of its own, so how its flight ends is
+    /// unknown rather than impact-by-default. Two measured instances: the
+    /// area-denial `wep_13`, whose whole effect is its area, and the
+    /// "fake weapon" flak record `wep_26`, whose only stated radius is its
+    /// `IMPACT_PROXIMITY` **blast** radius (task #1318) and not a trigger.
+    Undeclared {
+        /// The claim id the unknown is recorded under.
+        claim: String,
+    },
+}
+
+impl CataloguedFuse {
+    /// The stable label used in reports.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Impact => "impact".to_owned(),
+            Self::Proximity { fuse, shape } => {
+                format!("proximity({}, {})", shape.label(), fuse.sampling())
+            }
+            Self::TimedSeconds { seconds } => format!("timed_s({seconds})"),
+            Self::Undeclared { .. } => "undeclared".to_owned(),
+        }
+    }
+}
+
+/// How a catalogued component finds — or does not find — a target, allowing the
+/// lost-target rule to be **unmeasured** without losing the fact that the
+/// component is a seeker.
+///
+/// [`GuidanceRule`] forces a lost-target answer on every targeted component.
+/// That is right for a runtime component and wrong for a catalogue entry whose
+/// weapon was never measured: "this is a guided rocket whose behavior after a
+/// lost target is not known" is a real state, and defaulting it to
+/// [`LostTargetBehavior::Coast`] would be the substitution F28 non-negotiable 4
+/// forbids. The unmeasured rule is named by a claim on the entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CataloguedGuidance {
+    /// Flies the declared line. It has no target to lose.
+    Unguided,
+    /// Tracks one designated target. The lost-target rule is `Some` when it was
+    /// measured and `None` when it was not, in which case the entry names the
+    /// claim.
+    Targeted {
+        /// The measured lost-target rule, if one was measured.
+        lost_target: Option<LostTargetBehavior>,
+    },
+}
+
+impl CataloguedGuidance {
+    /// Whether the component tracks a target at all.
+    #[must_use]
+    pub const fn is_targeted(self) -> bool {
+        matches!(self, Self::Targeted { .. })
+    }
+
+    /// The measured lost-target behavior, when one was measured.
+    #[must_use]
+    pub const fn lost_target(self) -> Option<LostTargetBehavior> {
+        match self {
+            Self::Unguided => None,
+            Self::Targeted { lost_target } => lost_target,
+        }
+    }
+}
+
+/// Why a catalogue entry was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CatalogueError {
+    /// A named unknown has an empty field name.
+    EmptyField,
+    /// A named unknown has an empty claim id.
+    EmptyClaim {
+        /// The field whose claim is empty.
+        field: String,
+    },
+    /// A named unknown has an empty reason.
+    EmptyReason {
+        /// The field whose reason is empty.
+        field: String,
+    },
+    /// A rocket slot declaration states a zero slot count.
+    NoSlots,
+    /// The family is a booster, which has no fuse, mount or guidance, so it is
+    /// not a catalogued projectile.
+    FamilyWithoutBehaviour {
+        /// The refused family.
+        family: OrdnanceFamily,
+    },
+    /// The family's guidance rule contradicts the family: a guided rocket or
+    /// an aerial torpedo is by definition a targeted weapon, and an
+    /// area-denial component is by definition unguided (T452.01 applies the
+    /// effect rule only to records that are not `LOCK_ON`).
+    GuidanceContradictsFamily {
+        /// The family whose rule was contradicted.
+        family: OrdnanceFamily,
+    },
+    /// The family's fuse contradicts the family: a direct explosive ends on
+    /// contact, and a proximity flak shell does not end on a timer. A flak
+    /// record whose *trigger* was not measured keeps an `Undeclared` fuse and
+    /// a claim; a stated blast radius is not a trigger radius.
+    FuseContradictsFamily {
+        /// The family whose rule was contradicted.
+        family: OrdnanceFamily,
+    },
+    /// A timed fuse's stated duration is not a positive finite number.
+    InvalidDuration {
+        /// The refused duration.
+        seconds: f64,
+    },
+}
+
+impl fmt::Display for CatalogueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyField => f.write_str("a catalogued unknown must name its field"),
+            Self::EmptyClaim { field } => {
+                write!(f, "the catalogued unknown {field} must name its claim id")
+            }
+            Self::EmptyReason { field } => {
+                write!(
+                    f,
+                    "the catalogued unknown {field} must state why it is unknown"
+                )
+            }
+            Self::NoSlots => f.write_str("a rocket-slot mount must state at least one slot"),
+            Self::FamilyWithoutBehaviour { family } => write!(
+                f,
+                "{family} is a booster family: its parameters are not a projectile's fuse, \
+                 mount or guidance"
+            ),
+            Self::GuidanceContradictsFamily { family } => {
+                write!(f, "the guidance rule contradicts the {family} family")
+            }
+            Self::FuseContradictsFamily { family } => {
+                write!(f, "the fuse rule contradicts the {family} family")
+            }
+            Self::InvalidDuration { seconds } => write!(
+                f,
+                "a timed catalogue fuse must state a positive finite duration, not {seconds}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CatalogueError {}
+
+/// One hardpoint component as the installation's own data declares it: a
+/// family, a **declared behaviour**, and every value no file states named as an
+/// unknown.
+///
+/// This is deliberately **not** an [`OrdnanceComponent`]. A runtime component
+/// carries known launch geometry, stack load, media and equipment rules, and
+/// lowering an original record whose velocity unit, release delay, lifetime,
+/// stack and media are unmeasured would fabricate every one of them. The
+/// catalogue records the part the original does state — family, guidance,
+/// fuse (shape, sampling and radius), arming and mount — and keeps the rest as
+/// named claims, which is what F28-D's audit is for. An entry is what makes
+/// "every component the installation declares has a family and a behaviour"
+/// checkable without pretending its numbers are known.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CataloguedOrdnance {
+    ordnance: OrdnanceId,
+    family: OrdnanceFamily,
+    mount: CataloguedMount,
+    guidance: CataloguedGuidance,
+    fuse: CataloguedFuse,
+    arming: CataloguedArming,
+    unmeasured: Vec<CatalogueUnknown>,
+}
+
+impl CataloguedOrdnance {
+    /// Assembles a catalogue entry, refusing a family/behaviour contradiction
+    /// and an unnamed unknown.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogueError`] naming the contradiction or the empty claim.
+    pub fn try_new(
+        ordnance: OrdnanceId,
+        family: OrdnanceFamily,
+        mount: CataloguedMount,
+        guidance: CataloguedGuidance,
+        fuse: CataloguedFuse,
+        arming: CataloguedArming,
+        unmeasured: Vec<CatalogueUnknown>,
+    ) -> Result<Self, CatalogueError> {
+        if !family.is_projectile() {
+            return Err(CatalogueError::FamilyWithoutBehaviour { family });
+        }
+        match (family, guidance) {
+            (OrdnanceFamily::GuidedRocket | OrdnanceFamily::AerialTorpedo, rule)
+                if !rule.is_targeted() =>
+            {
+                return Err(CatalogueError::GuidanceContradictsFamily { family });
+            }
+            (
+                OrdnanceFamily::AreaDenialEngine
+                | OrdnanceFamily::DirectExplosive
+                | OrdnanceFamily::ProximityFlak,
+                rule,
+            ) if rule.is_targeted() => {
+                return Err(CatalogueError::GuidanceContradictsFamily { family });
+            }
+            _ => {}
+        }
+        match (family, &fuse) {
+            (OrdnanceFamily::ProximityFlak, CataloguedFuse::TimedSeconds { .. }) => {
+                return Err(CatalogueError::FuseContradictsFamily { family });
+            }
+            (
+                OrdnanceFamily::DirectExplosive,
+                CataloguedFuse::Impact | CataloguedFuse::Undeclared { .. },
+            ) => {}
+            (OrdnanceFamily::DirectExplosive, _) => {
+                return Err(CatalogueError::FuseContradictsFamily { family });
+            }
+            _ => {}
+        }
+        if matches!(mount, CataloguedMount::RocketSlot { slots: 0 }) {
+            return Err(CatalogueError::NoSlots);
+        }
+        if let CataloguedFuse::TimedSeconds { seconds } = fuse
+            && (!seconds.is_finite() || seconds <= 0.0)
+        {
+            return Err(CatalogueError::InvalidDuration { seconds });
+        }
+        Ok(Self {
+            ordnance,
+            family,
+            mount,
+            guidance,
+            fuse,
+            arming,
+            unmeasured,
+        })
+    }
+
+    /// The catalog id this entry describes.
+    #[must_use]
+    pub const fn ordnance(&self) -> &OrdnanceId {
+        &self.ordnance
+    }
+
+    /// The declared behavior family.
+    #[must_use]
+    pub const fn family(&self) -> OrdnanceFamily {
+        self.family
+    }
+
+    /// Where the installation mounts it.
+    #[must_use]
+    pub const fn mount(&self) -> &CataloguedMount {
+        &self.mount
+    }
+
+    /// How it finds — or does not find — a target.
+    #[must_use]
+    pub const fn guidance(&self) -> CataloguedGuidance {
+        self.guidance
+    }
+
+    /// The measured lost-target behavior, when one was measured.
+    #[must_use]
+    pub const fn lost_target(&self) -> Option<LostTargetBehavior> {
+        self.guidance.lost_target()
+    }
+
+    /// How it ends.
+    #[must_use]
+    pub const fn fuse(&self) -> &CataloguedFuse {
+        &self.fuse
+    }
+
+    /// When its fuse becomes live.
+    #[must_use]
+    pub const fn arming(&self) -> CataloguedArming {
+        self.arming
+    }
+
+    /// Every value the component does not state, named by claim.
+    #[must_use]
+    pub fn unmeasured(&self) -> &[CatalogueUnknown] {
+        &self.unmeasured
+    }
+
+    /// Whether a claim id is recorded against this entry.
+    #[must_use]
+    pub fn names_claim(&self, claim: &str) -> bool {
+        self.unmeasured.iter().any(|unknown| unknown.claim == claim)
+    }
+
+    /// The stable fields this entry does not measure, sorted.
+    #[must_use]
+    pub fn unmeasured_fields(&self) -> Vec<&str> {
+        let mut fields: Vec<&str> = self
+            .unmeasured
+            .iter()
+            .map(|unknown| unknown.field.as_str())
+            .collect();
+        fields.sort_unstable();
+        fields
+    }
+}
+
 /// Why an [`OrdnanceRegistry`] operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OrdnanceRegistryError {
@@ -2113,6 +2648,7 @@ pub struct InstallationVerdict {
 #[derive(Clone, Debug, Default)]
 pub struct OrdnanceRegistry {
     components: BTreeMap<OrdnanceId, OrdnanceComponent>,
+    catalogued: BTreeMap<OrdnanceId, CataloguedOrdnance>,
 }
 
 impl OrdnanceRegistry {
@@ -2174,10 +2710,90 @@ impl OrdnanceRegistry {
         self.components.len()
     }
 
-    /// Whether the registry is empty.
+    /// Whether no component is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.components.is_empty()
+    }
+
+    /// Catalogues one component the installation declares, without claiming
+    /// its numbers are known.
+    ///
+    /// A catalogued entry and a registered component are different claims:
+    /// [`register`](Self::register) says "this component is complete enough to
+    /// fly", and this says "the installation declares this id, with this family
+    /// and this behaviour, and these values are still unmeasured". One id may
+    /// not be claimed twice in the same layer, because two rows for one id are
+    /// a catalogue contradiction rather than a merge.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRegistryError::DuplicateOrdnance`] when the id is already
+    /// catalogued.
+    pub fn catalogue(&mut self, entry: CataloguedOrdnance) -> Result<(), OrdnanceRegistryError> {
+        let ordnance = entry.ordnance().clone();
+        if let Some(existing) = self.catalogued.get(&ordnance) {
+            return Err(OrdnanceRegistryError::DuplicateOrdnance {
+                ordnance,
+                family: existing.family(),
+            });
+        }
+        self.catalogued.insert(ordnance, entry);
+        Ok(())
+    }
+
+    /// One catalogued entry, if the registry has it.
+    #[must_use]
+    pub fn catalogued(&self, ordnance: &OrdnanceId) -> Option<&CataloguedOrdnance> {
+        self.catalogued.get(ordnance)
+    }
+
+    /// Every catalogued id, in the stable id order.
+    pub fn catalogued_ids(&self) -> impl Iterator<Item = &OrdnanceId> {
+        self.catalogued.keys()
+    }
+
+    /// How many components are catalogued.
+    #[must_use]
+    pub fn catalogue_len(&self) -> usize {
+        self.catalogued.len()
+    }
+
+    /// Every catalogued family with the ids that carry it, in the stable family
+    /// order and then id order — the same walk [`families`](Self::families)
+    /// gives for registered components, over the measured catalogue.
+    #[must_use]
+    pub fn catalogue_families(&self) -> Vec<(OrdnanceFamily, Vec<&OrdnanceId>)> {
+        OrdnanceFamily::ALL
+            .iter()
+            .map(|family| {
+                let ids = self
+                    .catalogued
+                    .iter()
+                    .filter(|(_, entry)| entry.family() == *family)
+                    .map(|(id, _)| id)
+                    .collect();
+                (*family, ids)
+            })
+            .collect()
+    }
+
+    /// Every distinct claim id the catalogued entries record, sorted.
+    #[must_use]
+    pub fn catalogue_claims(&self) -> Vec<String> {
+        let mut claims: Vec<String> = self
+            .catalogued
+            .values()
+            .flat_map(|entry| {
+                entry
+                    .unmeasured()
+                    .iter()
+                    .map(|unknown| unknown.claim.clone())
+            })
+            .collect();
+        claims.sort();
+        claims.dedup();
+        claims
     }
 
     /// The audit rows of a catalogue walk: every registered family with the
@@ -2375,6 +2991,37 @@ pub fn closest_approach(segment: &ProjectileSegment, path: &TargetPath) -> Close
         distance_m: (closest[0] * closest[0] + closest[1] * closest[1] + closest[2] * closest[2])
             .sqrt(),
         time,
+    }
+}
+
+impl ProximitySampling {
+    /// Measures one target path under this model.
+    ///
+    /// [`SweptRelativePath`](Self::SweptRelativePath) is
+    /// [`closest_approach`]; [`StartOfStepSample`](Self::StartOfStepSample) is
+    /// the original's single sample — the item at the **start** of the step
+    /// against the target's current position — so its `time` is `0.0` and it
+    /// cannot see a pass that begins and ends inside one step.
+    #[must_use]
+    pub fn sample(self, segment: &ProjectileSegment, path: &TargetPath) -> ClosestApproach {
+        match self {
+            Self::SweptRelativePath => closest_approach(segment, path),
+            Self::StartOfStepSample => {
+                let item = segment.previous.to_array();
+                let target = path.current().to_array();
+                let mut offset = [0.0f64; 3];
+                for axis in 0..3 {
+                    offset[axis] = item[axis] - target[axis];
+                }
+                ClosestApproach {
+                    distance_m: (offset[0] * offset[0]
+                        + offset[1] * offset[1]
+                        + offset[2] * offset[2])
+                        .sqrt(),
+                    time: 0.0,
+                }
+            }
+        }
     }
 }
 
@@ -2725,10 +3372,14 @@ impl OrdnanceState {
             // The nearest path wins, and equal distances are ordered by
             // actor id, so two equally close targets produce the same answer
             // on every host regardless of the order the caller collected them
-            // in — the stable tie-breaker `FLIGHT-PHYSICS` requires.
+            // in — the stable tie-breaker `FLIGHT-PHYSICS` requires. How a
+            // path is measured depends on the fuse's declared sampling, which
+            // is a separate, measurable original quantity: the swept model
+            // cannot miss a crossing inside a step, the start-of-step sample
+            // the original uses (`ProximitySampling`) can.
             let mut best: Option<(f64, ActorId, f64)> = None;
             for path in paths {
-                let approach = closest_approach(segment, path);
+                let approach = fuse.sampling().sample(segment, path);
                 if !approach.is_within(fuse.trigger_radius_m()) {
                     continue;
                 }
@@ -2749,7 +3400,7 @@ impl OrdnanceState {
             }
             let closest_m = paths
                 .iter()
-                .map(|path| closest_approach(segment, path).distance_m)
+                .map(|path| fuse.sampling().sample(segment, path).distance_m)
                 .fold(f64::INFINITY, f64::min);
             if closest_m.is_finite() {
                 return FuseDecision::Inert(FuseInert::OutOfRange {

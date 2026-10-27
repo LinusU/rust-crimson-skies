@@ -3734,6 +3734,12 @@ pub struct OriginalComponentLaunch {
     /// which direction is not stated ([`T452_04_RELEASE_DELAY`]), so no
     /// release delay is derived from it here.
     pub fire_rate: Option<f64>,
+    /// `DETONATION_DISTANCE`, metres: the proximity fuse's trigger radius, and
+    /// the radius of the sphere around the target the fuse tests (task T452.02,
+    /// statically measured; the record value reaches the squared-distance
+    /// comparison with no conversion). `None` when the record declares no
+    /// proximity trigger, which is not the same as a zero radius.
+    pub proximity_trigger_m: Option<f64>,
     /// The lifetime the record states, if any.
     pub lifetime: OriginalLifetime,
     /// The area the record declares.
@@ -3993,6 +3999,7 @@ fn component_launch(
         mount,
         velocity,
         fire_rate,
+        proximity_trigger_m: record.first("DETONATION_DISTANCE"),
         lifetime,
         area,
         damage,

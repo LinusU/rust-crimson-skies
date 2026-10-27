@@ -53,15 +53,17 @@ use cs_content::ordnance::{
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
-    AreaEffect, ArmingRule, BlastRecipient, CompatibilityVerdict, EquipmentRules, FuseRule,
-    GuidanceRule, GunDefinitionError, HardpointKind, InheritanceRule, LaunchGeometry,
-    LostTargetBehavior, NitroActivationRule, NitroOrdnance, NitroParameters, NitroRefusedRecovery,
-    NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId,
-    OrdnanceIdError, OrdnanceMedia, OrdnanceRegistry, OrdnanceRegistryError, OrdnanceStatusEffect,
-    ProjectileOrdnance, ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
+    AreaEffect, ArmingRule, BlastRecipient, CatalogueError, CatalogueUnknown, CataloguedArming,
+    CataloguedFuse, CataloguedGuidance, CataloguedMount, CataloguedOrdnance, CompatibilityVerdict,
+    EquipmentRules, FuseRule, GuidanceRule, GunDefinitionError, HardpointKind, InheritanceRule,
+    LaunchGeometry, LostTargetBehavior, NitroActivationRule, NitroOrdnance, NitroParameters,
+    NitroRefusedRecovery, NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError,
+    OrdnanceFamily, OrdnanceId, OrdnanceIdError, OrdnanceMedia, OrdnanceRegistry,
+    OrdnanceRegistryError, OrdnanceStatusEffect, ProjectileOrdnance, ProximityFuse,
+    ProximitySampling, ProximityShape, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
     WeaponDamage,
 };
-use cs_types::content::{ContentId, Known, Resolved};
+use cs_types::content::{ContentId, ContentKind, Known, Resolved};
 use cs_types::evidence::ClaimId;
 
 use avian3d::prelude::LinearVelocity;
@@ -2890,4 +2892,630 @@ pub fn session_ordnance_audit(session: &OrdnanceSession) -> SessionOrdnanceAudit
         .collect();
 
     audit
+}
+
+// ----------------------------------------- measured original catalogue ----
+
+/// The installation declares no `wep_` record for its nitro booster: the
+/// booster is actor state on an airframe whose plane record sets `nitro`
+/// (task T452.03). This is the count, stated as a number so an installation
+/// that ever ships a record for it is an event and not a silent change.
+pub const ORIGINAL_NITRO_COMPONENT_RECORDS: usize = 0;
+
+/// The original's nitro activation cannot be expressed by
+/// [`NitroActivationRule`]: the measured rule is a **charge-bounded run** —
+/// a start needs a nearly full tank and the control, and the burn then
+/// continues until the charge falls below a fraction (task T452.03). Neither
+/// `WhileHeld` nor `FixedTicks` is that rule, so the catalogue records the
+/// measured fractions and names the vocabulary gap instead of picking one.
+pub const T452_NITRO_ACTIVATION_CLAIM: &str = "t452.limit.nitro_activation_rule";
+
+/// The original's nitro extra thrust, authority tradeoff and any drag or
+/// handling penalty are unmeasured: the measured terms replace or scale
+/// quantities the finding did not identify (task T452.03), so no newton value
+/// and no authority multiplier is asserted.
+pub const T452_NITRO_TRADEOFF_CLAIM: &str = "t452.limit.nitro_tradeoff";
+
+/// A record whose end-of-flight trigger no file states — the two area-denial
+/// records declare an effect and no detonation key.
+pub const T452_FUSE_CLAIM: &str = "t452.limit.fuse";
+
+/// A guided record whose lost-target behavior has not been measured. The
+/// measured rule covers the `ROCKET`-flagged records (task #454); the
+/// glidebomb `wep_25` declares `LOCK_ON` and no `ROCKET` flag, so it is outside
+/// that measurement.
+pub const T452_LOST_TARGET_CLAIM: &str = "t452.limit.lost_target";
+
+/// Why a catalogued component is not also a registered runtime component: the
+/// record states no stack capacity or unit mass, no media keys and no
+/// equipment rules, so lowering it would fabricate all three (F28
+/// non-negotiable 1, non-negotiable 5).
+pub const T452_RUNTIME_LOWERING_CLAIM: &str = "t452.limit.runtime_lowering";
+
+/// One hardpoint component the installation declares, catalogued with the
+/// family and behavior its data states.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalCatalogueEntry {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// The catalogued entry: identity, family and declared behavior.
+    pub entry: CataloguedOrdnance,
+}
+
+/// The original's nitro booster as measured, with the rule its vocabulary
+/// cannot express and the tradeoffs nobody measured named rather than chosen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalNitroCatalogue {
+    /// The control the resource header declares, with its id.
+    pub control: (&'static str, u32),
+    /// How many `wep_` records the member declares for the booster.
+    pub component_records: usize,
+    /// `capacity` (`0x41f00000`), capacity units.
+    pub capacity: f64,
+    /// `consumption_per_dt` (`0x40800000`), units per engine delta.
+    pub consumption_per_dt: f64,
+    /// `recovery_per_dt` (`0x3f800000`), units per delta, applied on every
+    /// step, not only idle ones.
+    pub recovery_per_dt: f64,
+    /// A start needs at least this fraction of the capacity (`0x3f7d70a4`).
+    pub start_min_fraction: f64,
+    /// The booster is cut when the charge falls below this fraction of the
+    /// capacity (`0x3d4ccccd`).
+    pub stop_below_fraction: f64,
+    /// While running, the engine-record value is replaced by this
+    /// (`0x3fe66666`).
+    pub running_engine_value: f64,
+    /// While running, the thrust step's result is multiplied by this
+    /// (`0x3f4ccccd`).
+    pub running_result_factor: f64,
+    /// Every value no measurement states, named by claim.
+    pub unmeasured: Vec<CatalogueUnknown>,
+}
+
+impl OriginalNitroCatalogue {
+    /// Whether the measured activation is "the control is held", which the
+    /// runtime vocabulary can express.
+    ///
+    /// Always `false`: the measured rule starts on a full tank and ends on a
+    /// low one, so a held control neither starts it nor keeps it going.
+    #[must_use]
+    pub const fn activation_is_while_held(&self) -> bool {
+        false
+    }
+
+    /// The extra thrust, when a measurement states one in newtons.
+    ///
+    /// `None`: the measured `1.8` replaces an engine-record value whose unit
+    /// the finding did not decode.
+    #[must_use]
+    pub const fn extra_thrust_n(&self) -> Option<f64> {
+        None
+    }
+
+    /// Whether a claim id is recorded against the booster.
+    #[must_use]
+    pub fn names_claim(&self, claim: &str) -> bool {
+        self.unmeasured.iter().any(|unknown| unknown.claim == claim)
+    }
+}
+
+/// The whole measured catalogue: every hardpoint component the installation's
+/// weapon member classifies, the records no family rule reaches (named, never
+/// folded), the measured mount layout, and the nitro booster.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalCatalogue {
+    /// One entry per classified record, in member order.
+    pub entries: Vec<OriginalCatalogueEntry>,
+    /// The records no T452.01 rule classifies, by name (the guns and the
+    /// cannonball).
+    pub excluded: Vec<String>,
+    /// The measured nitro booster.
+    pub nitro: OriginalNitroCatalogue,
+    /// The rocket slots the ordnance screen declares.
+    pub rocket_slots: u32,
+    /// The gun/ammunition slots the ordnance screen declares.
+    pub ammunition_slots: u32,
+    /// The hardpoint points the hardpoint screen declares.
+    pub hardpoint_points: u32,
+    /// Values no single record owns (which airframe fills which slot).
+    pub unmeasured: Vec<CatalogueUnknown>,
+}
+
+impl OriginalCatalogue {
+    /// One entry by record name.
+    #[must_use]
+    pub fn entry(&self, record: &str) -> Option<&OriginalCatalogueEntry> {
+        self.entries.iter().find(|entry| entry.record == record)
+    }
+
+    /// The entries of one family.
+    #[must_use]
+    pub fn of_family(&self, family: OrdnanceFamily) -> Vec<&OriginalCatalogueEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.entry.family() == family)
+            .collect()
+    }
+
+    /// Every distinct claim id the catalogue records, sorted.
+    #[must_use]
+    pub fn claims(&self) -> Vec<String> {
+        let mut claims: Vec<String> = self
+            .entries
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .entry
+                    .unmeasured()
+                    .iter()
+                    .map(|unknown| unknown.claim.clone())
+            })
+            .chain(self.unmeasured.iter().map(|unknown| unknown.claim.clone()))
+            .chain(
+                self.nitro
+                    .unmeasured
+                    .iter()
+                    .map(|unknown| unknown.claim.clone()),
+            )
+            .collect();
+        claims.sort();
+        claims.dedup();
+        claims
+    }
+}
+
+/// Why the measured catalogue could not be read from an installation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OriginalCatalogueError {
+    /// The per-component table failed to read.
+    Table {
+        /// The reader's own refusal.
+        detail: String,
+    },
+    /// The `ROCKET` blast records failed to read.
+    Blasts {
+        /// The reader's own refusal.
+        detail: String,
+    },
+    /// A record name could not form a canonical weapon id.
+    Id {
+        /// The record name.
+        record: String,
+        /// Why the id was refused.
+        source: cs_types::content::ContentIdError,
+    },
+    /// A runtime ordnance id could not be formed.
+    Ordnance {
+        /// The record name.
+        record: String,
+        /// Why the id was refused.
+        source: OrdnanceIdError,
+    },
+    /// The catalogue entry contradicted its own family.
+    Catalogue(CatalogueError),
+    /// An unknown was recorded without a field, claim or reason.
+    Unknown {
+        /// The record the unknown belongs to.
+        record: String,
+        /// Why the unknown was refused.
+        source: CatalogueError,
+    },
+}
+
+impl std::fmt::Display for OriginalCatalogueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table { detail } => write!(f, "the component table cannot be read: {detail}"),
+            Self::Blasts { detail } => {
+                write!(f, "the rocket blast records cannot be read: {detail}")
+            }
+            Self::Id { record, source } => {
+                write!(
+                    f,
+                    "record {record:?} is not a canonical weapon id: {source}"
+                )
+            }
+            Self::Ordnance { record, source } => {
+                write!(
+                    f,
+                    "record {record:?} is not a runtime ordnance id: {source}"
+                )
+            }
+            Self::Catalogue(source) => write!(f, "the catalogue entry is refused: {source}"),
+            Self::Unknown { record, source } => {
+                write!(f, "record {record:?} records a refused unknown: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OriginalCatalogueError {}
+
+impl From<CatalogueError> for OriginalCatalogueError {
+    fn from(source: CatalogueError) -> Self {
+        Self::Catalogue(source)
+    }
+}
+
+/// The catalogue field a claim id belongs to.
+///
+/// A claim says *what* is unknown; the catalogue field says *where* in a
+/// component it would have been used. Claim ids that already name their field
+/// map one-to-one, and a claim this stage did not write is carried verbatim so
+/// it is still visible rather than dropped.
+#[must_use]
+pub fn catalogue_field(claim: &str) -> String {
+    let field = match claim {
+        cs_content::ordnance::T452_04_VELOCITY_UNIT => "launch.velocity",
+        cs_content::ordnance::T452_04_RELEASE_DELAY => "launch.release_delay",
+        cs_content::ordnance::T452_04_NO_EXPIRES => "lifetime_ticks",
+        cs_content::ordnance::T452_04_STATUS_KIND => "status.kind",
+        cs_content::ordnance::T452_04_STATUS_DURATION => "status.duration",
+        cs_content::ordnance::T452_04_AREA_LIFETIME => "area_effect.lifetime",
+        cs_content::ordnance::T452_04_AREA_RADIUS => "area_effect.radius",
+        cs_content::ordnance::T452_04_MOUNT => "mount",
+        cs_content::ordnance::T452_04_CLUSTER => "stack.sub_munitions",
+        cs_content::ordnance::T452_04_PER_AIRFRAME => "airframe.per_slot",
+        T452_FUSE_CLAIM => "fuse",
+        T452_LOST_TARGET_CLAIM => "guidance.lost_target",
+        T452_RUNTIME_LOWERING_CLAIM => "runtime_component",
+        T452_NITRO_ACTIVATION_CLAIM => "nitro.activation",
+        T452_NITRO_TRADEOFF_CLAIM => "nitro.tradeoff",
+        other => other,
+    };
+    field.to_owned()
+}
+
+/// One measured record's named unknowns, in catalogue vocabulary.
+fn catalogue_unknowns(
+    record: &str,
+    unknowns: &[cs_content::ordnance::OriginalComponentUnknown],
+) -> Result<Vec<CatalogueUnknown>, OriginalCatalogueError> {
+    let mut named = Vec::with_capacity(unknowns.len());
+    for unknown in unknowns {
+        let named_unknown = CatalogueUnknown::try_new(
+            catalogue_field(&unknown.claim),
+            unknown.claim.clone(),
+            unknown.reason.clone(),
+        )
+        .map_err(|source| OriginalCatalogueError::Unknown {
+            record: record.to_owned(),
+            source,
+        })?;
+        named.push(named_unknown);
+    }
+    Ok(named)
+}
+
+/// The measured lost-target rule of one guided record, if it was measured.
+///
+/// The blast reader is of `ROCKET`-flagged records (task #454), so a guided
+/// record without that flag — the glidebomb `wep_25` — has no measured rule and
+/// the catalogue names [`T452_LOST_TARGET_CLAIM`] instead of assuming it.
+fn measured_lost_target(
+    record: &str,
+    blasts: &[cs_content::ordnance::OriginalRocketBlast],
+) -> Option<LostTargetBehavior> {
+    let blast = blasts.iter().find(|blast| blast.record == record)?;
+    blast
+        .lost_target_rule()
+        .map(|_| LostTargetBehavior::CoastThenDetonate)
+}
+
+/// Builds the measured catalogue from an already-read component table, the
+/// measured rocket blast records and the measured nitro booster.
+///
+/// Pure: no installation, no clock, no default. Every row becomes an entry;
+/// every value the row does not state becomes a named claim on that entry; and
+/// a row whose behavior contradicts its own family fails rather than being
+/// repaired. The measured family/behaviour mapping is:
+///
+/// * a guided rocket or an aerial torpedo is a targeted seeker whose
+///   lost-target rule is the measured `CoastThenDetonate` when task #454
+///   measured it, and an unknown otherwise;
+/// * an area-denial component and a proximity flak shell are unguided;
+/// * the proximity fuse is the record's `DETONATION_DISTANCE` sphere, but only
+///   for a seeker: the measured proximity path requires `LOCK_ON` (T452.02), so
+///   an unguided record's `DETONATION_DISTANCE` never reaches it. It carries the
+///   measured trigger shape ([`ProximityShape::Sphere`]) and sampling
+///   ([`ProximitySampling::StartOfStepSample`]). A record with a stated duration
+///   and no usable proximity key ends on that timer; anything else names
+///   [`T452_FUSE_CLAIM`];
+/// * arming has no delay at all beyond the fuse's own live conditions, which is
+///   the measured rule (task T452.02) and is not expressible as an
+///   [`ArmingRule`], whose `Disarmed` never arms.
+///
+/// # Errors
+///
+/// [`OriginalCatalogueError`] naming the record whose id or behavior is
+/// invalid.
+pub fn original_catalogue(
+    table: &cs_content::ordnance::OriginalComponentTable,
+    blasts: &[cs_content::ordnance::OriginalRocketBlast],
+    nitro: &cs_content::ordnance::OriginalNitro,
+) -> Result<OriginalCatalogue, OriginalCatalogueError> {
+    let rocket_slots = table.layout.rocket_slots.slots;
+    let ammunition_slots = table.layout.ammunition_slots.slots;
+    let hardpoint_points = table.layout.hardpoint_points.slots;
+    let mut entries = Vec::with_capacity(table.rows.len());
+    for row in &table.rows {
+        let content =
+            ContentId::from_source(ContentKind::Weapon, &row.record).map_err(|source| {
+                OriginalCatalogueError::Id {
+                    record: row.record.clone(),
+                    source,
+                }
+            })?;
+        let ordnance =
+            OrdnanceId::try_new(content).map_err(|source| OriginalCatalogueError::Ordnance {
+                record: row.record.clone(),
+                source,
+            })?;
+        let family = lower_family(row.family);
+        let mount = match &row.mount {
+            cs_content::ordnance::OriginalMountDeclaration::RocketSlot { slots } => {
+                CataloguedMount::RocketSlot { slots: *slots }
+            }
+            cs_content::ordnance::OriginalMountDeclaration::Unknown { claim, .. } => {
+                CataloguedMount::Unknown {
+                    claim: claim.clone(),
+                }
+            }
+        };
+        let mut unknowns = catalogue_unknowns(&row.record, &row.unknowns)?;
+        let guidance = match family {
+            OrdnanceFamily::GuidedRocket | OrdnanceFamily::AerialTorpedo => {
+                let lost_target = measured_lost_target(&row.record, blasts);
+                if lost_target.is_none() {
+                    unknowns.push(named_unknown(
+                        &row.record,
+                        T452_LOST_TARGET_CLAIM,
+                        "no measurement covers this guided record's behavior after it \
+                         loses its target, so no rule is assumed",
+                    )?);
+                }
+                CataloguedGuidance::Targeted { lost_target }
+            }
+            _ => CataloguedGuidance::Unguided,
+        };
+        let fuse = match row
+            .proximity_trigger_m
+            .filter(|radius| *radius > 0.0)
+            .filter(|_| guidance.is_targeted())
+        {
+            Some(radius) => {
+                let fuse = ProximityFuse::try_new(radius)
+                    .map_err(|_| CatalogueError::InvalidDuration { seconds: radius })
+                    .map_err(OriginalCatalogueError::Catalogue)?
+                    .with_sampling(ProximitySampling::StartOfStepSample);
+                CataloguedFuse::Proximity {
+                    fuse,
+                    shape: ProximityShape::Sphere,
+                }
+            }
+            None => match row.lifetime {
+                cs_content::ordnance::OriginalLifetime::Declared { seconds, .. } => {
+                    CataloguedFuse::TimedSeconds { seconds }
+                }
+                cs_content::ordnance::OriginalLifetime::Undeclared => {
+                    // A record can declare `DETONATION_DISTANCE` without being a
+                    // seeker (`wep_12` does). The measured proximity path needs
+                    // `LOCK_ON` (T452.02), so an unguided record's value never
+                    // reaches it and is not catalogued as a fuse.
+                    unknowns.push(named_unknown(
+                        &row.record,
+                        T452_FUSE_CLAIM,
+                        "the record states no trigger the measured engine path reaches: it \
+                         declares no duration, and a DETONATION_DISTANCE on an unguided \
+                         record never reaches the proximity burst",
+                    )?);
+                    CataloguedFuse::Undeclared {
+                        claim: T452_FUSE_CLAIM.to_owned(),
+                    }
+                }
+            },
+        };
+        unknowns.push(named_unknown(
+            &row.record,
+            T452_RUNTIME_LOWERING_CLAIM,
+            "the record states no stack capacity or unit mass, no media keys and no \
+             equipment rules, so a runtime component would fabricate all three; the \
+             component is catalogued, not registered",
+        )?);
+        let entry = CataloguedOrdnance::try_new(
+            ordnance,
+            family,
+            mount,
+            guidance,
+            fuse,
+            CataloguedArming::OnRelease,
+            unknowns,
+        )?;
+        entries.push(OriginalCatalogueEntry {
+            record: row.record.clone(),
+            entry,
+        });
+    }
+
+    let mut table_unknowns = Vec::with_capacity(table.unknowns.len());
+    for unknown in &table.unknowns {
+        table_unknowns.push(
+            CatalogueUnknown::try_new(
+                catalogue_field(&unknown.claim),
+                unknown.claim.clone(),
+                unknown.reason.clone(),
+            )
+            .map_err(|source| OriginalCatalogueError::Unknown {
+                record: "table".to_owned(),
+                source,
+            })?,
+        );
+    }
+
+    let mut nitro_unknowns = vec![
+        named_unknown(
+            "nitro",
+            T452_NITRO_ACTIVATION_CLAIM,
+            "the measured rule starts a burn only at a nearly full charge and cuts it \
+             below a fraction of capacity, which NitroActivationRule cannot express; the \
+             fractions below are recorded and the rule is not lowered to a variant it is \
+             not",
+        )?,
+        named_unknown(
+            "nitro",
+            T452_NITRO_TRADEOFF_CLAIM,
+            "the measured 1.8 replaces an engine-record value and 0.8 scales an \
+             unidentified result, so no extra thrust in newtons, no authority multiplier \
+             and no drag penalty is asserted",
+        )?,
+    ];
+    nitro_unknowns.push(named_unknown(
+        "nitro",
+        cs_content::ordnance::T452_04_NO_EXPIRES,
+        "the booster is actor state, not a projectile: it has no fuse, no lifetime and \
+         no `wep_` record at all",
+    )?);
+
+    Ok(OriginalCatalogue {
+        entries,
+        excluded: table.excluded.clone(),
+        nitro: OriginalNitroCatalogue {
+            control: cs_content::ordnance::ORIGINAL_NITRO_CONTROL,
+            component_records: ORIGINAL_NITRO_COMPONENT_RECORDS,
+            capacity: nitro.capacity,
+            consumption_per_dt: nitro.consumption_per_dt,
+            recovery_per_dt: nitro.recovery_per_dt,
+            start_min_fraction: nitro.start_min_fraction,
+            stop_below_fraction: nitro.stop_below_fraction,
+            running_engine_value: nitro.running_engine_value,
+            running_result_factor: nitro.running_result_factor,
+            unmeasured: nitro_unknowns,
+        },
+        rocket_slots,
+        ammunition_slots,
+        hardpoint_points,
+        unmeasured: table_unknowns,
+    })
+}
+
+/// One named unknown, with the record it belongs to in the refusal.
+fn named_unknown(
+    record: &str,
+    claim: &str,
+    reason: &str,
+) -> Result<CatalogueUnknown, OriginalCatalogueError> {
+    CatalogueUnknown::try_new(catalogue_field(claim), claim, reason).map_err(|source| {
+        OriginalCatalogueError::Unknown {
+            record: record.to_owned(),
+            source,
+        }
+    })
+}
+
+/// Reads the installation's measured ordnance catalogue.
+///
+/// The three readers are production code: `read_original_component_table` for
+/// the per-component rows and the screens' layout, `read_original_rocket_blasts`
+/// for the measured `ROCKET` blast/lost-target records, and
+/// [`cs_content::ordnance::ORIGINAL_NITRO`] for the engine-image constants the
+/// T452.03 finding recorded.
+///
+/// # Errors
+///
+/// [`OriginalCatalogueError`] when a reader fails or a row cannot be
+/// catalogued.
+pub fn read_original_catalogue(
+    install_root: &std::path::Path,
+) -> Result<OriginalCatalogue, OriginalCatalogueError> {
+    let table =
+        cs_content::ordnance::read_original_component_table(install_root).map_err(|error| {
+            OriginalCatalogueError::Table {
+                detail: error.to_string(),
+            }
+        })?;
+    let blasts =
+        cs_content::ordnance::read_original_rocket_blasts(install_root).map_err(|error| {
+            OriginalCatalogueError::Blasts {
+                detail: error.to_string(),
+            }
+        })?;
+    original_catalogue(&table, &blasts, &cs_content::ordnance::ORIGINAL_NITRO)
+}
+
+/// Catalogues every entry of the measured catalogue in a registry.
+///
+/// This is the whole catalogue side of F28-D: after it, each id the
+/// installation declares is queryable with its family and behavior, and the
+/// values nobody measured are still named on the entry. Registering a *runtime*
+/// component is a separate, stricter step ([`register`](OrdnanceRegistry::register)),
+/// and no original entry is registered because its stack, media and equipment
+/// rules are unmeasured ([`T452_RUNTIME_LOWERING_CLAIM`]).
+///
+/// # Errors
+///
+/// [`OrdnanceRegistryError::DuplicateOrdnance`] when the registry already has a
+/// catalogued entry for an id.
+pub fn catalogue_measured_ordnance(
+    catalogue: &OriginalCatalogue,
+    registry: &mut OrdnanceRegistry,
+) -> Result<usize, OrdnanceRegistryError> {
+    let mut added = 0;
+    for entry in &catalogue.entries {
+        registry.catalogue(entry.entry.clone())?;
+        added += 1;
+    }
+    Ok(added)
+}
+
+/// Whether every id the installation declares is catalogued in the registry,
+/// and by which family.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalCatalogueCoverage {
+    /// How many entries the measured catalogue holds.
+    pub declared: usize,
+    /// How many of them the registry has.
+    pub catalogued: usize,
+    /// The ids the registry does not have, by record name.
+    pub missing: Vec<String>,
+    /// Per family, how many ids the installation declares.
+    pub families: Vec<(OrdnanceFamily, usize)>,
+    /// The distinct claim ids the catalogue records.
+    pub claims: Vec<String>,
+}
+
+impl OriginalCatalogueCoverage {
+    /// Whether every declared id is catalogued.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.missing.is_empty() && self.declared == self.catalogued
+    }
+}
+
+/// Measures registry coverage of a catalogue: every declared id, its family and
+/// its recorded claims, without registering anything.
+#[must_use]
+pub fn original_catalogue_coverage(
+    catalogue: &OriginalCatalogue,
+    registry: &OrdnanceRegistry,
+) -> OriginalCatalogueCoverage {
+    let mut missing = Vec::new();
+    let mut catalogued = 0;
+    for entry in &catalogue.entries {
+        if registry.catalogued(entry.entry.ordnance()).is_some() {
+            catalogued += 1;
+        } else {
+            missing.push(entry.record.clone());
+        }
+    }
+    let families = OrdnanceFamily::ALL
+        .iter()
+        .map(|family| (*family, catalogue.of_family(*family).len()))
+        .collect();
+    OriginalCatalogueCoverage {
+        declared: catalogue.entries.len(),
+        catalogued,
+        missing,
+        families,
+        claims: catalogue.claims(),
+    }
 }
