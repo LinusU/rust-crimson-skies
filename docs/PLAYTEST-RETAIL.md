@@ -370,7 +370,8 @@ rule (`flat_card_reason`, `PlaytestConfig::hide_flat_colour_cards`) hides both
 from drawing **and** from collision, listed with their reason in `area_undrawn`.
 The drawn set is
 293 of the 401 stored bindings — two fewer than #753's 295 — covering
-8 108 of the 8 673 stored triangles, and colliders follow the drawn set. The before/after GPU frames of that end of the airship
+8 108 of the 8 673 stored triangles, and colliders follow the drawn set.
+The before/after GPU frames of that end of the airship
 are measured in `docs/findings/2026-10-08-playtest-area-flat-shape.md` (hashes
 only; the PNGs stay under `private/`).
 

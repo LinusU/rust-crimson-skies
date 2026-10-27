@@ -42,8 +42,8 @@ fn accept_playtest_doc_drawn_counts_playtest_banner_names_stored_and_drawn() {
         "the banner must name the stored triangle count as stored"
     );
     assert!(
-        doc.contains("#753") && doc.contains("draws 293 bindings / 8 108 triangles"),
-        "the banner must state the drawn set under the #753 selection"
+        doc.contains("#753 selection") && doc.contains("draws 293 bindings / 8 108 triangles"),
+        "the banner must attribute the drawn set to the #753 selection"
     );
 }
 
