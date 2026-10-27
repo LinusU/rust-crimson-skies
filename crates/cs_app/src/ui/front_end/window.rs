@@ -54,7 +54,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fmt::Write as _;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -105,6 +104,7 @@ use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
 use crate::cinematics::movie_player::{AudioOutput, MoviePlayerPlugin};
 use crate::cinematics::mpeg::MpegVideoSource;
+use crate::json::json_string;
 use crate::playtest::SmokeRequest;
 use crate::playtest::smoke::SMOKE_FRAME_HZ;
 use crate::profile::ProfileSession;
@@ -4794,24 +4794,6 @@ fn write_artifacts(dir: &Path, report: &ShellSmokeReport) -> Result<(), (PathBuf
 }
 
 #[inline(always)]
-fn json_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-#[inline(always)]
 fn json_f32(value: f32) -> String {
     if value.is_finite() {
         value.to_string()
@@ -5290,6 +5272,62 @@ pub fn run_front_end(request: &FrontEndRequest) -> Result<(), FrontEndError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Holds `"`, `\`, `\n`, `\r`, `\t` and `\u{1}`.
+    const HOSTILE: &str = "a\"b\\c\nd\re\tf\u{1}g";
+
+    /// A scratch directory unique to one test and process.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cs_app_json_consolidate_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// **The front-end shell smoke's `report.json` parses with a real JSON
+    /// parser** when every string it carries holds every character a JSON
+    /// string cannot carry raw.
+    #[test]
+    fn accept_cs_app_json_consolidate_front_end_report_parses() {
+        let dir = scratch("front_end");
+        let report = ShellSmokeReport {
+            frames: 1,
+            visited: vec![HOSTILE.to_owned()],
+            focus_moves: 0,
+            hovered: vec![HOSTILE.to_owned()],
+            depressed_seen: false,
+            quit_seen: false,
+            unhandled: 0,
+            cursor: Some(HOSTILE.to_owned()),
+            movies: vec![HOSTILE.to_owned()],
+            movie_frames: 0,
+            music_started: false,
+            audio: vec![HOSTILE.to_owned()],
+            shots: vec![ShellShotRecord {
+                label: HOSTILE.to_owned(),
+                path: PathBuf::from(HOSTILE),
+                width: 2,
+                height: 2,
+                distinct_luminance: 1,
+                mean_luminance: 1.0,
+                frame_hash: 7,
+            }],
+            failures: vec![HOSTILE.to_owned()],
+        };
+        write_artifacts(&dir, &report).expect("artifacts are written");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap())
+                .expect("report.json is JSON");
+        for key in ["visited", "hovered", "movies", "audio", "failures"] {
+            assert_eq!(parsed[key][0].as_str(), Some(HOSTILE), "{key}");
+        }
+        assert_eq!(parsed["cursor"].as_str(), Some(HOSTILE));
+        assert_eq!(parsed["shots"][0]["label"].as_str(), Some(HOSTILE));
+        assert_eq!(parsed["shots"][0]["path"].as_str(), Some(HOSTILE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// BUG-FE-CURSOR-TOPLEFT (#1995): the arrow's tip, the sprite's top-left
     /// corner, sits on the pointer position the hit tests receive — for any

@@ -48,9 +48,10 @@ use super::super::wing_fire::WingFirePuff;
 use super::{
     Check, FlightCheckFrames, KeyOp, KeyQueue, PendingPlacement, Phase, Placement,
     SHOT_GRACE_FRAMES, SmokeConfig, SmokeData, SmokeMeasurements, SmokeShots,
-    clear_colour_encodings, json_string, non_black_permille, request_screenshot,
+    clear_colour_encodings, non_black_permille, request_screenshot,
 };
 use crate::airframe_damage::AirframeDamageRegion;
+use crate::json::json_string;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::PlaytestCameraMarker;
 use crate::playtest::fatal_contact::{

@@ -32,9 +32,10 @@ use super::super::turret_fire::MissionTurretFire;
 use super::super::weapons::MISSION_TARGET_NODE;
 use super::{
     Check, FlightCheckFrames, PendingPlacement, Phase, Placement, SHOT_GRACE_FRAMES, SmokeConfig,
-    SmokeData, SmokeMeasurements, SmokeShots, clear_colour_encodings, json_string,
-    non_black_permille, request_screenshot, yaw_toward,
+    SmokeData, SmokeMeasurements, SmokeShots, clear_colour_encodings, non_black_permille,
+    request_screenshot, yaw_toward,
 };
+use crate::json::json_string;
 use crate::mission_session::MissionStage;
 use crate::weapons::SessionDamageResolver;
 

@@ -34,6 +34,7 @@ use super::retail::{self, RetailContent};
 use super::scene::PlaytestAircraft;
 use super::{PlaytestCamera, PlaytestError, PlaytestState, SmokeRequest};
 use crate::input::platform::PlatformInput;
+use crate::json::json_string;
 use crate::physics::PhysicsTickLedger;
 
 /// Rendered frames per simulated second in a smoke run.
@@ -765,23 +766,6 @@ fn evaluate(
     }
 }
 
-fn json_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn json_f32(value: f32) -> String {
     if value.is_finite() {
         value.to_string()
@@ -905,5 +889,65 @@ pub fn finish(handle: &SmokeHandle, request: &SmokeRequest) -> Result<SmokeRepor
         Ok(report)
     } else {
         Err(PlaytestError::SmokeFailed(report.failures))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Holds `"`, `\`, `\n`, `\r`, `\t` and `\u{1}`.
+    const HOSTILE: &str = "a\"b\\c\nd\re\tf\u{1}g";
+
+    /// A scratch directory unique to one test and process.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cs_app_json_consolidate_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// **The playtest smoke's `report.json` and `trace.jsonl` header parse
+    /// with a real JSON parser** when a shot's label and path and a failure
+    /// hold every character a JSON string cannot carry raw.
+    #[test]
+    fn accept_cs_app_json_consolidate_playtest_smoke_report_parses() {
+        let dir = scratch("playtest");
+        let report = SmokeReport {
+            shots: vec![ShotRecord {
+                label: HOSTILE.to_owned(),
+                path: PathBuf::from(HOSTILE),
+                width: 2,
+                height: 2,
+                distinct_luminance: 1,
+                mean_luminance: 1.0,
+            }],
+            label: "synthetic",
+            retail: None,
+            failures: vec![HOSTILE.to_owned()],
+            frames: 1,
+            ticks: 1,
+            input_changes: 0,
+            resets: 0,
+            obstacle_contacts: 0,
+            ground_contacts: 0,
+            ticks_while_paused: 0,
+            real_focus_overrides: 0,
+            max_distance_m: 0.0,
+        };
+        write_artifacts(&dir, &SmokeData::default(), &report).expect("artifacts are written");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap())
+                .expect("report.json is JSON");
+        assert_eq!(parsed["shots"][0]["label"].as_str(), Some(HOSTILE));
+        assert_eq!(parsed["shots"][0]["path"].as_str(), Some(HOSTILE));
+        assert_eq!(parsed["failures"][0].as_str(), Some(HOSTILE));
+        let trace = std::fs::read_to_string(dir.join("trace.jsonl")).unwrap();
+        let header: serde_json::Value =
+            serde_json::from_str(trace.lines().next().unwrap()).unwrap();
+        assert_eq!(header["provenance"].as_str(), Some("synthetic"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

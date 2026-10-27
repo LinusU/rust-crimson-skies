@@ -73,7 +73,6 @@
 //! start for a capture. Every placement is listed in `report.json`.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -117,6 +116,7 @@ use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
 use crate::input::platform::PlatformInput;
 use crate::input::session::PauseReason;
+use crate::json::json_string;
 use crate::mission_actors::{
     MissionActorSpawnReport, MissionGroundTarget, MissionZeppelinActor, ScriptedAircraftActor,
 };
@@ -6643,23 +6643,6 @@ fn lens_flare_json(metrics: Option<&LensFlareMetrics>) -> String {
     )
 }
 
-fn json_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn json_option_f64(value: Option<f64>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| value.to_string())
 }
@@ -7161,6 +7144,58 @@ pub fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Holds `"`, `\`, `\n`, `\r`, `\t` and `\u{1}`.
+    const HOSTILE: &str = "a\"b\\c\nd\re\tf\u{1}g";
+
+    /// A scratch directory unique to one test and process.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cs_app_json_consolidate_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// **The mission smoke's `report.json` parses with a real JSON parser**
+    /// when the mission name and a screenshot's label and path hold every
+    /// character a JSON string cannot carry raw.
+    #[test]
+    fn accept_cs_app_json_consolidate_mission_smoke_report_parses() {
+        let dir = scratch("mission_smoke");
+        let mut data = SmokeData::default();
+        data.measurements.mission = HOSTILE.to_owned();
+        let shot = FrameRecord {
+            label: HOSTILE.to_owned(),
+            path: PathBuf::from(HOSTILE),
+            width: 2,
+            height: 2,
+            distinct_luminance: 1,
+            mean_luminance: 1.0,
+            off_clear: 0,
+            near_clear: 0,
+            modal: [0; 3],
+            off_distinct_colours: 0,
+            off_detail_permille: 0,
+            off_luminance_min: 0,
+            off_luminance_max: 0,
+            near_luminance_min: 0,
+            near_luminance_max: 0,
+            horizon_row: None,
+            sky_below_horizon: 0,
+            text_pixels: None,
+            bars_black_permille: 0,
+            hud_green_pixels: 0,
+        };
+        write_artifacts(&dir, &data, &[shot]).expect("artifacts are written");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap())
+                .expect("report.json is JSON");
+        assert_eq!(parsed["shots"][0]["label"].as_str(), Some(HOSTILE));
+        assert_eq!(parsed["shots"][0]["path"].as_str(), Some(HOSTILE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use crate::playtest::SmokeRequest;
 
     /// **`accept_parity3_pause_map_03_` the Esc map's clock and Resume checks.**

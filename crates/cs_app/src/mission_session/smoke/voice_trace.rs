@@ -371,7 +371,7 @@ pub fn one_shots_json(rows: &[OneShotRow]) -> String {
                 "{{\"member\":{},\"decoded_bytes\":{},\"frame\":{},\"tick\":{},\
                  \"time_s\":{:.3},\"gain\":{:.4},\"gain_db\":{:.2},\"pan\":{:.3},\
                  \"rate_hz\":{},\"refused\":{}}}",
-                super::json_string(&r.member),
+                crate::json::json_string(&r.member),
                 r.decoded_bytes
                     .map_or_else(|| "null".to_owned(), |b| b.to_string()),
                 r.frame,
@@ -384,7 +384,7 @@ pub fn one_shots_json(rows: &[OneShotRow]) -> String {
                     .map_or_else(|| "null".to_owned(), |v| format!("{v:.3}")),
                 r.refused
                     .as_deref()
-                    .map_or_else(|| "null".to_owned(), super::json_string),
+                    .map_or_else(|| "null".to_owned(), crate::json::json_string),
             )
         })
         .collect();
@@ -407,7 +407,7 @@ pub fn trace_json(trace: &[VoiceSecond]) -> String {
                     format!(
                         "{{\"member\":{},\"decoded_bytes\":{},\"looping\":{},\
                          \"gain\":{:.4},\"gain_db\":{:.2},\"pan\":{},\"rate_hz\":{}}}",
-                        super::json_string(&v.member),
+                        crate::json::json_string(&v.member),
                         v.decoded_bytes
                             .map_or_else(|| "null".to_owned(), |b| b.to_string()),
                         v.looping,

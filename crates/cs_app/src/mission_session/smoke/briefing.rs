@@ -32,9 +32,10 @@ use super::super::flight_check::PreMissionStage;
 use super::{
     Check, FlightCheckFrames, FlightCheckPhase, PhaseResponse, RawFrame, SHOT_GRACE_FRAMES,
     SmokeConfig, SmokeData, SmokeMeasurements, SmokeShots, clear_colour_encodings, end_run,
-    json_string, non_black_permille, region_difference, request_screenshot,
+    non_black_permille, region_difference, request_screenshot,
 };
 use crate::audio::CapabilityDeclaration;
+use crate::json::json_string;
 
 /// The least share of a briefing frame that must be off black, in parts per
 /// thousand. **Designed:** the 800x600 map is aspect-fitted into the window,

@@ -30,7 +30,7 @@
 //!
 //! Nothing captured is committed: the directory is private evidence output.
 
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -51,6 +51,7 @@ use super::host::{MissionHost, mission_host_tick};
 use super::scenario::{Scenario, TriggerWatch, watch_trigger};
 use crate::audio::device::SampleLibrary;
 use crate::input::platform::PlatformInput;
+use crate::json::json_string;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::scene::PlaytestAircraft;
 use crate::playtest::{PlaytestCamera, PlaytestState};
@@ -1198,23 +1199,6 @@ fn write_trace(dir: &Path, lines: &[String]) -> Result<(), CaptureRefusal> {
         .map_err(|error| CaptureRefusal::Io(format!("cannot write {}: {error}", path.display())))
 }
 
-pub(super) fn json_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn json_f32(value: f32) -> String {
     if value.is_finite() {
         value.to_string()
@@ -1265,7 +1249,7 @@ pub fn write_playback(
     let record = format!(
         "{{\n  \"boundary\": \"sample_probe_source_pull\",\n  \"asset\": {},\n  \
          \"airframe_record\": {},\n  \"sound_group\": {},\n  \"archive\": {},\n  \
-         \"archive_sha256\": \"{}\",\n  \"container_choice\": \"labelled choice: which sound archive the original opens is unmeasured\",\n  \"member\": {},\n  \"channels\": {},\n  \
+         \"archive_sha256\": {},\n  \"container_choice\": \"labelled choice: which sound archive the original opens is unmeasured\",\n  \"member\": {},\n  \"channels\": {},\n  \
          \"rate_hz\": {},\n  \"member_frames\": {},\n  \"member_duration_s\": {:.4},\n  \
          \"sample_values_pulled\": {pulled},\n  \"frames_pulled\": {},\n  \"peak\": {},\n  \
          \"backend\": \"audible\",\n  \"verified_original\": false,\n  \
@@ -1274,7 +1258,7 @@ pub fn write_playback(
         json_string(&launch.airframe),
         json_string(&launch.group),
         json_string(&launch.container),
-        launch.container_sha256.to_hex(),
+        json_string(&launch.container_sha256.to_hex()),
         json_string(&launch.member),
         pcm.channels(),
         pcm.rate_hz(),
@@ -1293,6 +1277,56 @@ mod tests {
     use bevy::render::render_resource::TextureFormat;
 
     use super::*;
+
+    /// Holds `"`, `\`, `\n`, `\r`, `\t` and `\u{1}`.
+    const HOSTILE: &str = "a\"b\\c\nd\re\tf\u{1}g";
+
+    /// A scratch directory unique to one test and process.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cs_app_json_consolidate_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// **The capture's `trace.jsonl` parses line by line with a real JSON
+    /// parser** when a screenshot's path holds every character a JSON string
+    /// cannot carry raw.
+    #[test]
+    fn accept_cs_app_json_consolidate_capture_trace_parses() {
+        let dir = scratch("evidence");
+        let handle = CaptureHandle::default();
+        {
+            let mut capture = handle.lock();
+            capture.dir.clone_from(&dir);
+            capture.shots.push(Shot {
+                label: "player",
+                path: PathBuf::from(HOSTILE),
+                width: 2,
+                height: 2,
+                distinct_luminance: 1,
+                mean_luminance: 1.0,
+                world_pixels: None,
+                clear_pixels: None,
+                total_pixels: 4,
+                clear_colour: None,
+                background: None,
+            });
+        }
+        // The capture is incomplete (no host tick stepped); the trace is
+        // written before that is judged.
+        let _ = finish(&handle);
+        let trace = std::fs::read_to_string(dir.join(TRACE_FILE)).expect("trace is written");
+        let shot = trace
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("line is JSON"))
+            .find(|line| line["kind"] == "screenshot")
+            .expect("the screenshot record is present");
+        assert_eq!(shot["path"].as_str(), Some(HOSTILE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The window's clear colour as the probe counts it: `[61,112,199]`
     /// sRGB, `[12,41,145]` linear.
