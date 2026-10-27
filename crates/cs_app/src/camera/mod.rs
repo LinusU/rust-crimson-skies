@@ -90,6 +90,7 @@
 pub mod capture;
 pub mod chase_preset;
 pub mod coverage;
+pub mod effects;
 pub mod eye;
 pub mod horizon;
 pub mod modes;
