@@ -76,7 +76,7 @@ use crate::weapons::{WeaponEffect, WeaponSession};
 /// The producer serial shot-sound one-shots this consumer creates are stamped
 /// with.
 ///
-/// [`AudioEventId`](cs_sim::audio_events::AudioEventId)s are deduplicated per
+/// [`AudioEventId`]s are deduplicated per
 /// `(session, producer)` by the router's one-shot ledger, so weapon shots need
 /// their own producer space, separate from the loop bindings'
 /// [`LOOP_PRODUCER`](crate::audio::LOOP_PRODUCER).

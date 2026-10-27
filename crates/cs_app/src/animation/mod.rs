@@ -90,7 +90,7 @@
 //! absent (and whose seam that finding recorded as
 //! [`drain`](playback::AnimationLog::drain)) exists now: task #507 added
 //! [`crate::mission_markers`], the layer that takes the marker records out
-//! of the [`AnimationLog`](playback::AnimationLog) through
+//! of the [`AnimationLog`] through
 //! [`take_markers`](playback::AnimationLog::take_markers) — the
 //! marker-specific take of that seam — and raises each declared cue binding
 //! into a mission signal
@@ -277,7 +277,7 @@ pub use visibility::{
 /// entity id (the spawn wiring, not the playback, owns entity identity). The
 /// spawn wiring assigns one instance per animated node it spawns and every
 /// [`AnimatedNodeBinding`] it writes names that instance, so
-/// [`AnimationPlayback`](playback::AnimationPlayback) can key its live map by
+/// [`AnimationPlayback`] can key its live map by
 /// (track, instance) and give each instance its own evaluator, its own applied
 /// state and its own event ids.
 ///

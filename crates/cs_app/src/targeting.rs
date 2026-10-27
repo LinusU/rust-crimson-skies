@@ -28,7 +28,7 @@
 //!   [`crate::scene::SceneNodeBinding`] so a reload can never leave a
 //!   stale binding looking live.
 //! * [`TargetableState`] — the record an entity presents to targeting,
-//!   including its **canonical** f64 [`WorldPosition`](cs_types::space::WorldPosition).
+//!   including its **canonical** f64 [`WorldPosition`].
 //!   Nothing here reads a local f32 pose, so a rebase cannot move a target,
 //!   reorder a cycle or invalidate a selection (F30 non-negotiable 5).
 //! * [`TargetingSession`] — the resource that owns one session's

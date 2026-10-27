@@ -5,8 +5,8 @@
 //! `docs/contracts/UI-NETWORK.md`.
 //!
 //! [`layout_text`] is the whole of AC01 at this stage. It takes a validated
-//! [`MarkupDocument`](cs_content::localization::MarkupDocument), a
-//! [`TextMetrics`](crate::text::TextMetrics), the panel rectangle and the
+//! [`MarkupDocument`], a
+//! [`TextMetrics`], the panel rectangle and the
 //! panel's required controls, and answers one question: **where may the text
 //! go, and does it fit there?**
 //!

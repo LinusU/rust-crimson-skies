@@ -16,7 +16,7 @@
 //!   one;
 //! * the **set of playable specs** is the delivered audio content of *that*
 //!   load, lowered through the real
-//!   [`lower_record`](super::lower::lower_record). A declared record the load
+//!   [`lower_record`]. A declared record the load
 //!   did not deliver is not in the session, so an emitter binding naming it is
 //!   refused by name ([`super::LoopRefusal::UnknownAsset`]) instead of
 //!   scheduling an asset that is not there.

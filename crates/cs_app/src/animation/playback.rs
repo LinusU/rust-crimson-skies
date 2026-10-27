@@ -7,13 +7,13 @@
 //! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! F20-A defined the declared IR
-//! ([`cs_content::animation`](cs_content::animation)) and the fixed-tick
-//! evaluator ([`cs_sim::animated_object`](cs_sim::animated_object)) but left
+//! ([`cs_content::animation`]) and the fixed-tick
+//! evaluator ([`cs_sim::animated_object`]) but left
 //! them unplugged: nothing played a clip inside a session and no consumer saw
 //! a track's value. This module is that production path:
 //!
 //! * [`play_animation`] takes a validated declared
-//!   [`AnimationClip`](cs_content::animation::AnimationClip), lowers it
+//!   [`AnimationClip`], lowers it
 //!   through [`lower::lower_clip`] and starts **one live instance** of it in
 //!   the [`AnimationPlayback`] resource — refused when the world has no
 //!   session, when that `(track, instance)` identity already plays, or when

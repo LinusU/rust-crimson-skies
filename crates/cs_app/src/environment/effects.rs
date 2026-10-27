@@ -31,10 +31,10 @@
 //!   full opacity by accident.
 //!
 //! [`EnvironmentEffects`] gathers those plus the current
-//! [`PrecipitationEffect`](crate::environment::cosmetic::PrecipitationEffect)
+//! [`PrecipitationEffect`]
 //! into the single per-frame record a renderer consumes. It reads the
 //! gameplay-relevant state from an
-//! [`EnvironmentClock`](crate::environment::EnvironmentClock), so the
+//! [`EnvironmentClock`], so the
 //! precipitation it reports is the one the timeline installed, never a
 //! definition's stale copy.
 //!

@@ -18,7 +18,7 @@
 //!    so it is refused with [`AnimatedNodeBindError::NodeNotDriven`] instead
 //!    of written;
 //! 2. the `(track, instance)` must be live: the clip is started through the
-//!    same [`play_animation`](super::play_animation) boundary the tests use.
+//!    same [`play_animation`] boundary the tests use.
 //!    A second node of the same instance is the ordinary multi-node case, so
 //!    `AlreadyPlaying` for the very identity being bound is not an error — the
 //!    binding is simply attached to the live instance. Every other

@@ -41,7 +41,7 @@
 //! * [`apply_propulsion_state`] — the F29-C.1 consumer seam for
 //!   [`SystemKind::Propulsion`]: it reads the resolver's authoritative system
 //!   state and asserts the actor's [`FlightAircraft`]'s
-//!   [`PropulsionGate`](crate::physics::PropulsionGate) — a record the flight
+//!   [`PropulsionGate`] — a record the flight
 //!   driver composes with the producer-declared
 //!   [`DamageState`](cs_sim::flight::DamageState) instead of
 //!   overwriting it, so a destroyed engine stops producing thrust and stays
@@ -60,7 +60,7 @@
 //!   system drains them and runs the consumers in the order the seams above
 //!   assume: the batch's collider decisions per victim, then the convergent
 //!   per-actor passes (mounts, visuals, propulsion, debris), then the
-//!   destroyed-actor publication. [`release_debris`](crate::debris::release_debris)
+//!   destroyed-actor publication. [`release_debris`]
 //!   runs beside the session/scene teardown so a reload or aircraft swap
 //!   leaves no instance behind, and every refusal and drop lands in the
 //!   [`DamageScheduleReport`].
@@ -82,8 +82,8 @@
 //! the session-qualified damage zone it is, and [`apply_damage_events`] walks a
 //! resolution's [`DamageEvent`]s, decides per [`PartState`] transition and
 //! calls
-//! [`remove_collider_for_damage`](crate::physics::remove_collider_for_damage)
-//! / [`restore_collider_after_repair`](crate::physics::restore_collider_after_repair).
+//! [`remove_collider_for_damage`]
+//! / [`restore_collider_after_repair`].
 //! [`repair_damage_zone`] is the repair path's entry. Both report a refusal
 //! through [`DamageColliderLog`] rather than swallowing it; a zone the spawn
 //! path never bound is reported too, because a damage decision that silently
@@ -317,7 +317,7 @@ pub struct DamageActorBinding {
 /// entity that carries
 /// [`NodeColliderPresence`](crate::physics::NodeColliderPresence) and Avian's
 /// [`Collider`](avian3d::prelude::Collider) — because
-/// [`remove_collider_for_damage`](crate::physics::remove_collider_for_damage)
+/// [`remove_collider_for_damage`]
 /// moves one entity's marker and nothing else. The spawn path (F29-B) inserts
 /// it for a part whose authored collider the policy manages; a node without it
 /// is unbound, and a damage transition naming that zone is reported as
@@ -676,7 +676,7 @@ fn apply_zone_decision(
 /// [`PartTransition`](DamageEventKind::PartTransition) is decided through
 /// [`zone_collider_decision`] and applied to the zone's own entity.
 ///
-/// `events` is the resolution the session's [`DamageResolver`](cs_sim::damage::DamageResolver)
+/// `events` is the resolution the session's [`DamageResolver`]
 /// produced. The resolver resolves hits for many actors in one batch, while a
 /// `PartTransition` names only the node, not its actor, so the caller passes
 /// the victim `actor` the batch belongs to — the same actor it registered with
@@ -709,7 +709,7 @@ pub fn apply_damage_events(
 /// collider.
 ///
 /// The restoration goes through
-/// [`restore_collider_after_repair`](crate::physics::restore_collider_after_repair),
+/// [`restore_collider_after_repair`],
 /// which re-merges the clip's **current** verdict — so a repair under a clip
 /// that still hides the node leaves the collider off, and the collider returns
 /// when the clip shows the node again. Writing `Live` unconditionally would
@@ -1448,7 +1448,7 @@ pub struct DamageActorDestroyed {
 /// first-occurrence order.
 ///
 /// `events` is the resolution a session's
-/// [`DamageResolver`](cs_sim::damage::DamageResolver) produced. Every
+/// [`DamageResolver`] produced. Every
 /// [`DamageEventKind::Lifecycle`] whose kind is [`LifecycleKind::Destroyed`]
 /// is published once per batch — a batch naming the same destruction twice
 /// is one event, not two — and no other event kind or lifecycle kind

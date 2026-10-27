@@ -19,7 +19,7 @@
 //! # What it reads, and what it does not claim
 //!
 //! The original's campaign missions each carry a reader-archive member called
-//! [`DETECTION_ZONE_MEMBER`](cs_content::world::DETECTION_ZONE_MEMBER) which
+//! [`DETECTION_ZONE_MEMBER`] which
 //! names their detection zones, and the world containers carry the zones
 //! themselves as nodes called `dzpath1`, `dzpath2`, … under a parent called
 //! `dzpaths`. The node is the *volume*: each one is an `object3d` record that
@@ -29,7 +29,7 @@
 //! through the **production** F11-A node reader
 //! ([`cs_formats::gamez::read_gamez_nodes`]) and the **production** F02-B
 //! discovery pass, and hands
-//! [`RetailTriggerVolumeSurvey`](cs_content::world::RetailTriggerVolumeSurvey)
+//! [`RetailTriggerVolumeSurvey`]
 //! one measured row per numbered zone, carrying the container key, the
 //! container's SHA-256, the installation fingerprint and the node's own byte
 //! span.

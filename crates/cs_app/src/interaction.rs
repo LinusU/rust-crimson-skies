@@ -382,7 +382,7 @@ pub enum InteractionConsumerEvent {
     /// [`InteractionAbort::reason`] is the runtime's own
     /// [`AbortReason::TargetDestroyed`](cs_sim::interaction::AbortReason::TargetDestroyed):
     /// an actor destroyed mid-latch aborts from
-    /// [`InteractionState::Latching`](cs_sim::interaction::InteractionState::Latching)
+    /// [`InteractionState::Latching`]
     /// with control resolving back to the surviving initiator.
     Aborted(InteractionAbort),
     /// A forwarded destruction found no [`InteractionRuntime`] installed,

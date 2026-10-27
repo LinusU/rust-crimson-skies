@@ -52,7 +52,7 @@
 //! away ([`OverlayError::TargetNotPresent`]) or a despawned entity
 //! ([`OverlayError::VanishedEntity`]) leaves the overlay pending, and the next
 //! contact — or the caller — tries again. Because the applied set lives in
-//! [`ResidentWorld`](super::residency::ResidentWorld) and not on an entity, it
+//! [`ResidentWorld`] and not on an entity, it
 //! survives the target's own sector being streamed away and unloaded: the
 //! sector load re-applies it to the fresh entities
 //! ([`super::residency::load_sector`]), and the door is still open. An

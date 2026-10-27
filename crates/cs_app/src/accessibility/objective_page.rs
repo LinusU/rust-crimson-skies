@@ -1,7 +1,7 @@
 //! The objectives page as the player reads it (F52-B, AC02).
 //!
 //! [`objective_page`] is the consumer of the F46-C
-//! [`PageView::Objectives`](crate::ui::hud::PageView::Objectives) rows: every
+//! [`PageView::Objectives`] rows: every
 //! row gets its [`Cue`] for the colour filter and its metrics at the UI scale,
 //! stacked top to bottom. A row's status comes from the objective runtime's own
 //! state ([`status_of`]); no state shares a shape or a text key with another,

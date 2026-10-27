@@ -43,7 +43,7 @@
 //!    refused ([`SyncError::NoAssetStore`]) rather than drawn with unbound
 //!    textures, and every batch draws with the material its own render state
 //!    produced — the additive class with
-//!    [`AdditiveMaterial`](crate::render::additive::AdditiveMaterial), every
+//!    [`AdditiveMaterial`], every
 //!    other class with a `StandardMaterial` — so the additive pass is placed
 //!    like any other instead of being counted as a gap.
 //! 5. **Teardown ends the session.** [`teardown`] despawns every batch entity

@@ -9,7 +9,7 @@
 //! [`super::residency`] is the transaction — what a load *means*. This module is
 //! the *decision* about which sectors a load should hold right now, given a
 //! focus point and a radius. It is a radius policy because that is the smallest
-//! honest answer: a sector's own [`Aabb`](cs_content::world::Aabb) is the extent
+//! honest answer: a sector's own [`Aabb`] is the extent
 //! the record already declares, and "is the focus within `radius` of that
 //! extent" needs no invented per-sector visibility metadata. **The original's
 //! own streaming rule is unmeasured** — whether it streamed by distance at all,

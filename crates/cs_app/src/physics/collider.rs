@@ -9,9 +9,9 @@
 //!
 //! F20-A's evaluator decides `hidden ⇒ no collider` — a visibility swap must
 //! not leave an invisible obstacle behind — and F20-C.03 composed that into
-//! [`ColliderVerdict::NoCollider`](crate::animation::ColliderVerdict::NoCollider),
+//! [`ColliderVerdict::NoCollider`],
 //! read out of
-//! [`composed_visibility_verdict`](crate::animation::composed_visibility_verdict).
+//! [`composed_visibility_verdict`].
 //! **Nothing read it.** The engine had no collision-enable record at all: the
 //! F20-C.03 slice recorded that `grep -rn CollisionEnabled crates/` was empty
 //! and deliberately did not invent a consumer for a physics subsystem another

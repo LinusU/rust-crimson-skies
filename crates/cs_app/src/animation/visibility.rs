@@ -10,7 +10,7 @@
 //! ([`AnimatedNodeState::visibility`](cs_sim::animated_object::AnimatedNodeState::visibility),
 //! [`collider_enabled`](cs_sim::animated_object::AnimatedNodeState::collider_enabled))
 //! and F20-B deliberately stopped before applying it (its boundary 2):
-//! [`NodePresentation`](crate::scene::NodePresentation) is the single field
+//! [`NodePresentation`] is the single field
 //! F11-C's [`select_lod_presentation`](crate::scene::select_lod_presentation)
 //! rewrites on every pass, so an animation that wrote it would be overwritten
 //! by the next distance change — and, in the other direction, an animation pass
@@ -25,7 +25,7 @@
 //!   by the instance teardown.
 //! * **The composed verdict** is [`VisibilityVerdict`], computed by
 //!   [`composed_visibility_verdict`] from the records that exist — damage's
-//!   own marker [`NodeDisabled`](crate::scene::NodeDisabled), F11-C's
+//!   own marker [`NodeDisabled`], F11-C's
 //!   `NodePresentation` and this module's `NodeAnimatedVisibility`.
 //!
 //! # The verdict is composed at read time, not stored
@@ -43,7 +43,7 @@
 //! * the LOD pass cannot lose the animation's verdict — it never touches
 //!   [`NodeAnimatedVisibility`];
 //! * the animation cannot silently override LOD or damage — it never touches
-//!   `NodePresentation` or [`NodeDisabled`](crate::scene::NodeDisabled);
+//!   `NodePresentation` or [`NodeDisabled`];
 //!
 //! and both hold whatever order the two run in, in any schedule.
 //!
@@ -51,7 +51,7 @@
 //!
 //! The draw half of the verdict, from the **three** records the composition
 //! reads — damage's own marker
-//! ([`NodeDisabled`](crate::scene::NodeDisabled)), F11-C's presentation record
+//! ([`NodeDisabled`]), F11-C's presentation record
 //! ([`NodePresentation`]) and the clip's
 //! ([`NodeAnimatedVisibility`]):
 //!
@@ -174,7 +174,7 @@ use crate::scene::{NodeDisabled, NodePresentation, PresentationState};
 /// It is deliberately *not* the draw verdict: what the world does with this
 /// value also depends on LOD and damage, and that composition is
 /// [`VisibilityVerdict`], computed on read. A node this component reports
-/// `Hidden` while it is [`NodeDisabled`](crate::scene::NodeDisabled) is not a
+/// `Hidden` while it is [`NodeDisabled`] is not a
 /// contradiction — the record is the clip's, the verdict is the world's.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeAnimatedVisibility {
@@ -225,8 +225,8 @@ pub enum DrawVerdict {
     /// clip's — the clip's own record is unaffected.
     LodCulled,
     /// The node is disabled: either it carries
-    /// [`NodeDisabled`](crate::scene::NodeDisabled) itself, or its
-    /// [`NodePresentation`](crate::scene::NodePresentation) is `Disabled`,
+    /// [`NodeDisabled`] itself, or its
+    /// [`NodePresentation`] is `Disabled`,
     /// which is also how a disabled **ancestor** reaches it. Damage's reason,
     /// and it outranks both, at any depth (F20 non-negotiable behavior 3).
     Disabled,
@@ -362,7 +362,7 @@ impl fmt::Display for VisibilityVerdict {
 /// exist right now.
 ///
 /// This is **the** entry point for a presentation or collision consumer: it
-/// reads [`NodeDisabled`](crate::scene::NodeDisabled),
+/// reads [`NodeDisabled`],
 /// [`NodePresentation`] and [`NodeAnimatedVisibility`], and returns the
 /// composed [`VisibilityVerdict`]. No writer is consulted, none is trusted over
 /// another, and nothing is cached — so the answer follows the last LOD or damage

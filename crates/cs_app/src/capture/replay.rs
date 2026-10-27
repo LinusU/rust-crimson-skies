@@ -157,7 +157,7 @@ impl ReplaySubject {
     /// play purpose and the engine's baseline fixed rate.
     ///
     /// The loaded row is keyed by
-    /// [`AIRFRAME_CONTENT_KEY`](super::identity::AIRFRAME_CONTENT_KEY) and its
+    /// [`AIRFRAME_CONTENT_KEY`] and its
     /// digest is [`airframe_content_digest`] of the same tuning the run flies,
     /// so the content half of the record describes the airframe the world
     /// actually hosts.

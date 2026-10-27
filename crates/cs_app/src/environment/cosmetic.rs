@@ -9,7 +9,7 @@
 //! its own stream" means in code:
 //!
 //! * The particles come from
-//!   [`CosmeticWeatherSeed`](cs_content::environment::CosmeticWeatherSeed),
+//!   [`CosmeticWeatherSeed`],
 //!   whose stream lives in `COSMETIC_WEATHER_DOMAIN`. A mission's AI stream
 //!   is a different domain of the same generator, so no number drawn here can
 //!   be or become an AI draw, and adding a decorative consumer later cannot

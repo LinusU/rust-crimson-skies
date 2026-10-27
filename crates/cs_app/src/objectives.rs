@@ -158,7 +158,7 @@
 //!
 //! * **The nap's number crosses as the declared nap time, never as a
 //!   duration of this engine.** It becomes a
-//!   [`NapTime`](cs_sim::objectives::runtime::NapTime) — measured to be the
+//!   [`NapTime`] — measured to be the
 //!   nap time in the engine's own unit — and nothing downstream converts it
 //!   into ticks: the unit's correspondence to this runtime's integer ticks is
 //!   unmeasured. Carrying it rather than dropping it keeps the record's

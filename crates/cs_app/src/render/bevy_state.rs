@@ -62,7 +62,7 @@
 //! The fifth class cannot be expressed by a `StandardMaterial` at all: additive
 //! `One`/`One` has no mode, because Bevy maps `AlphaMode::Add` onto the
 //! premultiplied-alpha pipeline. It gets a material of its own —
-//! [`AdditiveMaterial`](crate::render::additive::AdditiveMaterial) with
+//! [`AdditiveMaterial`] with
 //! [`ADDITIVE_FRAGMENT_SHADER`](crate::render::additive::ADDITIVE_FRAGMENT_SHADER),
 //! which carries *all four* of the decisions below: the blend, the depth
 //! write, the cull face, and the mode that puts the surface in the sorted

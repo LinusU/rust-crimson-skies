@@ -26,7 +26,7 @@
 //!   and refusal recorded by name and never played;
 //! * [`spawn::bind_spawned_emitters`] — the spawn/bind path, the one producer
 //!   of [`AudioEmitterBinding`]s: an aircraft's engine loop and its
-//!   [`EngineVoiceFollow`](engine::EngineVoiceFollow), and the world's
+//!   [`EngineVoiceFollow`], and the world's
 //!   environment loop on the delivered item entity, each named from the
 //!   delivered closure's own [`cs_content::audio`] records and given one
 //!   session-qualified emitter id for its whole life;
@@ -146,7 +146,7 @@ use crate::scene::SceneGeneration;
 ///
 /// An emitter the mixer can place also carries a `Transform`, so
 /// [`GlobalTransform`](bevy::prelude::GlobalTransform) gives
-/// [`mix_session`](mix_session) a pose. One without one is *not* assumed to be
+/// [`mix_session`] a pose. One without one is *not* assumed to be
 /// at the listener: it is reported as unplaced and keeps its last mix. The world's ambient
 /// loop is the declared exception: [`NonPositionalEmitter`] says it has no
 /// position by design.

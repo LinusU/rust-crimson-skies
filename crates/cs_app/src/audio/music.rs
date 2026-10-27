@@ -19,7 +19,7 @@
 //! The owner ruled (task #1463 note of 2026-10-16, "rule (b), track-level"):
 //!
 //! * one [`ContentKind::Music`] id **per track**, over F14-D.7's
-//!   [`install_file_key`](cs_content::catalog::baseline::install_file_key)
+//!   [`install_file_key`]
 //!   spelling of `"<container>/<member>"` — the #1465 dialogue shape: one
 //!   derivation, no new spelling. [`music_member_id`] is the [`voice_member_id`]
 //!   sibling the ruling names, and the cue's id and any published id go

@@ -400,9 +400,9 @@ pub enum SessionError {
     /// The scripted camera's own smoother refused the step.
     ///
     /// The scripted camera smooths through the same
-    /// [`PoseSmoother`](super::smoothing::PoseSmoother) law as the player's rigs
+    /// [`PoseSmoother`] law as the player's rigs
     /// and with the same response rate, so this is the same class of refusal
-    /// [`RigError::Smoothing`](super::rig::RigError::Smoothing) is.
+    /// [`RigError::Smoothing`] is.
     Smoothing(SmoothingError),
     /// The frame's projection could not be pinned into a capture record.
     ///

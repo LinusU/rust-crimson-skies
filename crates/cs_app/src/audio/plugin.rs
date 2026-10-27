@@ -47,7 +47,7 @@
 //!   [`AudibleDevice`](super::device::AudibleDevice), which opens the machine's
 //!   default output stream **only** when `$CS_CAPABILITIES` declares `audio`
 //!   (task #635, F41-D). A machine that cannot play gets a
-//!   [`RefusingAudioDevice`](super::device::RefusingAudioDevice) reporting the
+//!   [`RefusingAudioDevice`] reporting the
 //!   gate's own named refusal on every command — never a silent mute.
 //! * [`Self::with_device`] takes a caller's device as-is.
 //! * Neither asks for a backend, and the world is a headless or test one: the
@@ -58,7 +58,7 @@
 //! The plugin loads no audio either: the session's specs come from the delivered
 //! load, not from here. It holds the declared catalog the loading path publishes
 //! and lowers only what the handoff actually delivered — and
-//! [`bind_spawned_emitters`](super::spawn::bind_spawned_emitters) names emitter
+//! [`bind_spawned_emitters`] names emitter
 //! bindings from exactly that content, never from ids it invents.
 
 use std::sync::{Arc, Mutex};

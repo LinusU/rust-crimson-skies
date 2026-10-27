@@ -6,7 +6,7 @@
 //!
 //! Stage `### F20-B` published [`NodeAnimatedAttachment`] — *that* the clip
 //! wants this node under that parent, with which
-//! [`PosePolicy`](cs_sim::animated_object::PosePolicy) — and stopped there.
+//! [`PosePolicy`] — and stopped there.
 //! [`apply_attachment_transitions`] is the consumer that turns the record
 //! into the hierarchy change itself; [`super::playback::advance_animation`] runs it
 //! at the end of every fixed tick, so the transition is applied in the same
@@ -103,7 +103,7 @@ type SceneNodes = HashMap<(ContentId, SceneGeneration), Vec<Entity>>;
 /// Component: the attachment transition the consumer applied to this entity.
 ///
 /// It is what makes the transition **once per change**: the evaluated
-/// [`AttachmentState`](cs_sim::animated_object::AttachmentState) is
+/// [`AttachmentState`] is
 /// re-published every tick, and the consumer only acts while it differs from
 /// this record — so the inherited velocity of a detach is written on the
 /// detach tick and never again (F20 non-negotiable behavior 3).

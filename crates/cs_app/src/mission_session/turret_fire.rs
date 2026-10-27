@@ -15,7 +15,7 @@
 //!   mission's own weapon publication
 //!   ([`append_turret_fire_orders`]). The round is the F27 step's, and its
 //!   hit on the player's swept hull box resolves through the session's one
-//!   [`SessionDamageResolver`](crate::weapons::SessionDamageResolver).
+//!   [`SessionDamageResolver`].
 //! * **Rocket turrets** (`aagun**`/`maingun*` name `wep_27`) fly a
 //!   [`FlakRound`] from the retail record. The shot's `snd_enemyflak` cue
 //!   plays at the muzzle and the burst is published on

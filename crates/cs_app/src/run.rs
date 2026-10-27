@@ -1,7 +1,7 @@
 //! The fixed-tick headless synthetic runs (F00-C and F21-E).
 //!
 //! [`run_synthetic`] is the consumer of the asset-free
-//! [`SyntheticScene`](crate::synthetic::SyntheticScene): it builds a fresh
+//! [`SyntheticScene`]: it builds a fresh
 //! world from the typed fixture, advances it exactly `request.ticks` times
 //! and optionally records the sample of every tick — 0 through the requested
 //! final one — to a JSON Lines trace. Running it twice is part of the

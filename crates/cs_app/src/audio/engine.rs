@@ -9,7 +9,7 @@
 //!
 //! * [`EngineVoiceFollow`] marks the emitter of an engine loop as a voice whose
 //!   level follows the flight model. It is a component rather than a flag on
-//!   [`AudioEmitterBinding`](super::AudioEmitterBinding) because the binding is
+//!   [`AudioEmitterBinding`] because the binding is
 //!   F41-B's *lifecycle* record — which asset plays on which emitter — and this
 //!   is a different question: how loudly, and how fast. The spawn path attaches
 //!   it alongside the binding it produces (`super::spawn`).

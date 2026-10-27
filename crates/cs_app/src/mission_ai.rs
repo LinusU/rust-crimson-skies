@@ -294,7 +294,7 @@ pub fn should_fire(range_m: f32, alignment: f32) -> bool {
 /// committed tick, waiting for the mission's own weapon publication to carry
 /// them.
 ///
-/// A tick's [`WeaponTickInput`](crate::weapons::WeaponTickInput) is consumed
+/// A tick's [`WeaponTickInput`] is consumed
 /// exactly once, so an attacker never pushes a second record for the same
 /// tick: [`append_ai_fire_orders`] joins these shooters to the mission's own
 /// publication instead.

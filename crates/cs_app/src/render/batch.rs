@@ -174,7 +174,7 @@ impl InstanceVisuals {
     ///
     /// # Errors
     ///
-    /// [`LiveryError::ForeignSession`](crate::livery::LiveryError::ForeignSession)
+    /// [`LiveryError::ForeignSession`]
     /// when `session` did not open `runtime`, and nothing is recorded: a paint
     /// bound for a finished session is never served, and the caller retries
     /// with the open session.

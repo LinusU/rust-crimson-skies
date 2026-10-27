@@ -66,7 +66,7 @@
 //! A successful load also publishes the damage side's debris bindings
 //! (F29-C.5) when the producer inserted the one-shot
 //! [`PartDebrisPublish`] source beside the request: one
-//! [`PartDebrisBinding`](crate::debris::PartDebrisBinding) per authored debris
+//! [`PartDebrisBinding`] per authored debris
 //! part of the import, placed from the damage graph's own scene bindings and
 //! stamped with the load generation. A part whose scene identity is
 //! unresolved is reported in [`SceneEvent::Loaded`]'s `unpublished_debris`
@@ -109,11 +109,11 @@
 //!   same-entity constraint [`apply_collider_presence`](crate::physics::apply_collider_presence)
 //!   needs: it reads the presence record, the clip's
 //!   [`NodeAnimatedVisibility`](crate::animation::NodeAnimatedVisibility) and
-//!   the Avian [`Collider`](avian3d::prelude::Collider) from one entity, so a
+//!   the Avian [`Collider`] from one entity, so a
 //!   node whose visibility sat on one entity and whose collider on another
 //!   would give the policy a node it never sees the clip for. The pose is
-//!   Avian's own [`Position`](avian3d::prelude::Position) /
-//!   [`Rotation`](avian3d::prelude::Rotation) and no `Transform` at all, so
+//!   Avian's own [`Position`] /
+//!   [`Rotation`] and no `Transform` at all, so
 //!   [`NodeVisualTransform`] stays the one visual pose owner and Bevy's
 //!   propagation cannot overwrite it; the authored linear map is placed by
 //!   [`AffinePlacement`], the one decision [`crate::world::affine`] owns.
@@ -1411,7 +1411,7 @@ pub enum SceneEvent {
         /// shot passes through.
         uncollidable: Vec<(SceneNodeId, NodeCollisionError)>,
         /// Authored debris parts (task F29-C.5) whose
-        /// [`PartDebrisBinding`](crate::debris::PartDebrisBinding) could not be
+        /// [`PartDebrisBinding`] could not be
         /// published: the damage graph named the node in the publish source, but
         /// its own scene binding is unresolved or absent, so no entity of this
         /// scene can carry the binding. Reported by node key instead of being

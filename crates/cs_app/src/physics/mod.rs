@@ -18,7 +18,7 @@
 //! target is woken before that drain, and a request that reaches no dynamic
 //! body is counted as dropped instead of vanishing.
 //! [`body`] is the single entry point for creating a runtime body: it
-//! validates a [`BodySpec`](body::BodySpec), binds the declared
+//! validates a [`BodySpec`], binds the declared
 //! [`CollisionLayer`](cs_sim::collision::CollisionLayer) to Avian's collision
 //! groups, turns [`ShapeClass`](cs_sim::collision::ShapeClass) into a sensor,
 //! opts the fast layers into swept detection with a bounded speculative
@@ -26,8 +26,8 @@
 //! [`contacts`] classifies Avian's collision events back into that vocabulary
 //! and reports each contact episode once, pruning pairs whose body is gone.
 //! [`collider`] is the collision-side consumer of the animation layer's
-//! visibility verdict (F20-C.04): [`NodeColliderPresence`](collider::NodeColliderPresence)
-//! is the record this layer owns for a node's collider, [`apply_collider_presence`](collider::apply_collider_presence)
+//! visibility verdict (F20-C.04): [`NodeColliderPresence`]
+//! is the record this layer owns for a node's collider, [`apply_collider_presence`]
 //! merges the clip's composed collider verdict into it and projects it onto
 //! Avian's `ColliderDisabled` marker, and a damage removal is terminal there —
 //! no clip can re-enable a collider the damage side removed.

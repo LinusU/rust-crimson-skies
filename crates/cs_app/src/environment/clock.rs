@@ -6,20 +6,20 @@
 //!
 //! [`EnvironmentClock`] is the one place the authored record meets the
 //! authored schedule: it takes an
-//! [`EnvironmentDefinition`](cs_content::environment::EnvironmentDefinition),
-//! lifts its [`EnvironmentState`](cs_content::environment::EnvironmentState)
+//! [`EnvironmentDefinition`],
+//! lifts its [`EnvironmentState`]
 //! and its [`EnvironmentTimeline`](cs_content::environment::EnvironmentTimeline)
 //! into `cs_sim::visibility`'s generic
-//! [`VisibilityTimeline`](cs_sim::visibility::VisibilityTimeline), and
+//! [`VisibilityTimeline`], and
 //! advances them on [`ENVIRONMENT_TIME_DOMAIN`](cs_sim::visibility::ENVIRONMENT_TIME_DOMAIN).
 //!
 //! The wiring is deliberately thin and total:
 //!
-//! * one [`WeatherEvent`](cs_content::environment::WeatherEvent) becomes one
-//!   [`VisibilityEvent`](cs_sim::visibility::VisibilityEvent), in authored
+//! * one [`WeatherEvent`] becomes one
+//!   [`VisibilityEvent`], in authored
 //!   order, with its tick copied verbatim — no retiming, no rounding;
 //! * the current state is the record's own
-//!   [`EnvironmentState`](cs_content::environment::EnvironmentState), so a
+//!   [`EnvironmentState`], so a
 //!   consumer reads the *same* wind field the timeline replaced, never a
 //!   cached copy;
 //! * pause, replay and the refusal of injected ticks come from the domain,
@@ -39,7 +39,7 @@ use cs_sim::visibility::{TimelineError, VisibilityEvent, VisibilityTimeline};
 use cs_types::Tick;
 
 /// The environment of one session: its current
-/// [`EnvironmentState`](cs_content::environment::EnvironmentState) and the
+/// [`EnvironmentState`] and the
 /// clock that replaces that state at authored ticks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnvironmentClock {

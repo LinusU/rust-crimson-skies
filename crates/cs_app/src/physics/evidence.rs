@@ -1753,7 +1753,7 @@ impl StabilityBudget {
 /// The session hosts the real [`FlightForcesPlugin`], the aircraft is spawned
 /// by [`spawn_flight_body`] with the synthetic airframe's declared mass and
 /// inertia, and the forces come from `cs_sim`'s production flight model through
-/// the one-tick [`ForceRequest`](super::ForceRequest) queue. Nothing here is a
+/// the one-tick [`ForceRequest`] queue. Nothing here is a
 /// parallel test-only implementation: if the driver, the model, the mass
 /// binding or the schedule stopped working, this probe's numbers would move.
 pub fn stability_probe(

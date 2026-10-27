@@ -9,7 +9,7 @@
 //! # The gap this closes
 //!
 //! Nothing turned an original `gamez.zbd` into the
-//! [`WorldDefinition`](cs_content::world::WorldDefinition) that
+//! [`WorldDefinition`] that
 //! [`spawn_world`](super::spawn::spawn_world) consumes. F18-B's
 //! `world::fixture` producers are **synthetic only** — they author metres by
 //! construction and say so — and F18-A's stored-hierarchy work decoded the node

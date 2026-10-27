@@ -13,7 +13,7 @@
 //!   run as a failure.
 //! * **The pool is not measured.** The original's per-zone armor/health totals
 //!   are unknown (finding, "Unknown"); the hull pool is the designed
-//!   [`DESIGNED_PLAYER_INTEGRITY`](crate::mission_session::DESIGNED_PLAYER_INTEGRITY),
+//!   [`DESIGNED_PLAYER_INTEGRITY`],
 //!   so *which* contact kills is a design value, not the original's. The
 //!   `health_damage_range` pair is converted to that pool's damage by
 //!   [`crash_hull_damage`], calibrated on the owner's observation that a direct

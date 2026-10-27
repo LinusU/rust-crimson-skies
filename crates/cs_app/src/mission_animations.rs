@@ -22,8 +22,8 @@
 //!   per-tick statement report — but **nothing started one, advanced one or
 //!   finished one**, so no mission ever played a carrier's members;
 //! * the F20-C [`AnimationLog`](crate::animation::AnimationLog) reached
-//!   [`MissionMarkerConsumer`](crate::mission_markers::MissionMarkerConsumer)
-//!   and [`ObjectiveSession`](crate::objectives::ObjectiveSession) only when a
+//!   [`MissionMarkerConsumer`]
+//!   and [`ObjectiveSession`] only when a
 //!   host composed those calls by hand, so the mission session had no single
 //!   step that ran both halves of one committed tick.
 //!
@@ -40,7 +40,7 @@
 //! * [`step_mission_animations`] is the composed step: it advances the record
 //!   player for a committed tick and then steps the mission session with the
 //!   animation log's markers through
-//!   [`step_mission_with_markers`](crate::mission_markers::step_mission_with_markers),
+//!   [`step_mission_with_markers`],
 //!   so a host has one call for one committed tick and every refusal says
 //!   which half already ran.
 //!
@@ -1235,8 +1235,8 @@ pub struct PlayerTeardown {
 /// timeline and keeps the two ledgers a mission needs to stay correct: the
 /// rows it refused (never started) and the records it has finished. It is a
 /// plain struct owned by the mission host beside the
-/// [`MissionMarkerConsumer`](crate::mission_markers::MissionMarkerConsumer)
-/// and [`ObjectiveSession`](crate::objectives::ObjectiveSession) it is stepped
+/// [`MissionMarkerConsumer`]
+/// and [`ObjectiveSession`] it is stepped
 /// with, not a Bevy resource.
 ///
 /// The caller states `ticks_per_second`: the original's tick rate is
@@ -1674,7 +1674,7 @@ pub enum MissionAnimationStepRefusal {
     /// [`step_mission_animations`] small; what it carries says the same: the
     /// record report for the tick the mission refused, and the marker delivery
     /// the host retries the **mission** half with — with those signals, the way
-    /// [`step_mission_with_markers`](crate::mission_markers::step_mission_with_markers)
+    /// [`step_mission_with_markers`]
     /// documents — while the host must not offer this tick to the player again.
     Mission(Box<MissionTickRefusal>),
 }

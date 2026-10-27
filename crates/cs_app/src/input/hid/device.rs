@@ -3,7 +3,7 @@
 //!
 //! One background thread owns the device. It looks for a joystick once a second
 //! until one is connected, decodes its input reports through the
-//! [`Layout`](super::layout::Layout) of its own report descriptor, and plays the
+//! [`Layout`] of its own report descriptor, and plays the
 //! force-feedback [`Command`]s it is sent through the [`Pid`] driver. It reports
 //! everything as [`JoystickMessage`]s; the Bevy seam
 //! ([`HostJoystickPlugin`](super::HostJoystickPlugin)) turns them into the input

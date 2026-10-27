@@ -16,7 +16,7 @@
 //!   epoch-dependent view of it.
 //! * **honouring world orientation** — the sky orientation and the sun
 //!   direction are *world* values copied verbatim from the authored
-//!   [`EnvironmentDefinition`](cs_content::environment::EnvironmentDefinition).
+//!   [`EnvironmentDefinition`].
 //!   No camera rotation and no origin translation is applied to them, so a
 //!   rebase can neither rotate the sky nor move the sun.
 //!

@@ -87,11 +87,11 @@
 //! * [`ModelKind::FixedWing`] flies the F24-B [`FlightModel`] exactly as
 //!   before.
 //! * [`ModelKind::Exceptional`] flies the F25-B
-//!   [`ExceptionalControlLaw`](cs_sim::flight::ExceptionalControlLaw) through
+//!   [`ExceptionalControlLaw`] through
 //!   [`FlightAircraft::exceptional`] / [`spawn_exceptional_flight_body`], with
-//!   the F25-A [`RotorDrive`](cs_sim::flight::RotorDrive) advanced by exactly
+//!   the F25-A [`RotorDrive`] advanced by exactly
 //!   one fixed tick per drive and the F25-A
-//!   [`TelemetryFrame`](cs_sim::flight::TelemetryFrame) exposed by
+//!   [`TelemetryFrame`] exposed by
 //!   [`FlightAircraft::telemetry`].
 //! * A non-fixed-wing tuning handed to [`FlightAircraft::new`], which cannot
 //!   carry an exceptional law, is refused by name

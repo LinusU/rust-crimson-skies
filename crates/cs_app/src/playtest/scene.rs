@@ -79,7 +79,7 @@ pub struct PlaytestSea;
 /// The component is the per-aircraft record of the retail flight path, the
 /// counterpart [`crate::physics::FlightAircraft`] is for the designed law. It
 /// exists only on a body spawned over [`RetailContent`]; the synthetic scene
-/// keeps [`FlightModel`](cs_sim::flight::FlightModel) and its own driver.
+/// keeps [`FlightModel`] and its own driver.
 ///
 /// The law owns its own state ([`OriginalState`]) because it integrates pose
 /// and velocity itself: the driver seeds it from the body each fixed tick,

@@ -8,7 +8,7 @@
 //! `warmup_cycles` cycles are excluded from the trend because caches fill
 //! there; the leak baseline is the last warm-up sample.
 //!
-//! Time is integer simulation ticks at [`SIM_HZ`](super::scenario::SIM_HZ).
+//! Time is integer simulation ticks at [`SIM_HZ`].
 //! The trend is an exact integer least-squares slope: no floats.
 
 use std::fmt;

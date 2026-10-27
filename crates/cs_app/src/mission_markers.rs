@@ -10,7 +10,7 @@
 //! # What this closes
 //!
 //! F20-C's integration step made markers reach
-//! [`AnimationLog`](crate::animation::AnimationLog) from a real session and
+//! [`AnimationLog`] from a real session and
 //! recorded, in
 //! `docs/findings/2026-10-02-f20-c-wired-session-integration.md` finding 7,
 //! that *nothing consumed them*: "the layer that turns them into gameplay is
@@ -23,7 +23,7 @@
 //!
 //! | end | what it is |
 //! | --- | --- |
-//! | producer | [`AnimationLog`](crate::animation::AnimationLog): the fixed-tick playback publishes every marker crossing into the log and nothing reads it |
+//! | producer | [`AnimationLog`]: the fixed-tick playback publishes every marker crossing into the log and nothing reads it |
 //! | hand-off | [`MissionMarkerConsumer::drain`]: takes the marker records through [`AnimationLog::take_markers`](crate::animation::AnimationLog::take_markers) and leaves the other kinds for their consumers |
 //! | binding | [`MissionMarkerBindings`]: the mission host's **declared** cue → mission-signal table, supplied by the caller |
 //! | consumer | [`step_mission_with_markers`]: raises the delivered signals into a real [`ObjectiveSession`] step, where the program's own declared rules decide what a signal means |
@@ -871,7 +871,7 @@ impl MissionMarkerConsumer {
     /// The marker records are handed over through
     /// [`AnimationLog::take_markers`](crate::animation::AnimationLog::take_markers),
     /// so a long session accumulates no markers: a world with no
-    /// [`AnimationLog`](crate::animation::AnimationLog) resource drains
+    /// [`AnimationLog`] resource drains
     /// nothing and reports nothing, which is the same "no producer, no
     /// consumer" rule the rest of the playback follows.
     ///

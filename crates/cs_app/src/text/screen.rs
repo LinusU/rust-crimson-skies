@@ -20,8 +20,8 @@
 //!
 //! The stage's minimum scenario is "malformed markup and absent glyphs produce
 //! visible diagnostics". Both are already computed by
-//! [`parse_markup`](cs_content::localization::parse_markup) and by
-//! [`TextMetrics`](super::TextMetrics)'s declared
+//! [`parse_markup`] and by
+//! [`TextMetrics`]'s declared
 //! [`GlyphCoverage`](cs_content::localization::GlyphCoverage); this path is the
 //! one place that collects them for a screen:
 //! [`ScreenText::diagnostics`] returns each one as a typed

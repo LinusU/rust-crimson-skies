@@ -10,7 +10,7 @@
 //!
 //! #1438 (`M01-PLAY-RADIO`) derives each spoken member's id as
 //! [`ContentKind::Dialogue`] over F14-D.7's
-//! [`install_file_key`](cs_content::catalog::baseline::install_file_key)
+//! [`install_file_key`]
 //! spelling of `"<container>/<member>"` and names that id on its `RadioLine`.
 //! The device only plays what its library holds, and the loader's population
 //! pass ([`super::samples::populate`]) decodes a member only when the declared

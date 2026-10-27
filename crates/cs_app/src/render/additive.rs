@@ -137,7 +137,7 @@ impl AdditiveMaterialKey {
     /// carry for this class — the blend, the depth write and the cull face —
     /// so a material that skipped any of them would draw with a decision its
     /// render state does not record. The fourth write,
-    /// `front_face = `[`FRONT_FACE`](crate::render::bevy_mesh::FRONT_FACE), is
+    /// `front_face = `[`FRONT_FACE`], is
     /// not per-surface: it is the measured winding convention
     /// (`OWNER-STATIC-2026-10-05`, task #396) written down explicitly instead
     /// of being left to wgpu's default, so this pipeline cannot disagree with

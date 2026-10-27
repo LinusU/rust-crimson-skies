@@ -13,7 +13,7 @@
 //! inserted, so a delivered load installed a session and then mixed silence.
 //! This module is the producer half: [`bind_spawned_emitters`] attaches
 //! [`AudioEmitterBinding`] (and, on an aircraft,
-//! [`EngineVoiceFollow`](super::EngineVoiceFollow)) to the entities a spawn
+//! [`EngineVoiceFollow`]) to the entities a spawn
 //! path already created.
 //!
 //! # Who becomes an emitter
@@ -21,12 +21,12 @@
 //! Two kinds of entity, and neither is invented content:
 //!
 //! * **Aircraft** — an entity carrying a flight authority the simulation
-//!   already owns: [`FlightAircraft`](crate::physics::flight::FlightAircraft)
+//!   already owns: [`FlightAircraft`]
 //!   (the designed F24 law) or
-//!   [`PlaytestOriginalFlight`](crate::playtest::scene::PlaytestOriginalFlight)
+//!   [`PlaytestOriginalFlight`]
 //!   (the recovered original law a mission's player body spawns). It gets the
 //!   [`AudioEmitterRole::Engine`] loop and an
-//!   [`EngineVoiceFollow`](super::EngineVoiceFollow), so its level follows
+//!   [`EngineVoiceFollow`], so its level follows
 //!   throttle at the fixed rate.
 //! * **World emitters** — the delivered item entity of the installed load
 //!   whose own [`cs_content::audio`] record is the world's
