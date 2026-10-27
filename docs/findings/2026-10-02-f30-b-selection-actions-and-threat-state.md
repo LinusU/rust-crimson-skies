@@ -198,11 +198,12 @@ the fix above):
 ## Known limits left for later stages
 
 - Two entities in one scene generation presenting the **same** `ActorId`
-  through `TargetableBinding` is a producer bug the roster sync does not yet
-  report; the record that survives is whichever entity ECS iteration order
-  reached last, so it is not one of the stable orders F30 non-negotiable 2
-  asks for. Filed as a follow-up task; the producer that can be held
-  responsible owns the duplicate.
+  through `TargetableBinding` is a producer bug. Resolved by task #522: the
+  roster sync names the actor in `RosterReport::duplicated` and writes
+  nothing for it that pass, so the store keeps its held record (or stays
+  without the actor) and no field depends on ECS iteration order. The actor
+  still counts as present, so a duplicate never unregisters it. Pinned by
+  `accept_f30_b_roster_sync_reports_a_duplicated_actor_binding`.
 - A binding whose entity carries a `TargetableBinding` but no
   `TargetableState` is reported as `incomplete` **and** not counted as
   present, so an actor whose record component is removed after registration
