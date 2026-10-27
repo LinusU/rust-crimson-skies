@@ -396,9 +396,14 @@ fn accept_f21_e_bad_aspect_and_view_are_refused() {
 /// projection's narrowings.
 #[test]
 fn accept_f21_e_the_run_produces_the_applied_capture_report() {
-    // The trace goes to the temp dir: `private/` paths belong to the
-    // operator, and a test leaves no artefact behind.
-    let trace = std::env::temp_dir().join("cs-f21-e-capture-trace.jsonl");
+    // The trace goes to a process-unique temp path: `private/` paths belong
+    // to the operator, a test leaves no artefact behind, and a fixed name
+    // would collide with another agent's run of this same binary on the
+    // shared build host.
+    let trace = std::env::temp_dir().join(format!(
+        "cs_f21_e_capture_trace_{}.jsonl",
+        std::process::id()
+    ));
     let request = match cli::parse(args(&[
         "--synthetic",
         "--headless",
