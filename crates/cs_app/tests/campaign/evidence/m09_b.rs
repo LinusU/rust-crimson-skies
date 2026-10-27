@@ -150,8 +150,10 @@ fn evidence_report_m09_b_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(
             "implementer: sonnet-1/sonnet-1 (Rally #283 M09-B, session of 2026-10-25); reviewer: \
-             none yet - an agent review is not independent original-reference evidence and no agent \
-             review replaces the owner's human approval"
+             sonnet-1/sonnet-1, the same agent instance and model in the same session, so the \
+             reviewer's context was not fresh and this is not independent review; an agent review \
+             is not independent original-reference evidence and no agent review replaces the \
+             owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \

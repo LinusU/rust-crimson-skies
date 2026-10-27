@@ -10,6 +10,24 @@
   "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
   "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
   "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name. A stage that is still in implementation is not in this file and its report must not be committed yet.",
+  "entries_added_after_writing": [
+    {
+      "task_key": "M09-A",
+      "rally_task": 282,
+      "added_under": "EVIDENCE-STALE-NONE-YET (#2147)",
+      "added_by": "deepseek-1/deepseek-1",
+      "read_at": "2026-10-27T17:00:00Z",
+      "note": "The report still carried the hand-over placeholder `reviewer: none yet` after #282 had landed, so it failed the unconditional placeholder rule while the stage had no entry here. The entry was added in the same commit that corrected the report's `review.identity` and the harness literal in crates/cs_app/tests/campaign/evidence/m09_a.rs, byte-equal. The reviewer is the implementer's own instance, so the report says the review is not independent and that its context was not fresh. Read with the `rally` MCP server (get_task for #282) from the activity log."
+    },
+    {
+      "task_key": "M11-A",
+      "rally_task": 477,
+      "added_under": "EVIDENCE-STALE-NONE-YET (#2147)",
+      "added_by": "deepseek-1/deepseek-1",
+      "read_at": "2026-10-27T17:00:00Z",
+      "note": "The report still carried the hand-over placeholder `reviewer: none yet` after #477 had landed, so it failed the unconditional placeholder rule while the stage had no entry here. The entry was added in the same commit that corrected the report's `review.identity` and the harness literal in crates/cs_app/tests/campaign/evidence/m11_a.rs, byte-equal. The reviewer was the implementer's own agent and model in a fresh session, so the report says the context was fresh and the review is not independent. Read with the `rally` MCP server (get_task for #477) from the activity log, not from the hand-over summary."
+    }
+  ],
   "tasks": [
     {
       "task_key": "M01-A",
@@ -160,6 +178,27 @@
       "report_regenerated_on_reviewed_commit": false
     },
     {
+      "task_key": "M09-A",
+      "rally_task": 282,
+      "evidence_report": "docs/findings/evidence/M09-A.json",
+      "merged_sha": "456ac034bc12e82c3b0fcb330f72320e6e4241f2",
+      "implementer": {
+        "actor": "sonnet-2/sonnet-2",
+        "claim_started": "2026-10-25T11:11:07Z",
+        "submitted": "2026-10-25T11:28:34Z"
+      },
+      "reviewer": {
+        "actor": "sonnet-2/sonnet-2",
+        "review_claim_started": "2026-10-25T11:28:42Z",
+        "approval_event": {"type": "task.approved", "actor": "sonnet-2/sonnet-2", "at": "2026-10-25T11:44:38Z"},
+        "merge_event": {"type": "task.merged", "actor": "rally", "at": "2026-10-25T11:56:35Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false,
+      "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the report keeps saying so.",
+      "notes": "`merge_event` is a system event: the reviewer approved the stage at `approval_event` and Rally's landing queue landed `merged_sha`. The report's `created_at` (2026-10-25T11:19:07Z) is inside the implement claim, so the committed copy is the implementer's own run. Read with the `rally` MCP server (get_task for #282) from the activity log, under EVIDENCE-STALE-NONE-YET (#2147)."
+    },
+    {
       "task_key": "M12-A",
       "rally_task": 291,
       "evidence_report": "docs/findings/evidence/M12-A.json",
@@ -266,6 +305,27 @@
       },
       "report_written_by": "implementer",
       "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "M11-A",
+      "rally_task": 477,
+      "evidence_report": "docs/findings/evidence/M11-A.json",
+      "merged_sha": "b275917973a49303ca7d21f221cf4356d67b7685",
+      "implementer": {
+        "actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-27T07:52:26Z",
+        "submitted": "2026-10-27T09:46:27Z"
+      },
+      "reviewer": {
+        "actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-10-27T09:46:41Z",
+        "approval_event": {"type": "task.approved", "actor": "deepseek-1/deepseek-1", "at": "2026-10-27T10:17:35Z"},
+        "merge_event": {"type": "task.merged", "actor": "rally", "at": "2026-10-27T10:32:34Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent and model, so this review is not independent evidence and the report keeps saying so even though the reviewer's context was a fresh session.",
+      "notes": "`merge_event` is a system event: the reviewer approved the stage at `approval_event` and Rally's landing queue landed `merged_sha`. The report's `created_at` (2026-10-27T10:02:34Z) is inside the review claim, and `candidate_tree` 2a1129bf7 is the reviewed commit a29e1bb26's parent tree, so the committed copy is the report the reviewer's own run wrote. Read with the `rally` MCP server (get_task for #477) from the activity log, under EVIDENCE-STALE-NONE-YET (#2147)."
     }
   ]
 }

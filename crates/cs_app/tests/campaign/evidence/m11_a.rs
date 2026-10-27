@@ -166,9 +166,11 @@ fn evidence_report_m11_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: deepseek-1 (Rally #477, DeepSeek V4.1 Flash, session of 2026-10-27); \
-             reviewer: none yet. An agent review is not independent original-reference \
-             evidence and no agent review replaces the owner's human approval"
+            "implementer: deepseek-1/deepseek-1 (Rally #477 M11-A, DeepSeek V4.1 Flash, session \
+             of 2026-10-27); reviewer: deepseek-1/deepseek-1, the same agent and model in a fresh \
+             session started from the branch, so the reviewer's context was fresh but this is not \
+             independent review; an agent review is not independent original-reference evidence \
+             and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability by the implementer; \
