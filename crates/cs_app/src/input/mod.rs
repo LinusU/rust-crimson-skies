@@ -43,6 +43,7 @@
 use cs_types::Tick;
 use cs_types::input::{Action, ActionMap, BindingSource, DeviceId, InputContext, InputFrame};
 
+pub mod assist;
 pub mod devices;
 pub mod hid;
 pub mod platform;

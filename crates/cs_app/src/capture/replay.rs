@@ -54,16 +54,19 @@ use std::fmt;
 
 use bevy::ecs::entity::Entity;
 use cs_content::replay::{
-    AuthoredChoices, BuildId, CompatibilityVerdict, CrossBuildPolicy, Divergence,
-    EnvelopeComparison, MAX_ENVELOPE_ENTRIES, OverrideLog, PlatformTag, ReplayError, ReplayRecord,
-    ReplaySeeds, ReplayVersion, StateEnvelope,
+    AuthoredChoice, AuthoredChoices, BuildId, ChoiceSlot, CompatibilityVerdict, CrossBuildPolicy,
+    Divergence, EnvelopeComparison, MAX_ENVELOPE_ENTRIES, OverrideLog, PlatformTag, ReplayError,
+    ReplayRecord, ReplaySeeds, ReplayVersion, StateEnvelope,
 };
+use cs_content::settings::FidelityLabel;
 use cs_sim::control::{ControlBuffer, ControlError};
 use cs_sim::flight::{
     AirframeTuning, AirframeTuningError, FlightInput, FlightInputError, FlightModel,
 };
 use cs_types::Tick;
 use cs_types::content::ContentId;
+use cs_types::content::Provenance;
+use cs_types::evidence::ClaimId;
 use cs_types::input::{CommandStream, FlightCommand};
 
 use crate::physics::{
@@ -194,6 +197,43 @@ impl ReplaySubject {
     #[must_use]
     pub const fn with_fixed_hz(mut self, fixed_hz: u32) -> Self {
         self.fixed_hz = fixed_hz;
+        self
+    }
+
+    /// The same subject recording `label` in its authored choices.
+    ///
+    /// The [`ChoiceSlot::Assists`] choice carries the assists by name, or
+    /// `original-rules` when there are none, so a modified run and an
+    /// unmodified run differ in the record alone (AC04). Provenance is
+    /// `designed`: the assists are this project's, not the original's.
+    #[must_use]
+    pub fn with_fidelity(mut self, label: &FidelityLabel) -> Self {
+        let value = if label.is_original_rules() {
+            "original-rules".to_owned()
+        } else {
+            label
+                .assists
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut choices: Vec<AuthoredChoice> = self
+            .choices
+            .choices()
+            .iter()
+            .filter(|choice| choice.slot != ChoiceSlot::Assists)
+            .cloned()
+            .collect();
+        choices.push(AuthoredChoice {
+            slot: ChoiceSlot::Assists,
+            value,
+            provenance: Provenance::designed(
+                ClaimId::new("f52.w3.assists").expect("a literal claim id is well formed"),
+            ),
+        });
+        self.choices = AuthoredChoices::new(choices)
+            .expect("one choice per slot, within the limit, with a non-blank value");
         self
     }
 
