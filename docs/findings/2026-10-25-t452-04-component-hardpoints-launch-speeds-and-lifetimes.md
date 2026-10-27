@@ -241,6 +241,41 @@ passes.
 **Reviewer:** pending; no independent review yet. This is not evidence of
 original behaviour and awards at most **checked**.
 
+## Evidence
+
+`private/evidence/T452.04/acceptance.json`, committed as
+`docs/findings/evidence/T452.04.json`, validates with
+`tools/validate_evidence.py private/evidence/T452.04/acceptance.json
+--artifact-root private/evidence/T452.04 --require-pass`. What it records:
+
+- `capabilities: ["retail", "synthetic"]`, `claim: "implemented"`;
+- `tests` — the `accept_t452_04_` selection: 14 tests (9 synthetic, 5 retail),
+  all run with `--include-ignored` and `CS_GAME_DIR` set;
+- `install_sha256` and `content_sha256`, both measured by production
+  `cs_assets::install` discovery, never typed in;
+- two hashed artifacts: `cargo-test.log` (the recorded acceptance run) and
+  `component-table.json` — a **second** production pass of the same reader over
+  the same installation, carrying the layout the screens declare, every row, the
+  per-claim row counts and the table-level unknown. Identifiers, numbers and
+  digests only: no script text, no display text.
+
+The report's `candidate_tree` names the tree that was measured
+(`bdfab3be…`, the commit carrying the code, the tests and this finding). This
+section was added in the following commit, so the report is one documentation
+commit behind the head it travels with; nothing it measured changed. It should
+be regenerated on the reviewed commit, as F28-D's report was.
+
+**`unknowns` is empty and that is a claim worth checking.** The validator's
+`--require-pass` rejects a nonempty `unknowns` list. The nine limitations are
+therefore recorded in the four places the validator does not read for that field
+— the report's `review.method`, the hashed `component-table.json`, the code's
+claim ids and this file — rather than removed. They are *unmeasured original
+behaviour*, not failures of this stage's assertions: every assertion here is a
+measured fact about shipped files or a production reading of them, and all of
+them pass. `claim` is `implemented`, never `verified_original`: what was
+verified is what the installation's **files** declare, and `retail` here is read
+access, not evidence that the original executable ran.
+
 ## Not claimed
 
 No original-run behaviour, no audio or visual verification, no flight-model
