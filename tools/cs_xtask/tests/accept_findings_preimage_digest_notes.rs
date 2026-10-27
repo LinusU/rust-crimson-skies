@@ -61,7 +61,10 @@ const DOCUMENTS: [(&str, &str); 2] = [
 
 /// A framing that explains why a document quotes the pre-image digest. Every
 /// findings document that quotes it has to carry at least one of these; the two
-/// this task fixed carry the dated note.
+/// this task fixed carry the dated note, F16-E and F50-C carry theirs, and
+/// F50-B's `What was measured on $CS_GAME_DIR` section frames its values as a
+/// measurement — the dated note that section's own dangling pointer promises is
+/// Rally #2151's work, which also adds that document to `DOCUMENTS` below.
 const EXPLANATIONS: [&str; 5] = [
     "#798",
     "Installation note",
@@ -204,16 +207,17 @@ fn accept_findings_preimage_digest_notes_the_note_agrees_with_the_committed_repo
 #[test]
 fn accept_findings_preimage_digest_notes_every_document_quoting_it_is_explained() {
     let root = workspace_root();
+    let documents = findings_documents();
     let mut quoting = Vec::new();
-    for path in findings_documents() {
-        let text = std::fs::read_to_string(&path)
+    for path in &documents {
+        let text = std::fs::read_to_string(path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         if !text.contains(PRE_IMAGE_INSTALL) {
             continue;
         }
         let relative = path
             .strip_prefix(&root)
-            .unwrap_or(&path)
+            .unwrap_or(path.as_path())
             .display()
             .to_string();
         let explained = EXPLANATIONS
@@ -232,9 +236,9 @@ fn accept_findings_preimage_digest_notes_every_document_quoting_it_is_explained(
     // A walk that found nothing, or a document that stopped quoting the value,
     // would make the check above vacuous.
     assert!(
-        findings_documents().len() > 500,
+        documents.len() > 500,
         "the walk reaches the findings tree: {} documents",
-        findings_documents().len()
+        documents.len()
     );
     for (document, _) in DOCUMENTS {
         assert!(
