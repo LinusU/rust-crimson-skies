@@ -980,3 +980,70 @@ fn declared_nitro_with(consumption_per_s: f64, recovery_per_s: f64) -> DeclaredO
     )
     .expect("the retimed nitro is valid: zero recovery is allowed, zero consumption is not")
 }
+
+/// The declared nitro fixture with its activation rule replaced.
+fn declared_nitro_activation(
+    activation: cs_content::ordnance::DeclaredNitroActivationRule,
+) -> DeclaredOrdnance {
+    let fixture = declared_synthetic_nitro();
+    let DeclaredOrdnanceDetails::Nitro(nitro) = fixture.details() else {
+        panic!("the nitro fixture is a booster")
+    };
+    let mut nitro = (**nitro).clone();
+    nitro.parameters.activation = cs_content::ordnance::declared_known(activation);
+    DeclaredOrdnance::try_new(
+        fixture.ordnance().clone(),
+        Origin::SyntheticFixture,
+        fixture.family(),
+        DeclaredOrdnanceDetails::Nitro(Box::new(nitro)),
+        None,
+        cs_content::ordnance::declared_synthetic_provenance(),
+    )
+    .expect("the retargeted nitro is valid")
+}
+
+#[test]
+fn accept_t452_nitro_declared_charge_rule_round_trips_and_refuses_unknown() {
+    use cs_content::ordnance::{DeclaredNitroActivationRule, declared_known, declared_unknown};
+    use cs_sim::weapons::ordnance::NitroActivationRule;
+
+    let declared = declared_nitro_activation(DeclaredNitroActivationRule::UntilCharge {
+        start_min_fraction: declared_known(0.99),
+        stop_below_fraction: declared_known(0.05),
+    });
+    let lowered = cs_app::ordnance::lower_ordnance(&declared).expect("a measured rule lowers");
+    let cs_sim::weapons::ordnance::OrdnanceComponent::Nitro(nitro) = lowered else {
+        panic!("a nitro lowers to a booster")
+    };
+    assert_eq!(
+        nitro.parameters().activation(),
+        NitroActivationRule::UntilCharge {
+            start_min_fraction: 0.99,
+            stop_below_fraction: 0.05,
+        }
+    );
+
+    for (start, stop, field) in [
+        (
+            declared_unknown("not measured"),
+            declared_known(0.05),
+            "nitro.activation.start_min_fraction",
+        ),
+        (
+            declared_known(0.99),
+            declared_unknown("not measured"),
+            "nitro.activation.stop_below_fraction",
+        ),
+    ] {
+        let declared = declared_nitro_activation(DeclaredNitroActivationRule::UntilCharge {
+            start_min_fraction: start,
+            stop_below_fraction: stop,
+        });
+        match cs_app::ordnance::lower_ordnance(&declared) {
+            Err(cs_app::ordnance::OrdnanceLowerError::UnknownField { field: named, .. }) => {
+                assert_eq!(named, field);
+            }
+            other => panic!("an unknown fraction must be refused by name: {other:?}"),
+        }
+    }
+}
