@@ -1061,13 +1061,63 @@ impl fmt::Display for UiAction {
     }
 }
 
-/// A resolved input action: a flight command or a UI action.
+/// A domain transaction a flight context may *request* (F22-G).
+///
+/// A request is not a menu action: it cannot navigate or confirm anything, it
+/// only asks the screen path to perform a transaction
+/// (`docs/contracts/UI-NETWORK.md`, "UI transition discipline"), and the input
+/// layer performs nothing itself. The set is closed on purpose — widening what
+/// flight may ask for is a schema change, not a binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DomainRequest {
+    /// Ask the pause path to pause the local session.
+    Pause,
+}
+
+impl DomainRequest {
+    /// Every request, in a stable order.
+    pub const ALL: &'static [DomainRequest] = &[Self::Pause];
+
+    /// The stable label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pause => "request_pause",
+        }
+    }
+
+    /// Looks a request up by its label; `None` for an unknown request.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|request| request.label() == label)
+    }
+
+    /// The [`UiAction`] the screen path receives for this request, so a
+    /// request travels through the same queue a menu action does.
+    pub const fn ui_action(self) -> UiAction {
+        match self {
+            Self::Pause => UiAction::Pause,
+        }
+    }
+}
+
+impl fmt::Display for DomainRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// A resolved input action: a flight command, a UI action or a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
     /// A command the flight simulation consumes.
     Flight(FlightCommand),
     /// An action a menu or the pause path consumes.
     Ui(UiAction),
+    /// A domain transaction requested from the flight context; it reaches the
+    /// screen path as a [`UiAction`] and never the control buffer.
+    Request(DomainRequest),
 }
 
 impl Action {
@@ -1076,6 +1126,7 @@ impl Action {
         match self {
             Self::Flight(command) => command.label(),
             Self::Ui(action) => action.label(),
+            Self::Request(request) => request.label(),
         }
     }
 
@@ -1084,6 +1135,7 @@ impl Action {
         FlightCommand::from_label(label)
             .map(Self::Flight)
             .or_else(|| UiAction::from_label(label).map(Self::Ui))
+            .or_else(|| DomainRequest::from_label(label).map(Self::Request))
     }
 }
 
@@ -1133,12 +1185,14 @@ impl InputContext {
     /// Whether this context may receive `action`.
     ///
     /// This is the whole of the context gate: [`Flight`](Self::Flight)
-    /// accepts flight commands, [`UiNavigation`](Self::UiNavigation) accepts
-    /// UI actions, and [`TextEntry`](Self::TextEntry) and
-    /// [`Cinematic`](Self::Cinematic) accept neither.
+    /// accepts flight commands and domain requests (a request is only asked
+    /// for, never executed, so flight still cannot run a menu action),
+    /// [`UiNavigation`](Self::UiNavigation) accepts UI actions, and
+    /// [`TextEntry`](Self::TextEntry) and [`Cinematic`](Self::Cinematic)
+    /// accept neither.
     pub const fn accepts(self, action: Action) -> bool {
         match self {
-            Self::Flight => matches!(action, Action::Flight(_)),
+            Self::Flight => matches!(action, Action::Flight(_) | Action::Request(_)),
             Self::UiNavigation => matches!(action, Action::Ui(_)),
             Self::TextEntry | Self::Cinematic => false,
         }
@@ -1343,8 +1397,9 @@ impl InputFrame {
         self.edges.is_empty() && self.axes.iter().all(|axis| axis.quantized() == 0)
     }
 
-    /// Removes the frame's [`Action::Ui`] edges and returns them, leaving the
-    /// flight edges and the axes untouched (F22-C).
+    /// Removes the frame's [`Action::Ui`] and [`Action::Request`] edges and
+    /// returns them as the [`UiAction`] the screen path receives, leaving the
+    /// flight edges and the axes untouched (F22-C, F22-G).
     ///
     /// This is the split the input session applies at the producer/consumer
     /// boundary: a UI action is a *request* for a screen or the pause path
@@ -1358,7 +1413,8 @@ impl InputFrame {
         for edge in self.edges.drain(..) {
             match edge {
                 Action::Ui(action) => taken.push(action),
-                flight => kept.push(flight),
+                Action::Request(request) => taken.push(request.ui_action()),
+                flight @ Action::Flight(_) => kept.push(flight),
             }
         }
         self.edges = kept;
@@ -1564,6 +1620,8 @@ pub enum BindingTarget {
     Command(FlightCommand),
     /// A UI action.
     Ui(UiAction),
+    /// A domain transaction requested from the flight context (F22-G).
+    Request(DomainRequest),
 }
 
 impl BindingTarget {
@@ -1572,13 +1630,14 @@ impl BindingTarget {
         match self {
             Self::Axis { command, .. } | Self::Command(command) => Action::Flight(command),
             Self::Ui(action) => Action::Ui(action),
+            Self::Request(request) => Action::Request(request),
         }
     }
 
     /// The input context this target belongs to.
     pub const fn context(self) -> InputContext {
         match self {
-            Self::Axis { .. } | Self::Command(_) => InputContext::Flight,
+            Self::Axis { .. } | Self::Command(_) | Self::Request(_) => InputContext::Flight,
             Self::Ui(_) => InputContext::UiNavigation,
         }
     }
@@ -1587,7 +1646,7 @@ impl BindingTarget {
     pub const fn axis_command(self) -> Option<FlightCommand> {
         match self {
             Self::Axis { command, .. } => Some(command),
-            Self::Command(_) | Self::Ui(_) => None,
+            Self::Command(_) | Self::Ui(_) | Self::Request(_) => None,
         }
     }
 
@@ -1595,7 +1654,7 @@ impl BindingTarget {
     pub const fn scale(self) -> Option<f32> {
         match self {
             Self::Axis { scale, .. } => Some(scale),
-            Self::Command(_) | Self::Ui(_) => None,
+            Self::Command(_) | Self::Ui(_) | Self::Request(_) => None,
         }
     }
 }
@@ -1716,7 +1775,7 @@ impl ActionMap {
                         return Err(ActionMapError::CommandTargetNotDiscrete { command });
                     }
                 }
-                BindingTarget::Ui(_) => {}
+                BindingTarget::Ui(_) | BindingTarget::Request(_) => {}
             }
             for previous in &seen {
                 if previous.source == binding.source
@@ -1782,7 +1841,7 @@ impl ActionMap {
     /// silently shadowing a binding.
     pub fn designed_default() -> Self {
         use BindingSource as S;
-        use BindingTarget::{Axis, Command, Ui};
+        use BindingTarget::{Axis, Command, Request, Ui};
         let bindings = vec![
             // Keyboard flight axes (digital keys, signed scale).
             Binding {
@@ -1988,6 +2047,14 @@ impl ActionMap {
             Binding {
                 source: S::JoystickButton(1),
                 target: Command(FlightCommand::FireSecondary),
+            },
+            // A flight context may only *request* the pause; the pause path
+            // performs it. Escape stays a menu action, so a menu and the
+            // flight context never share a source. Whether the original could
+            // pause from flight, and on which key, is unknown (F22-G finding).
+            Binding {
+                source: S::Key(Key::Digit9),
+                target: Request(DomainRequest::Pause),
             },
             // UI navigation.
             Binding {
@@ -4386,6 +4453,46 @@ mod tests {
                 DeviceClass::ALL.contains(&binding.source.device_class()),
                 "{} names an undeclared device family",
                 binding.source
+            );
+        }
+    }
+
+    #[test]
+    fn accept_f22_g_a_request_is_gated_by_context_and_never_a_menu_action() {
+        for request in DomainRequest::ALL {
+            let action = Action::Request(*request);
+            assert_eq!(Action::from_label(action.label()), Some(action));
+            assert!(InputContext::Flight.accepts(action));
+            assert!(!InputContext::UiNavigation.accepts(action));
+            assert!(!InputContext::TextEntry.accepts(action));
+            assert!(!InputContext::Cinematic.accepts(action));
+            assert!(UiAction::ALL.contains(&request.ui_action()));
+        }
+        for ui in UiAction::ALL {
+            assert!(
+                !InputContext::Flight.accepts(Action::Ui(*ui)),
+                "flight never executes the menu action {ui}"
+            );
+        }
+
+        // Both insertion orders resolve the same per context.
+        let request = Binding {
+            source: BindingSource::Key(Key::Space),
+            target: BindingTarget::Request(DomainRequest::Pause),
+        };
+        let menu = Binding {
+            source: BindingSource::Key(Key::Space),
+            target: BindingTarget::Ui(UiAction::Confirm),
+        };
+        for bindings in [vec![request, menu], vec![menu, request]] {
+            let map = ActionMap::try_new(bindings).expect("two contexts do not conflict");
+            assert_eq!(
+                map.resolve(InputContext::Flight, BindingSource::Key(Key::Space)),
+                Some(Action::Request(DomainRequest::Pause))
+            );
+            assert_eq!(
+                map.resolve(InputContext::UiNavigation, BindingSource::Key(Key::Space)),
+                Some(Action::Ui(UiAction::Confirm))
             );
         }
     }

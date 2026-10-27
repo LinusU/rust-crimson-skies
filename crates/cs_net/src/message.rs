@@ -258,8 +258,19 @@ impl InputBatch {
                 });
             }
             for edge in frame.edges() {
-                if let Action::Ui(action) = edge {
-                    return Err(WireError::UiActionOnWire { action: *action });
+                match edge {
+                    Action::Ui(action) => {
+                        return Err(WireError::UiActionOnWire { action: *action });
+                    }
+                    // A flight-context request is a UI transaction in the
+                    // client's own queue; it is refused like the action it
+                    // becomes.
+                    Action::Request(request) => {
+                        return Err(WireError::UiActionOnWire {
+                            action: request.ui_action(),
+                        });
+                    }
+                    Action::Flight(_) => {}
                 }
             }
         }

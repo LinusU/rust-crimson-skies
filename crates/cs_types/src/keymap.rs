@@ -534,7 +534,7 @@ pub fn original_edge_action(command_id: u16) -> Option<Action> {
     match original_target(command_id, 1.0)? {
         BindingTarget::Command(command) => Some(Action::Flight(command)),
         BindingTarget::Ui(action) => Some(Action::Ui(action)),
-        BindingTarget::Axis { .. } => None,
+        BindingTarget::Axis { .. } | BindingTarget::Request(_) => None,
     }
 }
 

@@ -1041,7 +1041,7 @@ impl DeviceAdapters {
                 }
                 Ok(())
             }
-            BindingTarget::Command(_) | BindingTarget::Ui(_) => {
+            BindingTarget::Command(_) | BindingTarget::Ui(_) | BindingTarget::Request(_) => {
                 let action = target.action();
                 // An analog source bound to an edge needs a declared crossing
                 // point, which is what the calibration's activation threshold

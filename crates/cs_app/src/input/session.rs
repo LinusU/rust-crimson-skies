@@ -1309,7 +1309,12 @@ impl InputSession {
         }
         let action = self.gate.resolve(self.collector.bindings().map(), source)?;
         match action {
-            Action::Ui(ui) => {
+            Action::Ui(_) | Action::Request(_) => {
+                let ui = match action {
+                    Action::Request(request) => request.ui_action(),
+                    Action::Ui(ui) => ui,
+                    Action::Flight(_) => unreachable!("matched above"),
+                };
                 self.ui_requests.push(UiRequest {
                     action: ui,
                     tick: self.tick,
@@ -1318,7 +1323,7 @@ impl InputSession {
                 Some(action)
             }
             Action::Flight(command) if command.is_continuous() => None,
-            flight => {
+            flight @ Action::Flight(_) => {
                 if self.is_paused() {
                     self.suppress(SuppressReason::Paused, flight);
                     return None;

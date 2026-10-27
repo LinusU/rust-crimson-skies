@@ -31,8 +31,9 @@ use std::path::{Path, PathBuf};
 
 use cs_types::input::{
     ActionMap, ActionMapError, AxisCalibration, AxisChannel, Binding, BindingSource, BindingTarget,
-    CalibrationError, CalibrationStore, DeviceClass, DeviceId, DeviceIdError, FlightCommand,
-    GamepadAxis, GamepadButton, Key, MouseAxis, MouseButton, ResponseCurve, UiAction,
+    CalibrationError, CalibrationStore, DeviceClass, DeviceId, DeviceIdError, DomainRequest,
+    FlightCommand, GamepadAxis, GamepadButton, Key, MouseAxis, MouseButton, ResponseCurve,
+    UiAction,
 };
 
 use super::InputCollector;
@@ -561,6 +562,7 @@ fn target_text(target: BindingTarget) -> String {
         BindingTarget::Axis { command, scale } => format!("axis:{}:{scale}", command.label()),
         BindingTarget::Command(command) => format!("command:{}", command.label()),
         BindingTarget::Ui(action) => format!("ui:{}", action.label()),
+        BindingTarget::Request(request) => format!("request:{}", request.label()),
     }
 }
 
@@ -576,6 +578,7 @@ fn parse_target(text: &str) -> Option<BindingTarget> {
         }
         "command" => Some(BindingTarget::Command(FlightCommand::from_label(rest)?)),
         "ui" => Some(BindingTarget::Ui(UiAction::from_label(rest)?)),
+        "request" => Some(BindingTarget::Request(DomainRequest::from_label(rest)?)),
         _ => None,
     }
 }

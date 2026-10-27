@@ -645,7 +645,14 @@ fn put_action(w: &mut Writer, action: Action) {
             w.u8(0);
             w.u8(index as u8);
         }
-        Action::Ui(ui_action) => {
+        // `validate` refuses a request before any encoder runs; it is written
+        // as the UI action it becomes so the writer stays total.
+        Action::Ui(_) | Action::Request(_) => {
+            let ui_action = match action {
+                Action::Request(request) => request.ui_action(),
+                Action::Ui(ui_action) => ui_action,
+                Action::Flight(_) => unreachable!("matched above"),
+            };
             let index = UiAction::ALL
                 .iter()
                 .position(|candidate| *candidate == ui_action)
