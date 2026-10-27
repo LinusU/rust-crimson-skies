@@ -215,11 +215,16 @@ fn accept_t427_the_unit_factor_decides_the_verdict_and_only_the_unit_factor() {
     match &decided {
         TriggerTickVerdict::EveryZoneSpansATick {
             thinnest_m,
+            thinnest_stored_extent,
             thinnest_zone,
             travel_m_per_tick,
             ..
         } => {
             assert_eq!(*thinnest_m, 32.0, "32 stored units at one metre each");
+            assert_eq!(
+                *thinnest_stored_extent, 32.0,
+                "the decided verdict carries the unscaled extent it was measured in"
+            );
             assert_eq!(thinnest_zone, "dzpath3");
             assert!(*thinnest_m > *travel_m_per_tick);
         }
@@ -229,17 +234,29 @@ fn accept_t427_the_unit_factor_decides_the_verdict_and_only_the_unit_factor() {
     // One stored unit is a fifth of a metre: the same 32-unit zone is 6.4 m,
     // still thicker than a tick.
     let fifths = synthetic_survey(Some(0.2));
-    assert!(matches!(
-        fifths
-            .tick_verdict(FAST_M_S, TICK_HZ)
-            .expect("a valid tick"),
-        TriggerTickVerdict::EveryZoneSpansATick { .. }
-    ));
+    let spans_at_fifths = fifths
+        .tick_verdict(FAST_M_S, TICK_HZ)
+        .expect("a valid tick");
+    match &spans_at_fifths {
+        TriggerTickVerdict::EveryZoneSpansATick {
+            thinnest_m,
+            thinnest_stored_extent,
+            ..
+        } => {
+            assert_eq!(*thinnest_m, 6.4, "32 stored units at a fifth of a metre");
+            assert_eq!(
+                *thinnest_stored_extent, 32.0,
+                "the stored extent is unscaled whatever factor the survey carries"
+            );
+        }
+        other => panic!("every zone is thicker than a tick, got {other:?}"),
+    }
     // …but 6.4 m is more than two ticks at 400 m/s, so at a rate coarser than
     // the 120 Hz the world runs at, the same zone can be stepped over. The
     // verdict is about the tick, not about the zone alone.
+    let outrun_at_fifths = fifths.tick_verdict(FAST_M_S, 30.0).expect("a valid tick");
     assert!(matches!(
-        fifths.tick_verdict(FAST_M_S, 30.0).expect("a valid tick"),
+        outrun_at_fifths,
         TriggerTickVerdict::ThinnestZoneOutrun { .. }
     ));
     // And an ordinary aircraft never outruns it, at any of these factors.
@@ -249,6 +266,55 @@ fn accept_t427_the_unit_factor_decides_the_verdict_and_only_the_unit_factor() {
             .expect("a valid tick"),
         TriggerTickVerdict::EveryZoneSpansATick { .. }
     ));
+
+    // The factor at which a decided verdict would flip is an **absolute**
+    // metres-per-stored-unit number — one tick's travel over the thinnest
+    // zone's stored extent (32 units), never over the already-scaled
+    // `thinnest_m` (6.4 m here, which would report five times the real
+    // factor). Both decided variants carry the stored extent so the accessor
+    // reaches the absolute factor only once the verdict decided; a survey
+    // with no zones has nothing to flip on.
+    for decided in [spans_at_fifths, outrun_at_fifths] {
+        assert!(decided.is_decided());
+        assert_eq!(
+            decided.break_even_meters_per_unit(),
+            decided.travel_m_per_tick().map(|travel| travel / 32.0),
+            "the break-even divides the tick's travel by the stored extent, whatever \
+             the scale: {decided:?}"
+        );
+    }
+    // The factor is a property of the tick and the corpus, not of the scale the
+    // survey happens to carry: the same tick against the same zones reports the
+    // same break-even at 0.2 m/unit, at the measured metre, and with no factor
+    // at all.
+    let break_even_at = |scale: Option<f64>| {
+        synthetic_survey(scale)
+            .tick_verdict(FAST_M_S, TICK_HZ)
+            .expect("a valid tick")
+            .break_even_meters_per_unit()
+    };
+    assert_eq!(
+        break_even_at(Some(0.2)),
+        break_even_at(Some(1.0)),
+        "a decided verdict states the factor at which it would flip, not a ratio the \
+         supplied scale leaves behind"
+    );
+    assert_eq!(
+        break_even_at(Some(0.2)),
+        break_even_at(None),
+        "the decided verdict's factor is the same absolute one the unmeasured verdict \
+         states"
+    );
+    assert_eq!(
+        RetailTriggerVolumeSurvey::new("a".repeat(64), Some(0.2), Vec::new())
+            .expect("an empty survey is constructible")
+            .tick_verdict(FAST_M_S, TICK_HZ)
+            .expect("a valid tick")
+            .break_even_meters_per_unit(),
+        None,
+        "a survey that measured no zone has no thinnest extent to reach a break-even \
+         through"
+    );
 }
 
 /// A zone with **no thickness** is the one stored box a unit factor cannot
@@ -1201,6 +1267,7 @@ fn accept_t427_retail_every_original_trigger_spans_a_tick_at_the_measured_metre(
         match &verdict {
             TriggerTickVerdict::EveryZoneSpansATick {
                 thinnest_m,
+                thinnest_stored_extent,
                 thinnest_zone,
                 travel_m_per_tick,
                 ..
@@ -1208,6 +1275,10 @@ fn accept_t427_retail_every_original_trigger_spans_a_tick_at_the_measured_metre(
                 assert_eq!(
                     *thinnest_m, 32.0,
                     "the corpus's thinnest zone is 32 stored units at one metre per unit"
+                );
+                assert_eq!(
+                    *thinnest_stored_extent, 32.0,
+                    "and the same zone unscaled, which at one metre per unit agrees"
                 );
                 assert!(
                     thinnest_zone.starts_with(DETECTION_ZONE_PREFIX),
