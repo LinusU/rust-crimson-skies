@@ -21,7 +21,7 @@
 //!   system, which drives the front-end machine.
 //!
 //! The readings of the script's numbers and the stand-ins for the unread
-//! fonts and cursor are listed in [`crate::ui::front_end::briefing`] and in
+//! fonts and cursor are listed in `crate::ui::front_end::briefing` and in
 //! `docs/findings/2026-10-21-parity5-briefing-map.md`. Nothing here is
 //! `verified_original`.
 

@@ -6,7 +6,7 @@
 //!
 //! Three seams, all owned by the session:
 //!
-//! * **Session start** — [`super::compose::add_composition`] calls
+//! * **Session start** — `super::compose::add_composition` calls
 //!   [`MissionAirframeScene::build`] beside the drawn player visual's own
 //!   build, keeps the result as this resource and loads it through
 //!   [`start_mission_airframe_scene`]. The converted graph is the production

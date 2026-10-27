@@ -3275,7 +3275,7 @@ fn place(
 }
 
 /// The artwork as a Bevy texture (the same orientation
-/// [`super::capture::artwork_image`] uses: row-major from the top).
+/// `super::capture::artwork_image` uses: row-major from the top).
 #[inline(always)]
 fn artwork_image(artwork: &Artwork) -> Image {
     let mut image = artwork.image();
