@@ -82,7 +82,8 @@
 //!   (F14-D.7) — `ZBD/soundsl.zbd` and `ZBD/soundsh.zbd`, the only audio
 //!   containers this installation holds. The containers are chosen by the
 //!   producing stage's own role rule ([`cs_formats::zbd::role_for_path`] and
-//!   [`cs_formats::zbd::dispatch`]), not by a file-name list written here, and
+//!   [`cs_formats::zbd::dispatch`](fn@cs_formats::zbd::dispatch)), not by a
+//!   file-name list written here, and
 //!   each container is then read through its own trailer member index and the
 //!   sound reader the producing stage owns
 //!   ([`cs_formats::zbd::read_version_one_index`] +
@@ -252,8 +253,8 @@
 //! derivation the per-mission bindings and the `cs-inspect campaign` report
 //! use; the file inventory is [`cs_assets::install::discover`]; the multiplayer
 //! rows are F56-A's [`crate::multiplayer::discover_modes`] over the string rows
-//! [`cs_content::config::StringCatalog`] reads out of [`MODE_STRING_IMAGE`]; the
-//! world rows are the groups [`classify`] read out of the world-group readers'
+//! [`crate::config::StringCatalog`] reads out of [`MODE_STRING_IMAGE`]; the
+//! world rows are the groups `classify` read out of the world-group readers'
 //! own member indexes, keyed by the same derivation
 //! [`crate::campaign_bindings`] uses for a mission's world identity; the faction
 //! rows are [`crate::livery::FactionPaletteCatalog`]'s own extracted paint
@@ -378,13 +379,14 @@ const CLAIM_SOUND_PLAYBACK: &str = "f14.d.7.baseline.sound_playback";
 /// This is the spelling of [`cs_formats::zbd::family`]'s observed sound
 /// archive names, quoted so the report says what was searched for instead of
 /// naming one container. Which files match is decided by
-/// [`cs_formats::zbd::role_for_path`] and [`cs_formats::zbd::dispatch`] — the
+/// [`cs_formats::zbd::role_for_path`] and
+/// [`cs_formats::zbd::dispatch`](fn@cs_formats::zbd::dispatch) — the
 /// producing stage's own rules — never by this pattern, which is documentation
 /// for a reader of the report (F14-D.7).
 pub const SOUND_CONTAINER_PATTERN: &str = "ZBD/sounds*.zbd";
 
-/// How many leading bytes of a candidate container [`cs_formats::zbd::dispatch`]
-/// is probed with.
+/// How many leading bytes of a candidate container
+/// [`cs_formats::zbd::dispatch`](fn@cs_formats::zbd::dispatch) is probed with.
 ///
 /// Dispatch checks a documented header signature against these bytes, and the
 /// widest documented signature rule (F06-A's `INTERP` rule) needs two `u32`
@@ -459,7 +461,7 @@ pub const VIDEO_UNKNOWN_CLAIM: &str = "f14.d.video.playback";
 /// as the second source. What remains outside either source is
 /// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, which *constructs* `chap<N>.mpg`
 /// rather than naming it: F14-D.VIDEO-CHAPTER (Rally #1352) measured the
-/// construction chain in [`VIDEO_CHAPTER_CHAIN`] and found no installation
+/// construction chain in `VIDEO_CHAPTER_CHAIN` and found no installation
 /// byte that states the values `FC` takes, so those files stay counted
 /// under the `unnamed_video_file` gap and, because their names match the
 /// construction shape, under `chapter_name_unbound` too — never as rows.
@@ -480,7 +482,7 @@ const FMV_PLAY_ACTION: &str = "PLAYAVI";
 
 /// The installation-relative spelling of the ROF container the layout movie
 /// records are read from: the same shared archive
-/// [`PAINT_SHOP_CONTAINER`](crate::livery::PAINT_SHOP_CONTAINER) names, tied to
+/// [`PAINT_SHOP_CONTAINER`] names, tied to
 /// it by construction so the two spellings cannot drift (F14-D.VIDEO-LAYOUT).
 pub const VIDEO_LAYOUT_CONTAINER: &str = PAINT_SHOP_CONTAINER;
 
@@ -1296,7 +1298,7 @@ impl Baseline {
 /// the mission directories, each mission's reader archive for its span and
 /// digest, the string image F56-A reads the multiplayer mode table from
 /// ([`MODE_STRING_IMAGE`], one row per mode), the world-group readers
-/// [`classify`] lists for the world collection, the faction palette archive
+/// `classify` lists for the world collection, the faction palette archive
 /// ([`crate::livery::PALETTE_MEMBER`]) and the airframe library's BM members
 /// ([`PAINT_MASK_CONTAINER`]), the loading-script container F11-D2's
 /// [`discover_airframe_roster`] declares its airframes in, each geometry

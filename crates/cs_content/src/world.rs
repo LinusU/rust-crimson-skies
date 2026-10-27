@@ -1825,7 +1825,7 @@ impl OverlayEffect {
 /// whose trigger is not a sensor, so the trigger's role is part of what the
 /// load guarantees rather than a convention.
 ///
-/// The *applier* is the runtime's business ([`cs_app::world`]), not this
+/// The *applier* is the runtime's business (`cs_app::world`), not this
 /// module's: a record states what crossing a volume does, and the engine
 /// decides how a body reaching it is noticed.
 #[derive(Clone, Debug, PartialEq)]
@@ -1896,7 +1896,7 @@ impl MissionOverlay {
 /// between two spaces, and although placement is decoded and the unit measured
 /// (F18-E), no measured rule yet classifies one (task #732). A class is either
 /// located by an
-/// audit that had the facts, or it is [`StuntOpeningVerdict::Unlocated`] with
+/// audit that had the facts, or it is an [`UnlocatedOpening`] with
 /// the blocker that stopped it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpeningClass {
@@ -5087,7 +5087,7 @@ pub const GRID_RECORD_STORES_NO_GEOMETRY: &str = "f18-world.grid-record-stores-n
 /// address. Over the whole installation the record class this selector names —
 /// `unk112 = 2` — is the one whose box is the union of its children's extent
 /// (task #771's section A table, the `c1` node-2752 example), while `unk112 = 1`
-/// names the record's own box (the one [`stored_extent`] reads) and `unk112 = 0`
+/// names the record's own box (the one `stored_extent` reads) and `unk112 = 0`
 /// names an all-zero box.
 pub const GROUPING_BOX_SELECTOR: u32 = 2;
 
@@ -5373,7 +5373,7 @@ pub const HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY: &str =
 /// `zone2`'s `g1155` far terrain, `moon`, `stars`, `h_zone2scroll`): records the
 /// container does not name in its partition grid and whose names carry no
 /// measured `fvol` prefix, so the role rules above would leave them
-/// [`WorldCollisionRole::Unknown`] ([`UNINDEXED_ROLE_UNMEASURED`]). The subtree
+/// [`Resolved::Unknown`] ([`UNINDEXED_ROLE_UNMEASURED`]). The subtree
 /// is the environment ring that hangs on the camera; nothing measured reports a
 /// contact for it. This conversion therefore resolves every one of its records
 /// to [`WorldCollisionRole::None`] — presented, never blocking — with its shape

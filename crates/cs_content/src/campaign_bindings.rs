@@ -2118,7 +2118,7 @@ pub struct SourceSpanRecord {
 pub struct CampaignMission {
     /// The campaign chapter the mission's own data declares — the `c` digit
     /// of its sound-group cue names (`snd_c3-hw-m2_*` → 3), measured by
-    /// [`scan_campaign`]. It is *not* the digit of the `ZBD/C*` directory
+    /// `scan_campaign`. It is *not* the digit of the `ZBD/C*` directory
     /// the archive is stored in: the installation is observed to keep the
     /// first campaign chapter in `C3` and the second in `C1`/`C1B`/`C1C`.
     pub chapter: u32,
@@ -2138,7 +2138,7 @@ pub struct CampaignMission {
 /// (F14-E).
 ///
 /// The layout is the same derivation [`SourceContext::read`] and the
-/// per-mission binding stages already use ([`scan_campaign`]): one walk of
+/// per-mission binding stages already use (`scan_campaign`): one walk of
 /// `ZBD/<chapter><variant>/<mission>` giving each mission's chapter, number,
 /// world group and program archive. This record adds the one fact a
 /// read-only inspection report needs on top of it — the SHA-256 of every
@@ -2157,7 +2157,7 @@ pub struct CampaignLayoutEntry {
 /// Reads the installation's campaign directory layout with the digest of
 /// every present mission program archive (F14-E).
 ///
-/// The walk is exactly [`scan_campaign`], the derivation
+/// The walk is exactly `scan_campaign`, the derivation
 /// [`SourceContext::read`] uses for its campaign, so the inspection report
 /// and the per-mission bindings cannot disagree about chapter, mission
 /// number, world group, program path or presence. The only addition is
@@ -2276,7 +2276,7 @@ const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[
 ];
 
 /// The checklist entries recorded in a source binding for one work order
-/// alone ([`MISSION_SCOPED_UNKNOWNS`]), in table order — empty when the work
+/// alone (`MISSION_SCOPED_UNKNOWNS`), in table order — empty when the work
 /// order carries no mission-scoped limitation.
 ///
 /// [`SourceContext::bind`] consults this for the label it binds, so a
@@ -2358,7 +2358,7 @@ const MISSION_SCOPED_CHECKLIST_OVERRIDES: &[(&str, &[(&str, &str)])] = &[(
 )];
 
 /// The checklist replacements recorded in a source binding for one work order
-/// alone ([`MISSION_SCOPED_CHECKLIST_OVERRIDES`]), in table order — empty when
+/// alone (`MISSION_SCOPED_CHECKLIST_OVERRIDES`), in table order — empty when
 /// no later stage measured a shared checklist question for that work order's
 /// data.
 ///
@@ -2385,7 +2385,7 @@ fn mission_scoped_checklist_override(label: &MissionLabel, shared: &str) -> Opti
 }
 
 /// The shared checklist every mission's record starts from, in checklist
-/// order ([`SOURCE_BINDING_UNKNOWNS`]).
+/// order (`SOURCE_BINDING_UNKNOWNS`).
 ///
 /// A stage that replaces an entry through
 /// [`mission_scoped_checklist_overrides`] must name one of these verbatim;
@@ -3467,7 +3467,7 @@ pub enum TitleForm {
     /// observed `" - "` separator and a title — and the part after the
     /// separator is the discovery title, byte for byte. The prefix is dropped
     /// without ever being compared with or interpreted as anything, exactly as
-    /// [`SourceContext::region_group_sizes`] groups rows by it.
+    /// `SourceContext::region_group_sizes` groups rows by it.
     RegionPrefixedLongName,
 }
 

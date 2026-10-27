@@ -873,7 +873,7 @@ pub const LEGACY_SAVE_IMPORT_ON: &str = "on";
 pub const LEGACY_SAVE_IMPORT_OFF: &str = "off";
 
 /// The declared profile setting behind the inventory's
-/// [`LEGACY_SAVE_IMPORT_SWITCH`](cs_formats::legacy_profile::LEGACY_SAVE_IMPORT_SWITCH).
+/// [`LEGACY_SAVE_IMPORT_SWITCH`].
 ///
 /// The feature that owns a setting owns its rule, so this is where F64's
 /// optional-save switch is declared: the key the inventory already names, a

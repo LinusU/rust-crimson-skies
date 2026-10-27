@@ -3,7 +3,7 @@
 //!
 //! Task: `M01-LC-SCENARIOS` (#642). Shared contract:
 //! `docs/contracts/SCRIPT-MISSION.md`. The retail walk over the installation is
-//! [`cs_app::scenario_control`]; this module is the half that needs no
+//! `cs_app::scenario_control`; this module is the half that needs no
 //! installation: the selection rule, the measured shapes it reads and the
 //! vocabularies it counts.
 //!

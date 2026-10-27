@@ -68,7 +68,7 @@ use super::manifest::ManifestError;
 ///
 /// The two are different claims with different preconditions, and the mount
 /// plan checks both against what the set actually provides
-/// ([`super::check_actions`]): an [`Add`](Self::Add) may not name an id the
+/// (`super::check_actions`): an [`Add`](Self::Add) may not name an id the
 /// base content already provides, and a [`Replace`](Self::Replace) may not
 /// name an id nothing provides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -115,8 +115,10 @@
 //!   `origin`: a newly authored record is [`DeclaredSupport::Authored`] and
 //!   playable, while an `installation` record is
 //!   [`DeclaredSupport::Original`] with **no** recovery and is therefore
-//!   unplayable until an importer attaches one through
-//!   [`DeclaredObjectiveProgram::with_recovery`]. F39-D's retail census read
+//!   unplayable — [`DeclaredObjectiveProgram::with_measured_record`] attaches
+//!   the measured census without changing that, because a declaration site is
+//!   not a rule and the recovery that would make it playable is still unbuilt.
+//!   F39-D's retail census read
 //!   every mission directory's `objectives.zrd` on the owner's installation
 //!   and decoded **none** of them, because the mission-language instruction
 //!   table is still unmeasured (F13-B/C) — so `docs/contracts/SCRIPT-MISSION.md`'s
@@ -2367,8 +2369,9 @@ impl std::error::Error for ObjectivesSchemaError {}
 /// construction: a newly authored record is [`DeclaredSupport::Authored`] and
 /// playable, while an `installation` record starts
 /// [`DeclaredSupport::Original`] with **no** recovery and is therefore
-/// unplayable until an importer attaches one through
-/// [`with_recovery`](Self::with_recovery). That default is the safe direction
+/// unplayable — [`with_measured_record`](Self::with_measured_record) attaches
+/// the measured census without changing that, because the recovery that would
+/// make it playable is still unbuilt. That default is the safe direction
 /// on purpose: an importer that forgets its recovery gets a program nobody can
 /// run, not a generic progression wearing an original mission's name.
 #[derive(Clone, Debug, PartialEq)]

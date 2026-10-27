@@ -1,19 +1,19 @@
 //! The real filesystem behind [`SaveStorage`], and the profile registry slot.
 //!
-//! [`DirStorage`] maps each [`SavePhase`] of `store::commit` onto a real file
-//! operation in one directory:
+//! [`DirStorage`] maps each [`SavePhase`](super::store::SavePhase) of
+//! `store::commit` onto a real file operation in one directory:
 //!
 //! | Phase | Filesystem operation |
 //! | --- | --- |
-//! | [`SavePhase::WriteTemp`] | create + `write_all` + `flush` of `prefix.tmp` |
-//! | [`SavePhase::SyncTemp`] | `File::sync_all` of the temp file |
-//! | [`SavePhase::RotateBackup`] | `rename(prefix.sav, prefix.bak)` |
-//! | [`SavePhase::InstallCurrent`] | `rename(prefix.tmp, prefix.sav)` |
-//! | [`SavePhase::SyncDir`] | `File::sync_all` of the directory |
+//! | [`SavePhase::WriteTemp`](super::store::SavePhase::WriteTemp) | create + `write_all` + `flush` of `prefix.tmp` |
+//! | [`SavePhase::SyncTemp`](super::store::SavePhase::SyncTemp) | `File::sync_all` of the temp file |
+//! | [`SavePhase::RotateBackup`](super::store::SavePhase::RotateBackup) | `rename(prefix.sav, prefix.bak)` |
+//! | [`SavePhase::InstallCurrent`](super::store::SavePhase::InstallCurrent) | `rename(prefix.tmp, prefix.sav)` |
+//! | [`SavePhase::SyncDir`](super::store::SavePhase::SyncDir) | `File::sync_all` of the directory |
 //!
 //! Both renames are within one directory, so each is atomic on every platform
 //! `std::fs::rename` supports. What that means for the *replacement* of an
-//! existing file is platform-specific, so [`replace`] is the single place that
+//! existing file is platform-specific, so `replace` is the single place that
 //! knows it and [`platform_note`] reports what this build actually did.
 //!
 //! The registry ([`Registry`]) is the same three-file slot for a different

@@ -246,7 +246,7 @@ pub const MEASURED_RULE_POLICIES: [(&str, &str, &str); 7] = [
 /// The rule labels nothing measured answers, with the reason they stay
 /// unknown. The `teams` label is absent here on purpose: it is unknown only
 /// when neither the name nor the briefing states it, and carries its own
-/// reason (see [`entry`]).
+/// reason (see `entry`).
 pub const RESIDUAL_UNKNOWN_RULES: [(&str, &str); 6] = [
     (
         "spawn",

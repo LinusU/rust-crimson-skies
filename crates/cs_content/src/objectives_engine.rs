@@ -94,7 +94,7 @@ pub mod keys {
     pub const BEGIN_DORMANT: &str = "BEGIN_DORMANT";
     /// Wakes the listed objectives when this one naps or sleeps itself.
     ///
-    /// The engine reads it like [`WAKE`](Self::WAKE); the list is walked on
+    /// The engine reads it like [`WAKE`]; the list is walked on
     /// the auto-nap and auto-sleep timer transitions, not on completion.
     pub const WAKE_WHEN_I_SLEEP: &str = "WAKE_OBJECTIVE_WHEN_I_SLEEP";
     /// How many of the resolved `INACTIVE<n>` stage targets must be cleared;

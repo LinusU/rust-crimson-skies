@@ -2560,7 +2560,7 @@ impl ContainerBinding {
 /// count should say how many candidates produced it — the retail tests assert
 /// their candidate census for exactly that reason.
 ///
-/// [`must_use`]
+/// `#[must_use]`
 #[must_use]
 pub fn measure_bindings(
     containers: &[ContainerMaterials<'_>],
@@ -2766,7 +2766,8 @@ pub struct MeshId {
 }
 
 impl MeshId {
-    /// The shared catalog identity of this mesh: a [`ContentKind::Mesh`] id keyed
+    /// The shared catalog identity of this mesh: a
+    /// [`ContentKind::Mesh`](cs_types::content::ContentKind::Mesh) id keyed
     /// by the container's installation path and the stored array position.
     ///
     /// This is the same id the retail baseline inventory gives the mesh

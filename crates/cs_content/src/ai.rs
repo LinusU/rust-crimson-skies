@@ -6,7 +6,7 @@
 //!
 //! This module is the **content half** of the combat-AI contract — the
 //! normalized record a mission/rules importer produces. Its runtime
-//! counterpart is `cs_sim::ai::combat` (the [`CombatPlanner`] a session
+//! counterpart is `cs_sim::ai::combat` (the `CombatPlanner` a session
 //! runs); the conversion boundary between them is `cs_app::ai::combat`.
 //! The split mirrors `target_rules` ↔ `cs_sim::targeting` and
 //! `damage` ↔ `cs_sim::damage`: this crate cannot depend on `cs_sim`, so
@@ -3690,7 +3690,7 @@ pub struct ScenarioSurface {
     /// Not only the root keys: a nested record could in principle carry a
     /// difficulty of its own, so a negative measured over the root keys alone
     /// would not be the negative a caller reads. This is the whole vocabulary
-    /// a `.zrd` value list spells, walked by [`zrd_key_census`].
+    /// a `.zrd` value list spells, walked by `zrd_key_census`.
     pub keys: Vec<String>,
     /// How many enemy groups it declares.
     pub enemy_groups: u32,

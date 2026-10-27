@@ -2697,7 +2697,7 @@ impl LocaleSetting {
     /// rule declares and the values [`LocaleSetting::read`] and
     /// [`LocaleSetting::write`] carry must be the same set, or the rule's own
     /// default could be a stored value the reader refuses and no
-    /// [`LocaleChain`](LocaleChain) could be built from it.
+    /// [`LocaleChain`] could be built from it.
     ///
     /// # Errors
     ///

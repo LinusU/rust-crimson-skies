@@ -1011,7 +1011,7 @@ pub struct DiscoveredItem {
     /// [`DiscoveredItem::image`] (case-insensitively), sorted; empty when the
     /// installation holds no such picture.
     pub artwork: Vec<String>,
-    /// The artwork member a capture prefers ([`CAPTURE_FORMATS`]), or `None`
+    /// The artwork member a capture prefers (`CAPTURE_FORMATS`), or `None`
     /// when none of the stored formats is one production code can decode.
     pub capture: Option<String>,
     /// The `TitleResID` field, a string-resource name or `0`.
@@ -1903,7 +1903,7 @@ pub struct DeclaredScrapbook {
     /// order.
     pub catalog: ScrapbookCatalog,
     /// The entries whose `TitleResID` name none of
-    /// [`RESOURCE_HEADER_MEMBERS`] defines (or defines ambiguously): their
+    /// `RESOURCE_HEADER_MEMBERS` defines (or defines ambiguously): their
     /// `title` id keeps the unresolved name in its key instead of a
     /// string-table number.
     pub unresolved_titles: Vec<ContentId>,
@@ -1958,10 +1958,10 @@ fn resource_header_bytes(install_root: &Path, member: &str) -> Result<Vec<u8>, D
 ///
 /// The scrapbook names live mostly in `ASSETS/SCRIPTS/RESRC1.H`; the
 /// measured archive holds exactly the two `*.H` members
-/// [`RESOURCE_HEADER_MEMBERS`] reads. A name defined more than once across
+/// `RESOURCE_HEADER_MEMBERS` reads. A name defined more than once across
 /// them, or whose one define names no id, is absent rather than guessed:
-/// [`ResourceHeader::resource_id`]'s own "missing or ambiguous → `None`"
-/// rule, generalized across the headers.
+/// [`cs_formats::text::resource_header::ResourceHeader::resource_id`]'s own
+/// "missing or ambiguous → `None`" rule, generalized across the headers.
 ///
 /// # Errors
 ///
@@ -2012,7 +2012,7 @@ pub fn resource_names(install_root: &Path) -> Result<BTreeMap<Vec<u8>, u32>, Dec
 /// * `image` — the item's preferred capture member ([`DiscoveredItem::capture`]),
 ///   or `None` when the installation holds no decodable picture: the state
 ///   the archive carries, never a placeholder.
-/// * `unlock` — [`Resolved::Unknown`] under [`CLAIM_DECLARED_UNLOCK`]:
+/// * `unlock` — [`Resolved::Unknown`] under `CLAIM_DECLARED_UNLOCK`:
 ///   `Objective` is parsed but its meaning is unmeasured, so no rule is
 ///   invented, and an unknown rule never unlocks.
 /// * `kind` — [`EntryKind::Page`] for every record: the `Objective`

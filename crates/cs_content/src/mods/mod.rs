@@ -5,7 +5,7 @@
 //! stages `### F53-A` and `### F53-B`. Shared contract:
 //! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
-//! The records and the plan in this file, [`manifest`] and [`overrides`] are
+//! The records and the plan in this file, `manifest` and `overrides` are
 //! the **typed, side-effect-free half** of the mod system. It
 //! defines what a mod says about itself, what a mod claims about content, and
 //! what a set of mods means when they are all switched on together — and it
@@ -17,7 +17,7 @@
 //! (source protection, mod isolation and reproducible load order), and each of
 //! them consumes these records rather than redefining them.
 //!
-//! [`mount`] is F53-B's half of that: [`mount::mount_mods`] plans first, so
+//! `mount` is F53-B's half of that: [`mount::mount_mods`] plans first, so
 //! a cycle or any other plan problem is refused before a root is opened,
 //! then walks each planned mod's root through
 //! [`cs_assets::mods::ModRoot`], re-validates every declared source at the
@@ -73,7 +73,7 @@
 //!   would hash.
 //!
 //! F53-C wires the two halves into their producer and consumers in
-//! [`mod@selection`]: [`selection::ModSelection`] holds which discovered
+//! `selection`: [`selection::ModSelection`] holds which discovered
 //! mods are enabled and supplies the [`ModSet`], the roots and the
 //! catalog-derived [`MountRequest`] a mount needs; [`selection::open_mod_session`]
 //! hands the payload mounts to a [`cs_assets::vfs::SessionBuilder`] under a
@@ -84,7 +84,7 @@
 //! mod's own bytes while naming the original dependencies it refuses to
 //! copy.
 //!
-//! F53-D adds the save half in [`mod@save`]: [`save::mark_save_document`]
+//! F53-D adds the save half in `save`: [`save::mark_save_document`]
 //! records the announced signature in a save's `fingerprint.content` entry
 //! (the marking F53 non-negotiable 3 asks for), [`save::save_population`]
 //! maps "a set is mounted" onto F48's profile populations, and
@@ -672,7 +672,7 @@ pub enum PlanProblem {
     /// "Add" is a claim that the id does not exist yet, so an id the base
     /// game ships contradicts it. Left unchecked the mount would silently
     /// shadow base content behind an *add*, which is the same ambiguity a
-    /// [`ActionCollision`] refuses.
+    /// [`PlanProblem::ActionCollision`] refuses.
     AddOfExistingContent {
         /// The mod.
         id: ModId,

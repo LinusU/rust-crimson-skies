@@ -4424,7 +4424,8 @@ impl fmt::Display for RosterDiscoveryIssue {
 
 /// Something a roster discovery explicitly does not know.
 ///
-/// An empty set of unknowns is not a pass either: [`Self::is_complete`] on the
+/// An empty set of unknowns is not a pass either:
+/// [`AirframeRosterDiscovery::is_complete`] on the
 /// discovery is false while any unknown stands, so a roster that cannot say
 /// which mode selects which airframe never reads as the real roster.
 #[derive(Clone, Debug, PartialEq)]

@@ -50,7 +50,8 @@
 //! the whole [`RenderConfig`], the build hash of the producing binary, the
 //! compatibility signature of the replay it came from and the digest of the
 //! bytes it produced, plus the [`ArtifactOrigin`] that says *who* made those
-//! bytes. [`CaptureRecord::compare`] refuses to call two captures equal while
+//! bytes. [`CaptureRecord::differences_from`] refuses to call two captures
+//! equal while
 //! any of those differ, and [`CaptureRecord::digest`] is the one-line
 //! statement of "the same camera, the same tick, the same renderer, the same
 //! bytes" (AC03).

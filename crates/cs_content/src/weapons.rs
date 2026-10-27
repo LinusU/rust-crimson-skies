@@ -566,8 +566,7 @@ impl InteractionOption {
     /// [`None`] when no production code reads it.
     ///
     /// The name is a pointer, not a claim that the path decides the option
-    /// alone: [`APPLIED_BY_SELF_HIT_FILTER`] and
-    /// [`APPLIED_BY_FRIENDLY_FIRE_FILTER`] are the same
+    /// alone: [`APPLIED_BY_CANDIDATE_FILTER`] is one
     /// `cs_sim::weapons::WeaponRules::admit_candidates` predicate, which
     /// consults both declared rules together.
     #[must_use]
@@ -1457,7 +1456,7 @@ impl fmt::Display for DeclaredGunGroup {
 
 /// Every gun group the original declares, in ascending id order.
 ///
-/// **Measured**: twenty contiguous ids in [`ORIGICAL_RESOURCE_HEADER`]. The
+/// **Measured**: twenty contiguous ids in [`ORIGINAL_RESOURCE_HEADER`]. The
 /// names the engine *shows* for these ids live in the shipped UI language image
 /// under the ids themselves — F27-E re-measured that image and found nineteen
 /// of the twenty named there, with `3080` (`NOSETURRET`) an empty row — but no
@@ -3161,7 +3160,7 @@ pub enum GunMountRefusal {
     /// The measurement's own field values and the report it carries disagree.
     ///
     /// Not reachable through today's schema — [`MeasuredGunMount::unmeasured`]
-    /// and [`measured_value`] ask the same question field by field, so an empty
+    /// and `measured_value` ask the same question field by field, so an empty
     /// `unmeasured` means all three values are present. It is named rather than
     /// folded into [`GunMountRefusal::Unmeasured`] so that a disagreement can
     /// never be reported as a reason the measurement never gave.

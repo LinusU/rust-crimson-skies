@@ -23,7 +23,7 @@
 //! describes — carries an [`Origin`] and a [`Provenance`], and holds one
 //! [`DeclaredOrdnanceDetails`]: either a [`DeclaredProjectile`] with a fuse,
 //! a lifetime and a guidance rule, or a [`DeclaredNitro`] booster. Keeping
-//! them apart is the same split the runtime [`OrdnanceComponent`]
+//! them apart is the same split the runtime `OrdnanceComponent`
 //! counterpart makes, and for the same reason: a booster has no fuse, no
 //! lifetime, no blast and no launch geometry, so a record that carried both
 //! would invent a detonation the original does not have.

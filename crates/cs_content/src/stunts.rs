@@ -955,7 +955,7 @@ impl<'a> ZrdReader<'a> {
 /// [`ZrdDecodeError`] with a stable code and the byte offset: `truncated` for a
 /// word or body that does not fit, `invalid_text` for a text body that is not
 /// UTF-8, `count_exceeds_bytes` for a list longer than the member could hold,
-/// `depth_exceeded` past [`MAX_ZRD_DEPTH`], `unknown_tag` for a tag outside the
+/// `depth_exceeded` past `MAX_ZRD_DEPTH`, `unknown_tag` for a tag outside the
 /// four measured kinds, and `trailing_bytes` when the nodes stop short of the
 /// member's end.
 pub fn decode_zrd(bytes: &[u8]) -> Result<ZrdValue, ZrdDecodeError> {
@@ -3247,7 +3247,7 @@ pub const SYNTHETIC_GATE_CASH_MINOR: u64 = 500;
 /// world, declared eligible in exactly one synthetic mission.
 ///
 /// It is the F42-A version of the declared-only fixtures in
-/// [`cs_content::routes`] and [`cs_content::campaign`]: a real record that
+/// [`crate::routes`] and [`crate::campaign`]: a real record that
 /// the validating constructor accepts, that the lowering boundary turns into
 /// a runtime rule, and that the runtime predicate can complete. Its origin is
 /// [`Origin::SyntheticFixture`], its gate is

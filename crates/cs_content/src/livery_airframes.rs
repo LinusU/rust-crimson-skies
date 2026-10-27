@@ -37,7 +37,7 @@
 //! A container texture name matches a prefix when its ASCII-case-folded
 //! spelling starts with the folded prefix followed by `_` — the same
 //! `<PREFIX>_<PART>` separator the stock-livery spelling uses
-//! ([`cs_content::livery::parse_livery_spelling`]). The fold is a designed
+//! ([`crate::livery::parse_livery_spelling`]). The fold is a designed
 //! bridging decision: the stock library stores its prefixes uppercase while
 //! the measured container stores its texture names lowercase. The separator is
 //! what keeps `kestrel…`-style names from matching `kes`, and no two prefixes

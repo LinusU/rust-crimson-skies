@@ -168,7 +168,8 @@
 //! behavior 5). Each instance keeps the render mesh reference, the authored
 //! transform, the collision role, the collision shape and the gameplay
 //! surface role as **separate roles over one record**, and every role arrives
-//! as [`Resolved`], so an unevidenced role stays an explicit unknown instead
+//! as [`Resolved`](cs_types::content::Resolved), so an unevidenced role stays
+//! an explicit unknown instead
 //! of a guessed default. The records are Bevy-free inputs for F18-B's import
 //! and static-collision generation; no collider, file or renderer is touched
 //! here.
@@ -286,7 +287,8 @@
 //! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
 //! `### F29-A`): the provenance-carrying [`damage::DeclaredDamageGraph`]
 //! of armor zones, internal structure, engines and weapon mounts with
-//! [`Resolved`] integrity pools, [`scene::SceneNodeId`] part bindings, per-subject
+//! [`Resolved`](cs_types::content::Resolved) integrity pools,
+//! [`scene::SceneNodeId`] part bindings, per-subject
 //! declared rules (aircraft, world object and capital ship share the
 //! identity discipline but keep their own rules) and the lethal
 //! [`damage::AttributionRule`] a session resolves kills under — every value
@@ -301,12 +303,14 @@
 //! directed [`target_rules::DeclaredRelation`]s and the
 //! [`target_rules::TargetRuleSet`] policy knobs — threat window, crosshair
 //! cone and the separate lead-indicator/aim-assistance options — each
-//! [`Resolved`] known with provenance or an explicit unknown, never a
+//! [`Resolved`](cs_types::content::Resolved) known with provenance or an
+//! explicit unknown, never a
 //! silent default, plus F30-B's
 //! [`target_rules::DeclaredSelectionActions`], the command-edge table an IA
 //! preset declares and the runtime binding lowers from. F30-C adds no record
 //! here: the guidance consumer reads these same two options, and the
-//! [`Provenance`] each carries is the evidence classification F30
+//! [`Provenance`](cs_types::content::Provenance) each carries is the evidence
+//! classification F30
 //! non-negotiable 3 requires. Its runtime counterpart is `cs_sim::targeting`;
 //! the conversion boundary and the HUD/spyglass/guidance views are
 //! `cs_app::targeting`.
@@ -357,7 +361,8 @@
 //! and ownership. Identity is the [`capital::CapitalSubsystemKey`]; the
 //! shared [`capital::DeclaredSubsystem`] list pairs each part's kind with
 //! the behavior its destruction changes, and every load-bearing value is a
-//! [`Resolved`], so an unmeasured thrust, socket or owner stays an explicit
+//! [`Resolved`](cs_types::content::Resolved), so an unmeasured thrust, socket
+//! or owner stays an explicit
 //! unknown. Its runtime counterpart is `cs_sim::capital`; the lowering
 //! boundary is `cs_app::capital`.
 //!

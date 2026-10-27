@@ -101,7 +101,7 @@ pub const MAX_SCENARIO_PLAYERS: u8 = 8;
 /// **not** factions: a faction is a `ContentId` and allegiance is a directed
 /// relation (`crate::target_rules`), so relabeling a side can never relabel a
 /// faction and a hostile faction can still be spawned as an ally (which
-/// validation then refuses, see [`ScenarioProblem::ImpossibleFaction`]).
+/// validation then refuses, see [`ScenarioProblemCode::ImpossibleFaction`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScenarioSide {
     /// The local player's aircraft.

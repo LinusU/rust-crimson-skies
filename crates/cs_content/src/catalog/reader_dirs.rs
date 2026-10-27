@@ -115,7 +115,7 @@ const SHARED_READER_MEMBERS: [&str; 2] = ["instantaction.zrd", "multiplayer_setu
 /// lowercase member names its own index lists, and returns the members that
 /// decided it, or `None` when the evidence does not decide.
 ///
-/// This is the one definition of the two scope rules: [`classify`] calls it, so a
+/// This is the one definition of the two scope rules: `classify` calls it, so a
 /// caller that already knows which archive it holds (F39-E3's installation-scope
 /// census walks the non-mission-scoped `zrdr.zbd` archives itself) and the
 /// campaign walk that holds no such assumption cannot classify the same archive

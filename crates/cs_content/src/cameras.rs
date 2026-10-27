@@ -448,7 +448,7 @@ pub const MAX_COCKPIT_BINDING_NAME: usize = 64;
 /// a *verified model/config binding*. Making the source part of the record is
 /// what lets a consumer ask that question later instead of assuming it: a
 /// binding names the model node or the configuration key it was read from,
-/// and the mode set's [`Origin`](cs_types::content::Origin) says whether those
+/// and the mode set's [`Origin`] says whether those
 /// bytes were the owner's installation or a synthetic fixture.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CockpitBindingSource {

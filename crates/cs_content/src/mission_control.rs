@@ -67,7 +67,7 @@
 //! measured is still not supported, and nothing here is `verified_original`
 //! (AGENTS.md rule 8).
 //!
-//! # How the record lowers to a [`cs_script::ir::MissionProgram`]
+//! # How the record lowers to a `cs_script::ir::MissionProgram`
 //!
 //! [`MeasuredControlRecord::lowering`] is the honest accounting. `lower_program`
 //! (`cs_script::bindings`) takes a `RawProgram` whose objectives each carry a
@@ -85,9 +85,9 @@
 //! | What `lower_program` needs | What the record spells | Verdict |
 //! | --- | --- | --- |
 //! | the mission's `ContentId` | nothing; the member is mission-scoped by *path* | supplied outside the member: the campaign layout (`campaign_bindings::campaign_layout`, the same derivation `SourceContext::read` and the catalog baseline use) |
-//! | an objective `ContentId` per block | each block is authored under its own `OBJECTIVE<N>` key, and every cross-objective directive addresses a block by its zero-based index (measured); `IDENTITY` is measured to supply the presentation class and HUD ordinal, not the identity | [`LoweringRequirement::ObjectiveIdentity`] |
-//! | a `Condition` per block | measured evaluators that read live world state | [`cs_script::conditions::lower_record`] reproduces the pass-2 evaluator shape side-effect-free; a block this build cannot predicate is refused by block and key |
-//! | a `Vec<Value>` per call | measured operations — lifecycle writes, evaluator arming, ordered pipeline effects | [`cs_script::bindings::Lowering::Directive`] carries the site's own arguments to the host as `Action::Directive`; `Value::List` keeps nested spellings nested |
+//! | an objective `ContentId` per block | each block is authored under its own `OBJECTIVE<N>` key, and every cross-objective directive addresses a block by its zero-based index (measured); `IDENTITY` is measured to supply the presentation class and HUD ordinal, not the identity | [`LoweringRequirementKind::ObjectiveIdentity`] |
+//! | a `Condition` per block | measured evaluators that read live world state | `cs_script::conditions::lower_record` reproduces the pass-2 evaluator shape side-effect-free; a block this build cannot predicate is refused by block and key |
+//! | a `Vec<Value>` per call | measured operations — lifecycle writes, evaluator arming, ordered pipeline effects | `cs_script::bindings::Lowering::Directive` carries the site's own arguments to the host as `Action::Directive`; `Value::List` keeps nested spellings nested |
 //!
 //! Each row is reported as a [`LoweringRequirement`] carrying the measured
 //! numbers behind it and the fields that remain unknown, so the reader can see
@@ -2102,9 +2102,11 @@ impl fmt::Display for BlockRefusal {
 
 /// The measured control record of one mission.
 ///
-/// Every number here comes from walking the decoded member: [`blocks`] is the
-/// counted numbered blocks, [`sites`] the counted directive sites and
-/// [`keys`] the complete key vocabulary with the sites each carries. A key the
+/// Every number here comes from walking the decoded member:
+/// [`blocks`](Self::blocks) is the
+/// counted numbered blocks, [`sites`](Self::sites) the counted directive sites
+/// and [`keys`](Self::keys) the complete key vocabulary with the sites each
+/// carries. A key the
 /// walk could not classify is still counted, so the vocabulary can never be
 /// smaller than what the record spells.
 #[derive(Clone, Debug, Default, PartialEq)]

@@ -322,7 +322,7 @@ impl LiveryVariantStore {
 /// The directory the pinned livery helper reads stock liveries from:
 /// `ASSETS/GRAPHICS/<FACTION>/`.
 ///
-/// Claim class *observed tool* ([S10]). Whether the original renderer looks
+/// Claim class *observed tool* (`S10`). Whether the original renderer looks
 /// anywhere else is not established, so [`StockLiveryCatalog::discover`]
 /// records a `.bm` member outside this layout instead of ignoring it.
 pub const LIVERY_GRAPHICS_DIRECTORY: &str = "graphics";
@@ -1832,7 +1832,7 @@ impl PaintShopFieldCensus {
     /// `0x…` value, or a field spelled as text (a display name).
     ///
     /// This is the **single** predicate behind the engine-internal claim, so the
-    /// gap and the finding can never drift apart: [`paint_shop_gaps`] records a
+    /// gap and the finding can never drift apart: `paint_shop_gaps` records a
     /// gap only when every control of a role answers `false`, and
     /// [`PaintShopCatalog::cross_check`] reports every control that answers
     /// `true`. A gap therefore cannot disappear without a finding naming the

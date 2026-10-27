@@ -11,7 +11,8 @@
 //! and weapon constraints". This module is that role record, plus the one pure
 //! function that decides which airframe a session launches:
 //!
-//! * [`AirframeRole`] says what an airframe *is*: its [`ModelKind`] label, its
+//! * [`AirframeRole`] says what an airframe *is*: its `cs_sim::flight::ModelKind`
+//!   label, its
 //!   [`Availability`] (roster presence and ordinary menu availability are
 //!   different things), whether it is pilotable, and its explicit
 //!   [`LaunchConstraints`] and [`WeaponConstraints`]. Every role carries an
@@ -26,7 +27,8 @@
 //!   session generation, naming an airframe the roster does not contain, or
 //!   naming one the role declares unlaunchable or unpilotable is refused by
 //!   name — it never silently falls back to the hangar plane.
-//! * A [`MissionOnly`] airframe is present and pilotable, so a mission that
+//! * A [`MissionOnly`](Availability::MissionOnly) airframe is present and
+//!   pilotable, so a mission that
 //!   requires it can launch it even though the shop does not list it
 //!   (non-negotiable behavior 4: "never hide a required model because the
 //!   normal shop does not list it").
