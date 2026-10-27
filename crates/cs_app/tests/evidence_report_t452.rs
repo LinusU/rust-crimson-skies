@@ -13,7 +13,10 @@
 //!      cargo test --locked -p cs_app --test cs_app_tests_a evidence_report_t452 --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py private/evidence/T452/acceptance.json
-//!    --artifact-root private/evidence/T452 --require-pass`
+//!    --artifact-root private/evidence/T452`
+//!    (structurally: the report keeps every unmeasured value in `unknowns`, so
+//!    `--require-pass` is not used — a limitation is never deleted to satisfy a
+//!    validator, AGENTS.md "Evidence-bound tasks")
 //! 4. Commit a copy as `docs/findings/evidence/T452.json`.
 //!
 //! `original-catalogue.json` is a second production observation: the measured
@@ -44,7 +47,7 @@ const RETAIL_TESTS: [&str; 5] = [
     "accept_t452_retail_the_projectile_component_type_is_still_the_runtime_one",
 ];
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-catalogue.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): every weapon record T452.01's stated rules classify - sixteen in all: twelve guided rockets, two area-denial components, one aerial torpedo and one proximity flak - read through cs_content::ordnance::read_original_component_table and read_original_rocket_blasts, catalogued by cs_app::ordnance::read_original_catalogue and inserted with cs_app::ordnance::catalogue_measured_ordnance into a real cs_sim::weapons::OrdnanceRegistry, where every one of the sixteen ids resolves with a family, a mount, a guidance rule, a fuse and an arming rule; the thirty-two records no family rule reaches (the thirty-one CANNON machine and turret guns and the cannonball wep_28) are listed by name and never folded into a family. Per component the catalogue keeps only what the files state: the family from the record's keys; the mount as one of the eight rocket slots (the glidebomb wep_25 declares LOCK_ON and no ROCKET flag, so its mount is a named unknown, not an assumed slot); guidance Unguided or Targeted, with the measured lost-target rule coast-then-detonate-at-end-of-RANGE for every guided record task #454 measured, and a named unknown for wep_25 which that measurement does not cover; the fuse as the record's own DETONATION_DISTANCE sphere (shape sphere, boundary inclusive) sampled the way task T452.02 statically measured the engine to sample it - once per step at the item's start-of-step position, not the swept relative-path model - or the record's stated DETONATION_TIME duration in seconds (wep_15, 2 s), or a named unknown where the record states no trigger at all (the smoke record wep_13 and the flak record wep_26, whose only stated radius is its IMPACT_PROXIMITY blast radius, not a trigger); arming on release, the measured rule, because T452.02 found no arming condition on the proximity path other than the fuse's own live conditions and RANGE_MINIMUM gates impact detonations only. The nitro booster is not a wep_ record - no record, no id - so it is recorded as actor state: the header's MPOUT_CHK_NITRO control, capacity 30.0, consumption 4.0 per engine delta, recovery 1.0 per delta on every step, a start at 99% of capacity and a cut below 5%, and the measured 1.8 engine-value replacement and 0.8 result factor. NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); any statement that the original's rockets fly at the recorded VELOCITY, live for any duration, apply any status effect or mount in the recorded slot. What each catalogued component still does not measure is named per entry by claim id and field rather than defaulted: t452_04.limit.velocity_unit (the VELOCITY unit, fifteen records), t452_04.limit.release_delay (what FIRE_RATE delays and in which direction, sixteen records), t452_04.limit.no_expires_key (the member carries no EXPIRES key at all, fifteen records), t452_04.limit.area_lifetime (fifteen records), t452_04.limit.area_radius (the two area-denial records), t452_04.limit.status_effect_kind (seven records) and t452_04.limit.status_effect_duration (four records), t452_04.limit.rocket_flag_missing (wep_25's slot), t454.limit.swarm (the eleven clustered records), t452.limit.fuse (wep_13 and wep_26), t452.limit.lost_target (wep_25), t452.limit.nitro_activation_rule (the measured charge-bounded rule has no NitroActivationRule variant, so it is recorded and not lowered to a rule it is not; resolving task #452 follow-up), t452.limit.nitro_tradeoff (the measured 1.8 replaces an engine-record value, so no newtons and no authority multiplier are asserted), and t452.limit.runtime_lowering (every entry: the record states no stack capacity or unit mass, no media keys and no equipment rules, so a runtime component would fabricate all three - the entries are catalogued, and no original id is registered as flyable). The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass.";
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-catalogue.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): every weapon record T452.01's stated rules classify - sixteen in all: twelve guided rockets, two area-denial components, one aerial torpedo and one proximity flak - read through cs_content::ordnance::read_original_component_table and read_original_rocket_blasts, catalogued by cs_app::ordnance::read_original_catalogue and inserted with cs_app::ordnance::catalogue_measured_ordnance into a real cs_sim::weapons::OrdnanceRegistry, where every one of the sixteen ids resolves with a family, a mount, a guidance rule, a fuse and an arming rule; the thirty-two records no family rule reaches (the thirty-one CANNON machine and turret guns and the cannonball wep_28) are listed by name and never folded into a family. Per component the catalogue keeps only what the files state: the family from the record's keys; the mount as one of the eight rocket slots (the glidebomb wep_25 declares LOCK_ON and no ROCKET flag, so its mount is a named unknown, not an assumed slot); guidance Unguided or Targeted, with the measured lost-target rule coast-then-detonate-at-end-of-RANGE for every guided record task #454 measured, and a named unknown for wep_25 which that measurement does not cover; the fuse as the record's own DETONATION_DISTANCE sphere (shape sphere, boundary inclusive) sampled the way task T452.02 statically measured the engine to sample it - once per step at the item's start-of-step position, not the swept relative-path model - or the record's stated DETONATION_TIME duration in seconds (wep_15, 2 s), or a named unknown where the record states no trigger at all (the smoke record wep_13 and the flak record wep_26, whose only stated radius is its IMPACT_PROXIMITY blast radius, not a trigger); arming on release, the measured rule, because T452.02 found no arming condition on the proximity path other than the fuse's own live conditions and RANGE_MINIMUM gates impact detonations only. The nitro booster is not a wep_ record - no record, no id - so it is recorded as actor state: the header's MPOUT_CHK_NITRO control, capacity 30.0, consumption 4.0 per engine delta, recovery 1.0 per delta on every step, a start at 99% of capacity and a cut below 5%, and the measured 1.8 engine-value replacement and 0.8 result factor. NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); any statement that the original's rockets fly at the recorded VELOCITY, live for any duration, apply any status effect or mount in the recorded slot. What each catalogued component still does not measure is named per entry by claim id and field rather than defaulted: t452_04.limit.velocity_unit (the VELOCITY unit, fifteen records), t452_04.limit.release_delay (what FIRE_RATE delays and in which direction, sixteen records), t452_04.limit.no_expires_key (the member carries no EXPIRES key at all, fifteen records), t452_04.limit.area_lifetime (fifteen records), t452_04.limit.area_radius (the two area-denial records), t452_04.limit.status_effect_kind (seven records) and t452_04.limit.status_effect_duration (four records), t452_04.limit.rocket_flag_missing (wep_25's slot), t454.limit.swarm (the eleven clustered records), t452.limit.fuse (wep_13 and wep_26), t452.limit.lost_target (wep_25), t452.limit.nitro_activation_rule (the measured charge-bounded rule has no NitroActivationRule variant, so it is recorded and not lowered to a rule it is not; resolving task #452 follow-up), t452.limit.nitro_tradeoff (the measured 1.8 replaces an engine-record value, so no newtons and no authority multiplier are asserted), and t452.limit.runtime_lowering (every entry: the record states no stack capacity or unit mass, no media keys and no equipment rules, so a runtime component would fabricate all three - the entries are catalogued, and no original id is registered as flyable). The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated structurally with tools/validate_evidence.py - not with --require-pass, because the report's `unknowns` list carries every value this task did not measure: the list is derived, not typed, from the claim ids the production catalogue records.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -248,6 +251,7 @@ fn evidence_report_t452_writes_the_acceptance_report() {
         artifact(&log_path, "log", &evidence_dir),
         artifact(&observation_path, "json", &evidence_dir),
     ];
+    let unknowns = catalogue_unknowns_json(&catalogue);
     let report = format!(
         "{{\n \"schema_version\": 1,\n \"task_id\": \"T452\",\n \"candidate_tree\": {},\n \
          \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \
@@ -255,7 +259,7 @@ fn evidence_report_t452_writes_the_acceptance_report() {
          \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \
          \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \
          \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \
-         \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \
+         \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": {},\n \
          \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
         engine_json(),
@@ -272,6 +276,7 @@ fn evidence_report_t452_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
+        unknowns,
         jstr(&reviewer),
         jstr(REVIEW_METHOD),
     );
@@ -369,6 +374,40 @@ fn guidance_label(entry: &cs_sim::weapons::CataloguedOrdnance) -> &'static str {
     } else {
         "unguided"
     }
+}
+
+/// Every value the production catalogue did not measure, one `"claim (field):
+/// reason"` string per distinct claim id, sorted by claim.
+///
+/// Derived, never typed: these strings are the catalogue's own named unknowns,
+/// so a new limitation appears in the report the moment the catalogue records
+/// it, and none may be deleted to satisfy a validator (AGENTS.md,
+/// "Evidence-bound tasks").
+fn catalogue_unknowns_json(catalogue: &cs_app::ordnance::OriginalCatalogue) -> String {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let unknowns = catalogue
+        .entries
+        .iter()
+        .flat_map(|declared| declared.entry.unmeasured().iter())
+        .chain(catalogue.unmeasured.iter())
+        .chain(catalogue.nitro.unmeasured.iter());
+    for unknown in unknowns {
+        if rows.iter().any(|(claim, _)| *claim == unknown.claim) {
+            continue;
+        }
+        rows.push((
+            unknown.claim.clone(),
+            format!("{} ({}): {}", unknown.claim, unknown.field, unknown.reason),
+        ));
+    }
+    rows.sort();
+    format!(
+        "[{}]",
+        rows.iter()
+            .map(|(_, text)| jstr(text))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 // ------------------------------------------------------------ log parsing ---
