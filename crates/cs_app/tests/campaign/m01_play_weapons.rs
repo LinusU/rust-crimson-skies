@@ -225,6 +225,7 @@ fn spawn_target(app: &mut App) -> ActorId {
 fn fire(app: &mut App, command: FlightCommand) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(command)],
+        ..Default::default()
     });
     app.update();
 }

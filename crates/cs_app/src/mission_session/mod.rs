@@ -407,7 +407,7 @@ pub use spyglass::{
 };
 pub use targeting_input::{
     mint_mission_target_keys, mission_action_map, mission_crosshair, mission_selection_binding,
-    original_target_command, sync_mission_target_poses,
+    original_target_command, publish_mission_targeting_frame, sync_mission_target_poses,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use view_cycle::{
@@ -439,7 +439,8 @@ pub use weapons::{
     ensure_mission_weapons, gun_hold_due, guns_key_held, is_fire_guns, is_fire_rockets,
     mission_ammunition, mission_ammunition_id, mission_tick_input, mission_wind,
     open_composed_mission_weapons, open_mission_weapons, open_mission_weapons_with,
-    publish_mission_weapon_input, rocket_content_id, selected_gun_loadout,
+    publish_mission_target_damage, publish_mission_weapon_input, rocket_content_id,
+    selected_gun_loadout,
 };
 pub use wing_fire::{
     BurningEffect, MissionWingFirePlugin, WING_FIRE_DESIGN_CLAIM, WING_FIRE_MIN_TRAVEL_M_S,

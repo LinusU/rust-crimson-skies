@@ -60,7 +60,7 @@ use cs_content::weapons::{
     DeclaredGunDefinition, DeclaredGunMountKind, DeclaredGunRate, DeclaredInheritanceRule,
     DeclaredSelfHitRule, DeclaredSpreadCone, DeclaredWeaponDamage, InteractionRules,
 };
-use cs_sim::damage::{ActorId, DamageEventKind, DamageResolver, SystemKind};
+use cs_sim::damage::{ActorId, DamageEvent, DamageEventKind, DamageResolver, HitEvent, SystemKind};
 use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::time::TickRate;
 use cs_sim::weapons::{
@@ -85,7 +85,7 @@ use crate::ordnance::{
 use crate::physics::PhysicsTickLedger;
 use crate::scene::{NodeVisualTransform, SceneGeneration};
 use crate::score::SessionScoreLedger;
-use crate::targeting::{TargetingSession, lower_rules};
+use crate::targeting::{PendingTargetDamage, TargetingSession, lower_rules};
 use crate::weapons::{
     CockpitInput, MountPoseBinding, SessionDamageResolver, WeaponActorBinding, WeaponSession,
     WeaponTickInput, WeaponTickInputs,
@@ -1059,7 +1059,14 @@ pub fn publish_mission_weapon_input(world: &mut World) {
     let wind = mission_wind(world);
     let mut actions: Vec<Action> = world
         .get_resource_mut::<MissionCockpitActions>()
-        .map(|mut pending| std::mem::take(&mut pending.actions))
+        .map(|mut pending| {
+            let actions = std::mem::take(&mut pending.actions);
+            // The queue is taken wholesale, so the rendered-frame targeting
+            // cursor resets with it — an edge can never be served to the
+            // selection pass twice.
+            pending.targeting_published = 0;
+            actions
+        })
         .unwrap_or_default();
     // M01-WINDOW-FIRE (#1536): holding the guns key keeps firing for as long
     // as it is held, at the rate the loadout's guns declare. The input
@@ -1077,28 +1084,22 @@ pub fn publish_mission_weapon_input(world: &mut World) {
     }
     // PARITY2-M01-TARGET-INDICATORS (#1727): the frame's measured target
     // commands act on the one selected target through the session's own
-    // command-edge table. They run on the tick this publisher serves, with
-    // the camera's crosshair ray for the under-reticule select — and on a
-    // cleared action list (no control, the launch cinematic) they change no
-    // selection, exactly like the weapons they share the queue with.
-    if controlled {
-        // The records the selection reads are the roster's own; the
-        // roster passes stamp them at their bind poses, so the tick's live
-        // poses are written first (PARITY2-M01-TARGET-INDICATORS, #1727).
-        super::targeting_input::sync_mission_target_poses(world);
-        let crosshair = super::targeting_input::mission_crosshair(world, mission.player);
-        if let Err(error) = crate::targeting::apply_selection_edges(
-            world,
-            mission.player,
-            &actions,
-            cs_sim::targeting::SelectionFrame {
-                now: at,
-                crosshair: crosshair.as_ref(),
-            },
-        ) {
-            report.targeting_refusal = Some(format!("{error}"));
-        }
-    }
+    // command-edge table. Since F30-G they run in the rendered-frame
+    // targeting schedule — `publish_mission_targeting_frame` carries them in
+    // this frame's `TargetingFrameInputs`, with the camera's crosshair ray
+    // for the under-reticule select — and `TargetingSchedulePlugin`'s
+    // `Update` pass applies them, so the HUD, spyglass and guidance views are
+    // refreshed once per rendered frame rather than per committed tick. The
+    // refusal the selection pass last recorded is mirrored here, so the
+    // tick's report still names it.
+    report.targeting_refusal = world
+        .get_resource::<crate::targeting::TargetingScheduleReport>()
+        .and_then(|schedule| {
+            schedule
+                .selection_error
+                .as_ref()
+                .map(std::string::ToString::to_string)
+        });
     let pressed = actions.iter().copied().any(is_fire_guns);
     if controlled && !pressed && guns_key_held(world) && gun_hold_due(world, at) {
         actions.push(Action::Flight(FlightCommand::FirePrimary));
@@ -1153,6 +1154,44 @@ pub fn publish_mission_weapon_input(world: &mut World) {
     world.insert_resource(report);
 }
 
+/// Publishes the committed tick's resolved gun damage to the rendered-frame
+/// targeting schedule (F30-G).
+///
+/// Runs in `FixedPostUpdate` after
+/// [`drive_weapon_session`](crate::weapons::drive_weapon_session), so the
+/// [`WeaponScheduleReport`] it reads is this tick's own — `begin_tick`
+/// cleared the last tick's step — and the batches it mirrors are exactly the
+/// ones that step pushed to [`PendingDamageEvents`]: each routed round's
+/// hits beside the [`DamageEvent`]s the shared resolver emitted. The
+/// ordnance driver publishes its own detonations beside them
+/// ([`drive_mission_ordnance`]), so the [`PendingTargetDamage`] the frame's
+/// schedule drains carries every resolution the tick committed — guns and
+/// rockets alike — and the damage pass records the destruction before the
+/// consumer pass publishes the frame's views.
+///
+/// [`DamageEvent`]: cs_sim::damage::DamageEvent
+pub fn publish_mission_target_damage(world: &mut World) {
+    let mut batches = Vec::new();
+    if let Some(report) = world.get_resource::<crate::weapons::WeaponScheduleReport>()
+        && let Some(stepped) = &report.stepped
+    {
+        for routed in &stepped.routed {
+            if let Ok(resolution) = &routed.outcome.damage
+                && !resolution.events.is_empty()
+            {
+                batches.push((routed.outcome.sweep.damage(), resolution.events.clone()));
+            }
+        }
+    }
+    if batches.is_empty() {
+        return;
+    }
+    let mut pending = world.get_resource_or_insert_with(PendingTargetDamage::default);
+    for (hits, events) in batches {
+        pending.push(hits, events);
+    }
+}
+
 /// Resource wrapper for the mission's F28 ordnance session.
 ///
 /// [`OrdnanceSession`] is not itself an ECS [`Resource`]; the mission holds it
@@ -1168,10 +1207,23 @@ pub struct MissionOrdnanceSession(pub OrdnanceSession);
 /// baseline rate. A press must fire once, so the collector copies the frame's
 /// flight edges here and the first fixed tick of the frame takes them; later
 /// ticks of the same frame see none.
+///
+/// The same queue also feeds the rendered-frame targeting pass
+/// ([`super::targeting_input::publish_mission_targeting_frame`], F30-G): an
+/// edge may wait past one rendered frame for its fixed tick, so the targeting
+/// pass must not drain — it reads the slice of `actions` past
+/// `targeting_published` and advances the cursor, and the fixed-tick drain
+/// resets both halves together.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct MissionCockpitActions {
     /// The frame's delivered flight edges, in boundary order.
     pub actions: Vec<Action>,
+    /// How many leading `actions` the rendered-frame targeting pass has
+    /// already carried in a `TargetingFrameInputs` record. The publisher
+    /// delivers `actions[targeting_published..]` once and sets this to
+    /// `actions.len()`; the fixed-tick drain resets it to `0` with the queue
+    /// it takes, so an edge reaches the selection pass exactly once.
+    pub targeting_published: usize,
 }
 
 /// Copies the rendered frame's delivered flight edges for the fixed ticks.
@@ -1621,16 +1673,31 @@ pub fn drive_mission_ordnance(world: &mut World) {
         world.insert_resource(report);
     }
     // A detonation's resolved batch goes to the same damage consumers the gun
-    // path's rounds go to, so a rocket kill scores and wrecks exactly once.
-    world.init_resource::<PendingDamageEvents>();
-    {
+    // path's rounds go to, so a rocket kill scores and wrecks exactly once —
+    // and to the rendered-frame targeting schedule's own damage pass (F30-G),
+    // so a rocket's kill is out of the frame's published views the frame it
+    // lands, exactly as a gun's is.
+    let resolved: Vec<(Vec<HitEvent>, Vec<DamageEvent>)> = tick
+        .detonations
+        .iter()
+        .filter_map(|detonation| {
+            detonation
+                .damage
+                .as_ref()
+                .filter(|resolution| !resolution.events.is_empty())
+                .map(|resolution| (detonation.hits.clone(), resolution.events.clone()))
+        })
+        .collect();
+    if !resolved.is_empty() {
+        world.init_resource::<PendingDamageEvents>();
+        world.init_resource::<PendingTargetDamage>();
         let mut pending = world.resource_mut::<PendingDamageEvents>();
-        for detonation in &tick.detonations {
-            if let Some(resolution) = &detonation.damage
-                && !resolution.events.is_empty()
-            {
-                pending.push(detonation.hits.clone(), resolution.events.clone());
-            }
+        for (hits, events) in &resolved {
+            pending.push(hits.clone(), events.clone());
+        }
+        let mut target = world.resource_mut::<PendingTargetDamage>();
+        for (hits, events) in resolved {
+            target.push(hits, events);
         }
     }
     // The burst puffs' source events (PARITY2-DMG-FX-B, #1806): every item
@@ -1917,6 +1984,20 @@ impl Plugin for MissionWeaponsPlugin {
                     .after(collect_mission_cockpit_actions)
                     .run_if(resource_exists::<super::original_keys::MissionControls>),
             )
+            // F30-G: the mission session's targeting runs through the
+            // rendered-frame schedule — one `TargetingFrameInputs` record per
+            // rendered frame, published in `PreUpdate` behind whichever key
+            // minter ran, so the `Update` pass the plugin installs acts on
+            // this frame's presses and publishes the HUD, spyglass and
+            // guidance views the frame renders.
+            .add_plugins(crate::targeting::TargetingSchedulePlugin)
+            .add_systems(
+                PreUpdate,
+                super::targeting_input::publish_mission_targeting_frame
+                    .after(collect_mission_cockpit_actions)
+                    .after(super::targeting_input::mint_mission_target_keys)
+                    .after(super::original_keys::mint_original_chord_keys),
+            )
             .add_systems(
                 FixedPostUpdate,
                 publish_mission_weapon_input
@@ -1968,6 +2049,15 @@ impl Plugin for MissionWeaponsPlugin {
             .add_systems(
                 FixedPostUpdate,
                 drive_mission_ordnance
+                    .after(crate::weapons::drive_weapon_session)
+                    .before(crate::damage::drive_damage_schedule),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                // The resolved gun batches mirror into `PendingTargetDamage`
+                // while this tick's step record is still the report's own
+                // (F30-G).
+                publish_mission_target_damage
                     .after(crate::weapons::drive_weapon_session)
                     .before(crate::damage::drive_damage_schedule),
             );

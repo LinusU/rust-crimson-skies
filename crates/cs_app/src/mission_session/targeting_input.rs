@@ -55,6 +55,7 @@ use cs_sim::damage::ActorId;
 use cs_sim::targeting::{
     CrosshairQuery, CycleDirection, SelectionAction, SelectionBinding, TargetClass, TargetFilter,
 };
+use cs_types::Tick;
 use cs_types::input::{
     Action, ActionMap, Binding, BindingSource, BindingTarget, FlightCommand, Key,
 };
@@ -359,6 +360,70 @@ pub fn sync_mission_target_poses(world: &mut World) {
     for (actor, position) in poses {
         let _ = store.set_pose(actor, position);
     }
+}
+
+/// Publishes the rendered frame's [`crate::targeting::TargetingFrameInputs`]
+/// for the schedule the mission session installs (F30-G).
+///
+/// Runs once per rendered frame in `PreUpdate`, behind whichever key minter
+/// the session's controls minted with, so the record the `Update` pass
+/// drains carries this frame's presses. The record is the mission's own:
+/// the player as observer, the last committed fixed tick, the command edges
+/// [`MissionCockpitActions::targeting_published`] has not yet served — the
+/// queue is shared with the fixed-tick weapon publisher, which may lag a
+/// frame, so this pass copies rather than drains — and the camera's
+/// crosshair ray for the under-reticule select.
+///
+/// The records the selection reads are the roster's own poses, so the frame
+/// writes them first — the same pass the per-tick publisher used to run
+/// ahead of its own selection pass — and the launch cinematic is still the
+/// session's one control gate: during it the frame still publishes (the
+/// consumer pass is owed fresh views either way) but carries no edges, and
+/// the cursor still consumes whatever the minters wrote, exactly as the
+/// weapon pass clears the shared queue.
+///
+/// With no session — or none that has installed its resources — the frame
+/// publishes nothing and clears any record a dead session left behind, so
+/// the schedule reports `missing_inputs` rather than spending a stale one.
+pub fn publish_mission_targeting_frame(world: &mut World) {
+    super::weapons::ensure_mission_weapons(world);
+    let Some(mission) = world.get_resource::<MissionWeapons>().cloned() else {
+        world.remove_resource::<crate::targeting::TargetingFrameInputs>();
+        return;
+    };
+    if world
+        .get_resource::<crate::targeting::TargetingSession>()
+        .is_none()
+    {
+        world.remove_resource::<crate::targeting::TargetingFrameInputs>();
+        return;
+    }
+    let at = world
+        .get_resource::<crate::physics::PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks))
+        .unwrap_or(Tick(0));
+    sync_mission_target_poses(world);
+    let crosshair = mission_crosshair(world, mission.player());
+    let controlled = !super::launch_cinematic::launch_cinematic_playing(world);
+    let edges = world
+        .get_resource_mut::<MissionCockpitActions>()
+        .map(|mut pending| {
+            let from = pending.targeting_published.min(pending.actions.len());
+            let edges = if controlled {
+                pending.actions[from..].to_vec()
+            } else {
+                Vec::new()
+            };
+            pending.targeting_published = pending.actions.len();
+            edges
+        })
+        .unwrap_or_default();
+    let mut inputs =
+        crate::targeting::TargetingFrameInputs::new(mission.player(), at).with_edges(edges);
+    if let Some(crosshair) = crosshair {
+        inputs = inputs.with_crosshair(crosshair);
+    }
+    world.insert_resource(inputs);
 }
 
 /// The crosshair ray the reticle-select action resolves against: the scene

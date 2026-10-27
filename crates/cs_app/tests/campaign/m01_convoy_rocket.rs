@@ -209,6 +209,7 @@ fn move_truck(app: &mut App, entity: Entity, centre: Vec3) {
 fn fire(app: &mut App, command: FlightCommand) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(command)],
+        ..Default::default()
     });
     app.update();
 }
@@ -745,6 +746,7 @@ fn accept_m01_convoy_rocket_retail_no_selection_refuses() {
     // edge, then the fire edge must refuse.
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(FlightCommand::TargetNothing)],
+        ..Default::default()
     });
     app.update();
     fire(&mut app, FlightCommand::FireSecondary);

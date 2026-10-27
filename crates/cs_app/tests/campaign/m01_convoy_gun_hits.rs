@@ -51,6 +51,7 @@ fn claim() -> ClaimId {
 pub(crate) fn fire(app: &mut App) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(FlightCommand::FirePrimary)],
+        ..Default::default()
     });
     app.update();
 }
@@ -58,6 +59,7 @@ pub(crate) fn fire(app: &mut App) {
 pub(crate) fn idle(app: &mut App) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: Vec::new(),
+        ..Default::default()
     });
     app.update();
 }

@@ -465,6 +465,7 @@ fn fire(app: &mut App) {
     use cs_types::input::{Action, FlightCommand};
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(FlightCommand::FirePrimary)],
+        ..Default::default()
     });
     app.update();
 }
@@ -473,6 +474,7 @@ fn idle(app: &mut App) {
     use cs_app::mission_session::MissionCockpitActions;
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: Vec::new(),
+        ..Default::default()
     });
     app.update();
 }

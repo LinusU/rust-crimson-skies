@@ -51,6 +51,7 @@ fn puffs(app: &mut App) -> Vec<BurstPuff> {
 fn fire_rocket(app: &mut App) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(FlightCommand::FireSecondary)],
+        ..Default::default()
     });
     app.update();
 }
