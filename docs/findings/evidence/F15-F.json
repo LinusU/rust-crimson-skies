@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "task_id": "F15-F",
-  "candidate_tree": "ca0750c9a33f8782ae10348805ca7b32d8ff4dfb",
+  "candidate_tree": "fa050795b15972cf186868d2d4180110d39a172a",
   "engine": {
     "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "bevy": "0.20.0",
     "avian": "0.8.0"
   },
-  "created_at": "2026-10-27T16:37:27Z",
+  "created_at": "2026-10-27T16:39:23Z",
   "command": {
     "argv": [
       "/opt/homebrew/opt/python@3.14/bin/python3.14",
@@ -128,7 +128,7 @@
   "artifacts": [
     {
       "path": "tests.log",
-      "sha256": "a0fe821a22bb77b9cc11406a8793550d0f4bd195cc995a9a8b8562626305c7f3",
+      "sha256": "c27d7a3453fc9d1cd99667cd16ccc1ed73cf72afc8dfefa06a885a2bff6a7ce7",
       "kind": "log"
     },
     {
