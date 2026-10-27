@@ -185,6 +185,7 @@ pub use material_cycle::MaterialCyclePlugin;
 pub mod matrix;
 pub mod paint;
 pub mod plan;
+pub mod presentation;
 pub mod profile;
 pub mod rgb565;
 pub mod sync;
