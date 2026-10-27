@@ -66,6 +66,25 @@
 //! `crates/cs_content/tests/accept_f28_d_retail_ordnance_catalogue.rs` on
 //! every run, and the details are in
 //! `docs/findings/2026-10-03-f28-d-original-ordnance-catalogue.md`.
+//!
+//! # The per-component launch table (T452.04)
+//!
+//! T452.01 classified every `wep_` record to a family. This module now also
+//! reads what those records *declare* per component —
+//! [`read_original_component_table`]: the launch speed (`VELOCITY`), the
+//! declared release rate (`FIRE_RATE`), any stated lifetime, the area radius
+//! and lifetime, the damage channels, every status/effect flag with its stated
+//! duration, and what `CLUSTER_SIZE` states — against the mount layout the two
+//! ordnance screens declare ([`read_original_mount_layout`]: eight rocket
+//! slots, four gun/ammunition slots, two hardpoint points, each read from its
+//! own `object <array>[n]` declaration and fill loop through the base retail
+//! archive). Every value no file states is a named [`OriginalComponentUnknown`],
+//! never a default: the `VELOCITY` unit, what `FIRE_RATE` delays, the absent
+//! `EXPIRES` lifetime, a status effect's gameplay kind, the area's lifetime,
+//! which slot holds a record with no `ROCKET` flag, what each clustered
+//! sub-munition does, and which component fills which slot on a given
+//! airframe. Details and measurements:
+//! `docs/findings/2026-10-25-t452-04-component-hardpoints-launch-speeds-and-lifetimes.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -3122,4 +3141,799 @@ pub fn read_original_weapon_census(
     Ok(classify_original_weapons(read_original_weapon_records(
         install_root,
     )?))
+}
+
+// ------------------------------- the per-component launch table (T452.04) ----
+
+/// The retail container that holds the two ordnance screens (task T452.04).
+pub const ORIGINAL_SCREENS_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+
+/// The screen that lays out an airframe's hardpoint points.
+pub const ORIGINAL_HARDPOINTS_SCREEN: &str = "ASSETS/SCRIPTS/HARDPOINTS.SCRIPT";
+
+/// The screen that lays out an airframe's gun/ammunition and rocket slots.
+pub const ORIGINAL_ORDNANCE_LAYOUT_SCREEN: &str = "ASSETS/SCRIPTS/ORDINANCELAYOUT.SCRIPT";
+
+/// The hardpoint screen's own array of points (`object DT[2]`).
+pub const ORIGINAL_HARDPOINT_POINT_ARRAY: &str = "DT";
+
+/// The ordnance screen's own array of rocket slots (`object RKA[8]`).
+pub const ORIGINAL_ROCKET_SLOT_ARRAY: &str = "RKA";
+
+/// The ordnance screen's own array of gun/ammunition slots (`object QKA[4]`).
+pub const ORIGINAL_AMMUNITION_SLOT_ARRAY: &str = "QKA";
+
+/// The claim id for "`VELOCITY`'s unit is not measured".
+pub const T452_04_VELOCITY_UNIT: &str = "t452_04.limit.velocity_unit";
+
+/// The claim id for "what `FIRE_RATE` delays, and in which direction".
+pub const T452_04_RELEASE_DELAY: &str = "t452_04.limit.release_delay";
+
+/// The claim id for "no record states a projectile lifetime".
+pub const T452_04_NO_EXPIRES: &str = "t452_04.limit.no_expires_key";
+
+/// The claim id for "a status effect's gameplay kind is not stated".
+pub const T452_04_STATUS_KIND: &str = "t452_04.limit.status_effect_kind";
+
+/// The claim id for "a status effect carries no duration".
+pub const T452_04_STATUS_DURATION: &str = "t452_04.limit.status_effect_duration";
+
+/// The claim id for "an effect area states no lifetime".
+pub const T452_04_AREA_LIFETIME: &str = "t452_04.limit.area_lifetime";
+
+/// The claim id for "an ordnance-shaped record declares no `ROCKET` flag, so
+/// no screen states which slot holds it".
+pub const T452_04_MOUNT: &str = "t452_04.limit.rocket_flag_missing";
+
+/// The carried claim id for "what each sub-munition of a clustered launch
+/// does" (T452.01's `t454.limit.swarm`).
+pub const T452_04_CLUSTER: &str = "t454.limit.swarm";
+
+/// The claim id for "which component sits in which slot on a given airframe".
+pub const T452_04_PER_AIRFRAME: &str = "t452_04.limit.per_airframe_layout";
+
+/// Why one screen could not be read or does not declare its array.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginalScreenError {
+    /// The installation, container or member could not be read.
+    Read {
+        /// The member that was being read.
+        member: String,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The screen does not declare the slot array the layout is read from.
+    SlotArrayMissing {
+        /// The member that was read.
+        member: String,
+        /// The array name that was not found.
+        array: String,
+    },
+}
+
+impl fmt::Display for OriginalScreenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { member, reason } => {
+                write!(f, "{member} could not be read: {reason}")
+            }
+            Self::SlotArrayMissing { member, array } => write!(
+                f,
+                "{member} declares no `object {array}[n]` slot array, so its layout cannot be read"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OriginalScreenError {}
+
+/// Why the per-component launch table could not be produced.
+#[derive(Debug)]
+pub enum OriginalComponentError {
+    /// The [`OriginalWeaponCensus`] could not be read.
+    Records(crate::original_airframe::OriginalImportError),
+    /// A screen the layout is read from could not be read.
+    Screen(OriginalScreenError),
+}
+
+impl fmt::Display for OriginalComponentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Records(error) => write!(f, "the weapon records could not be read: {error}"),
+            Self::Screen(error) => write!(f, "the mount layout could not be read: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for OriginalComponentError {}
+
+impl From<OriginalScreenError> for OriginalComponentError {
+    fn from(error: OriginalScreenError) -> Self {
+        Self::Screen(error)
+    }
+}
+
+/// One slot array one screen declares, and the loop that fills it.
+///
+/// **Measured** (task T452.04) from the two screens' own text: the declaration
+/// (`object RKA[8]`) and the fill loop (`for (BA = 0; BA < 8; BA++)`) are two
+/// independent statements of the same count, so [`Self::is_consistent`] is a
+/// real check rather than a restatement. `deactivates_empty_slots` is the
+/// screen's own handling of a slot the engine reports as `-1`: the ordnance
+/// screen calls `deactivate(...)` on it, the hardpoint screen has no
+/// `deactivate` at all and always shows both points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalSlotArray {
+    /// The member the array is declared in.
+    pub member: String,
+    /// The screen's own array name (`RKA`, `QKA`, `DT`).
+    pub array: String,
+    /// The bound the declaration states.
+    pub slots: u32,
+    /// The bound the loop that fills it states.
+    pub loop_bound: u32,
+    /// Whether the screen deactivates a slot the engine reports as empty.
+    pub deactivates_empty_slots: bool,
+}
+
+impl OriginalSlotArray {
+    /// Reads one slot array out of a screen's text.
+    ///
+    /// Returns `None` when the screen declares no `object <array>[n]` or no
+    /// following fill loop states a bound: nothing is defaulted, because a
+    /// layout this project guessed is a layout no airframe was measured to
+    /// have.
+    #[must_use]
+    pub fn read(member: &str, screen: &str, array: &str) -> Option<Self> {
+        let declaration = format!("object {array}[");
+        let start = screen.find(&declaration)? + declaration.len();
+        let rest = &screen[start..];
+        let close = rest.find(']')?;
+        let slots = rest[..close].trim().parse::<u32>().ok()?;
+        // The fill loop is the next `for (...)` after the declaration; its
+        // header states the same bound a second time.
+        let after = &rest[close..];
+        let loop_start = after.find("for (")?;
+        let loop_bound = loop_bound(&after[loop_start..])?;
+        Some(Self {
+            member: member.to_owned(),
+            array: array.to_owned(),
+            slots,
+            loop_bound,
+            deactivates_empty_slots: screen.contains("deactivate("),
+        })
+    }
+
+    /// Whether the declaration and its fill loop state the same count.
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.slots == self.loop_bound
+    }
+}
+
+/// The `< n` bound of a `for (...)` header, as the header spells it.
+fn loop_bound(loop_text: &str) -> Option<u32> {
+    let header = &loop_text[..loop_text.find(')')?];
+    let after = &header[header.find("< ")? + 2..];
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// One way the two screens disagree with themselves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginalLayoutFinding {
+    /// An array's declared bound and its fill loop state different counts.
+    SlotBoundDisagrees {
+        /// The member the array is declared in.
+        member: String,
+        /// The array name.
+        array: String,
+        /// The bound the declaration states.
+        slots: u32,
+        /// The bound the fill loop states.
+        loop_bound: u32,
+    },
+}
+
+impl fmt::Display for OriginalLayoutFinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SlotBoundDisagrees {
+                member,
+                array,
+                slots,
+                loop_bound,
+            } => write!(
+                f,
+                "{member}: `object {array}[{slots}]` but the fill loop counts {loop_bound}"
+            ),
+        }
+    }
+}
+
+/// The mount layout the two screens declare (task T452.04).
+///
+/// **Measured**: eight rocket slots, four gun/ammunition slots and two
+/// hardpoint points, each with the screen's array bound and its fill-loop bound
+/// agreeing, and the ordnance screen deactivating an empty slot while the
+/// hardpoint screen does not. The layout is per airframe in the original — the
+/// screens size their controls once, and which slot a given plane fills is in
+/// its plane record, not in a file (see
+/// [`T452_04_PER_AIRFRAME`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalMountLayout {
+    /// `ORDNANCELAYOUT.SCRIPT`'s `object RKA[8]`.
+    pub rocket_slots: OriginalSlotArray,
+    /// `ORDNANCELAYOUT.SCRIPT`'s `object QKA[4]`.
+    pub ammunition_slots: OriginalSlotArray,
+    /// `HARDPOINTS.SCRIPT`'s `object DT[2]`.
+    pub hardpoint_points: OriginalSlotArray,
+    /// Every disagreement the screens state about themselves.
+    pub findings: Vec<OriginalLayoutFinding>,
+}
+
+impl OriginalMountLayout {
+    /// Reads the layout out of the two screens' text.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalScreenError::SlotArrayMissing`] when either screen does not
+    /// declare its array — a layout with a missing half is refused rather than
+    /// filled in.
+    pub fn from_screens(
+        hardpoints: &str,
+        ordnance_layout: &str,
+    ) -> Result<Self, OriginalScreenError> {
+        let read = |member: &'static str, screen: &str, array: &'static str| {
+            OriginalSlotArray::read(member, screen, array).ok_or_else(|| {
+                OriginalScreenError::SlotArrayMissing {
+                    member: member.to_owned(),
+                    array: array.to_owned(),
+                }
+            })
+        };
+        let hardpoint_points = read(
+            ORIGINAL_HARDPOINTS_SCREEN,
+            hardpoints,
+            ORIGINAL_HARDPOINT_POINT_ARRAY,
+        )?;
+        let rocket_slots = read(
+            ORIGINAL_ORDNANCE_LAYOUT_SCREEN,
+            ordnance_layout,
+            ORIGINAL_ROCKET_SLOT_ARRAY,
+        )?;
+        let ammunition_slots = read(
+            ORIGINAL_ORDNANCE_LAYOUT_SCREEN,
+            ordnance_layout,
+            ORIGINAL_AMMUNITION_SLOT_ARRAY,
+        )?;
+        let mut findings = Vec::new();
+        for array in [&hardpoint_points, &rocket_slots, &ammunition_slots] {
+            if !array.is_consistent() {
+                findings.push(OriginalLayoutFinding::SlotBoundDisagrees {
+                    member: array.member.clone(),
+                    array: array.array.clone(),
+                    slots: array.slots,
+                    loop_bound: array.loop_bound,
+                });
+            }
+        }
+        Ok(Self {
+            rocket_slots,
+            ammunition_slots,
+            hardpoint_points,
+            findings,
+        })
+    }
+
+    /// Whether the screens agree with themselves.
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+/// Reads one screen out of the base retail archive's ROF container as text.
+fn read_screen_member(
+    install_root: &std::path::Path,
+    member: &str,
+) -> Result<String, OriginalScreenError> {
+    use cs_assets::rof::mount_rof_into;
+    use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
+    use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
+
+    let read_error = |reason: String| OriginalScreenError::Read {
+        member: member.to_owned(),
+        reason,
+    };
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| read_error(error.to_string()))?;
+    let install = cs_assets::install::fingerprint(&found.manifest);
+    let id: String = format!("rof-{}", ORIGINAL_SCREENS_CONTAINER.to_ascii_lowercase())
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '.' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut builder = SessionBuilder::new(ResolveContext::new(install));
+    let source = mount_rof_into(
+        &mut builder,
+        MountBuilder::new(
+            MountId::new(&id).map_err(|error| read_error(error.to_string()))?,
+            MountNamespace::new(INSTALL_NAMESPACE)
+                .map_err(|error| read_error(error.to_string()))?,
+            PrecedenceClass::Shared,
+            ORIGINAL_SCREENS_CONTAINER,
+        )
+        .retail(),
+        &install_root.join(ORIGINAL_SCREENS_CONTAINER),
+    )
+    .map_err(|error| OriginalScreenError::Read {
+        member: ORIGINAL_SCREENS_CONTAINER.to_owned(),
+        reason: format!("{error:?}"),
+    })?;
+    let session = builder.open();
+    let key = AssetKey::from_spelling(INSTALL_NAMESPACE, member, "default")
+        .map_err(|error| read_error(error.to_string()))?;
+    session
+        .resolve(&key)
+        .map_err(|error| read_error(format!("{error:?}")))?;
+    let bytes = source
+        .read(&key)
+        .map_err(|error| read_error(format!("{error:?}")))?
+        .data;
+    String::from_utf8(bytes).map_err(|_| read_error("the screen is not UTF-8 text".to_owned()))
+}
+
+/// The mount layout of the installation's two ordnance screens (T452.04).
+///
+/// # Errors
+///
+/// [`OriginalScreenError`] when the installation, the archive or a member
+/// cannot be read, or a screen declares no slot array.
+pub fn read_original_mount_layout(
+    install_root: &std::path::Path,
+) -> Result<OriginalMountLayout, OriginalScreenError> {
+    let hardpoints = read_screen_member(install_root, ORIGINAL_HARDPOINTS_SCREEN)?;
+    let ordnance_layout = read_screen_member(install_root, ORIGINAL_ORDNANCE_LAYOUT_SCREEN)?;
+    OriginalMountLayout::from_screens(&hardpoints, &ordnance_layout)
+}
+
+/// Where a component mounts, as the screens' own slot arrays state it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginalMountDeclaration {
+    /// The record declares `ROCKET`, so it is a rocket-slot component: one of
+    /// the measured `slots` slots.
+    RocketSlot {
+        /// The slot count the ordnance screen declares.
+        slots: u32,
+    },
+    /// An ordnance-shaped record with no `ROCKET` flag — `wep_25`, the
+    /// glidebomb — for which no screen states a slot.
+    Unknown {
+        /// The claim id the unknown is recorded under.
+        claim: String,
+        /// Why no screen states a slot.
+        reason: String,
+    },
+}
+
+impl OriginalMountDeclaration {
+    /// The slot count, or `None` when no screen states one.
+    #[must_use]
+    pub fn slots(&self) -> Option<u32> {
+        match self {
+            Self::RocketSlot { slots } => Some(*slots),
+            Self::Unknown { .. } => None,
+        }
+    }
+}
+
+/// What a record's `CLUSTER_SIZE` states — and it is not always a volley.
+///
+/// **Measured** (task T452.04): on every one of the thirty-one `CANNON` records
+/// `CLUSTER_SIZE` equals `AMMO_LIMIT` exactly (2800 = 2800, 1200 = 1200, ...),
+/// so there it is the ammunition count; on every ordnance record the two keys
+/// differ and `CLUSTER_SIZE` is a small whole number (1, 2, 3, 4, 6 or 7), the
+/// only shape in the member that can be a launch volley. What each sub-munition
+/// then does is unknown ([`T452_04_CLUSTER`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalClusterShape {
+    /// `CLUSTER_SIZE` of an ordnance record: the sub-munitions one launch fires.
+    Volley {
+        /// How many sub-munitions the record launches.
+        munitions: u32,
+    },
+    /// A record whose `CLUSTER_SIZE` is its `AMMO_LIMIT`: rounds carried.
+    AmmunitionCount {
+        /// The declared count (`CLUSTER_SIZE`, which equals `AMMO_LIMIT`).
+        rounds: u32,
+    },
+    /// The record declares no `CLUSTER_SIZE`.
+    Undeclared,
+}
+
+/// The lifetime a record states, if it states one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OriginalLifetime {
+    /// A record key states a duration, in seconds.
+    Declared {
+        /// The duration.
+        seconds: f64,
+        /// The key it came from.
+        key: &'static str,
+    },
+    /// No record key states a duration. The member carries no `EXPIRES` key at
+    /// all (measured by `accept_t452_01_`), so there is nothing to read rather
+    /// than a value this project declined to copy.
+    Undeclared,
+}
+
+/// The area a record declares, in metres and seconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OriginalAreaDeclaration {
+    /// `IMPACT_PROXIMITY`, metres: task #1318 measured that the record value
+    /// reaches the world-space distance comparison with no conversion, and
+    /// F16-E measured the world unit is the metre.
+    pub radius_m: Option<f64>,
+    /// How long the area lasts, seconds: the only measured declaration is
+    /// `SMOKE_SCREEN`'s own second value (8 s). No other record states one.
+    pub lifetime_s: Option<f64>,
+}
+
+/// The damage channels a record declares.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OriginalDamageDeclaration {
+    /// `ARMOR_DAMAGE`, the declared amount.
+    pub armor: Option<f64>,
+    /// `HEALTH_DAMAGE`, the declared amount.
+    pub health: Option<f64>,
+    /// `DAMAGE`, the single channel the flash records declare instead.
+    pub single: Option<f64>,
+}
+
+impl OriginalDamageDeclaration {
+    /// How many channels the record declares a value for.
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        usize::from(self.armor.is_some())
+            + usize::from(self.health.is_some())
+            + usize::from(self.single.is_some())
+    }
+}
+
+/// One status/effect flag a record declares, with the duration it states.
+///
+/// The flag names the effect (the engine's own key name); **which gameplay
+/// status kind it drives is not stated by any file** ([`T452_04_STATUS_KIND`]),
+/// so no [`DeclaredStatusEffectKind`] is assigned here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalStatusEffectDeclaration {
+    /// The record key that states the effect (`TANGLER`, `SMOKE_SCREEN`, ...).
+    pub key: &'static str,
+    /// The duration the key states, seconds, when it carries one.
+    pub duration_s: Option<f64>,
+    /// The unit word the key states with the duration (`TIME`), when present.
+    pub duration_unit: Option<String>,
+}
+
+/// One value this stage could not measure, named by the claim it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalComponentUnknown {
+    /// The claim id (`t452_04.limit.*`, `t454.limit.swarm`).
+    pub claim: String,
+    /// Why the value is not known, and what it affects.
+    pub reason: String,
+}
+
+impl OriginalComponentUnknown {
+    fn new(claim: &str, reason: impl Into<String>) -> Self {
+        Self {
+            claim: claim.to_owned(),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// One launched component's measured declaration (task T452.04).
+///
+/// Every field is what a file states, exactly as stored; a value no file states
+/// is `None`/`Undeclared` **and** an entry in [`Self::unknowns`], never a
+/// default. The record's own name is the identity, so two records that disagree
+/// stay two rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalComponentLaunch {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// The family the record's keys state (T452.01's rules).
+    pub family: DeclaredOrdnanceFamily,
+    /// Where the screens mount it.
+    pub mount: OriginalMountDeclaration,
+    /// `VELOCITY`, the first value, exactly as stored. The unit is not stated
+    /// by any file ([`T452_04_VELOCITY_UNIT`]); F16-E measured the world unit
+    /// is the metre, which makes a metre-per-second reading consistent but not
+    /// proven.
+    pub velocity: Option<f64>,
+    /// `FIRE_RATE`, the first value, exactly as stored. What it delays and in
+    /// which direction is not stated ([`T452_04_RELEASE_DELAY`]), so no
+    /// release delay is derived from it here.
+    pub fire_rate: Option<f64>,
+    /// The lifetime the record states, if any.
+    pub lifetime: OriginalLifetime,
+    /// The area the record declares.
+    pub area: OriginalAreaDeclaration,
+    /// The damage channels the record declares.
+    pub damage: OriginalDamageDeclaration,
+    /// Every status/effect flag the record declares.
+    pub statuses: Vec<OriginalStatusEffectDeclaration>,
+    /// What its `CLUSTER_SIZE` states.
+    pub cluster: OriginalClusterShape,
+    /// Every value this row could not measure.
+    pub unknowns: Vec<OriginalComponentUnknown>,
+}
+
+impl OriginalComponentLaunch {
+    /// Whether the record declares any status/effect flag at all.
+    #[must_use]
+    pub fn declares_status(&self) -> bool {
+        !self.statuses.is_empty()
+    }
+
+    /// Whether a claim id is recorded against this row.
+    #[must_use]
+    pub fn names_claim(&self, claim: &str) -> bool {
+        self.unknowns.iter().any(|unknown| unknown.claim == claim)
+    }
+}
+
+/// Every launched component's measured declaration, plus the layout it was read
+/// against (task T452.04).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalComponentTable {
+    /// The mount layout the screens declare.
+    pub layout: OriginalMountLayout,
+    /// One row per record a T452.01 rule classifies to a family.
+    pub rows: Vec<OriginalComponentLaunch>,
+    /// The records no rule classifies (the guns and the cannonball), by name —
+    /// visible rather than silently dropped.
+    pub excluded: Vec<String>,
+    /// Values no single record owns (which airframe fills which slot).
+    pub unknowns: Vec<OriginalComponentUnknown>,
+}
+
+impl OriginalComponentTable {
+    /// One row by record name.
+    #[must_use]
+    pub fn row(&self, record: &str) -> Option<&OriginalComponentLaunch> {
+        self.rows.iter().find(|row| row.record == record)
+    }
+
+    /// The rows whose family is `family`.
+    #[must_use]
+    pub fn rows_of(&self, family: DeclaredOrdnanceFamily) -> Vec<&OriginalComponentLaunch> {
+        self.rows
+            .iter()
+            .filter(|row| row.family == family)
+            .collect()
+    }
+
+    /// Every distinct claim id the whole table records, sorted.
+    #[must_use]
+    pub fn claims(&self) -> BTreeSet<String> {
+        let mut claims: BTreeSet<String> = self
+            .rows
+            .iter()
+            .flat_map(|row| row.unknowns.iter().map(|unknown| unknown.claim.clone()))
+            .collect();
+        claims.extend(self.unknowns.iter().map(|unknown| unknown.claim.clone()));
+        claims
+    }
+}
+
+/// Builds the per-component launch table from an already-read census and layout.
+///
+/// Pure: no installation, no clock, no preferred default. A row is produced for
+/// every record a T452.01 rule classifies; a record no rule reaches goes into
+/// [`OriginalComponentTable::excluded`] by name.
+#[must_use]
+pub fn original_component_table(
+    census: &OriginalWeaponCensus,
+    layout: &OriginalMountLayout,
+) -> OriginalComponentTable {
+    let mut rows = Vec::new();
+    let mut excluded = Vec::new();
+    for row in &census.rows {
+        let Some(family) = row.class.family() else {
+            excluded.push(row.record.record.clone());
+            continue;
+        };
+        rows.push(component_launch(&row.record, family, layout));
+    }
+    OriginalComponentTable {
+        layout: layout.clone(),
+        rows,
+        excluded,
+        unknowns: vec![OriginalComponentUnknown::new(
+            T452_04_PER_AIRFRAME,
+            "which of the declared slots a given airframe fills with which \
+             component is in that plane's record in the engine image, not in \
+             any file; the measured fresh-profile default names rocket ids per \
+             slot (data/owner-static/engine-facts.toml, [flight_check_default]) \
+             and no file maps a rocket id to a `wep_` record",
+        )],
+    }
+}
+
+/// One record's row.
+fn component_launch(
+    record: &OriginalWeaponRecord,
+    family: DeclaredOrdnanceFamily,
+    layout: &OriginalMountLayout,
+) -> OriginalComponentLaunch {
+    let velocity = record.first("VELOCITY");
+    let fire_rate = record.first("FIRE_RATE");
+
+    let mount = if record.declares(ORIGINAL_ROCKET_FLAG) {
+        OriginalMountDeclaration::RocketSlot {
+            slots: layout.rocket_slots.slots,
+        }
+    } else {
+        OriginalMountDeclaration::Unknown {
+            claim: T452_04_MOUNT.to_owned(),
+            reason: "the record reaches an ordnance family but declares no \
+                     ROCKET flag, so no screen states which slot holds it"
+                .to_owned(),
+        }
+    };
+
+    let statuses: Vec<OriginalStatusEffectDeclaration> = ORIGINAL_EFFECT_KEYS
+        .iter()
+        .filter(|key| record.declares(key))
+        .map(|key| OriginalStatusEffectDeclaration {
+            key,
+            duration_s: record.second_values.get(*key).copied(),
+            duration_unit: record.first_texts.get(*key).cloned(),
+        })
+        .collect();
+
+    let lifetime =
+        record
+            .first("DETONATION_TIME")
+            .map_or(OriginalLifetime::Undeclared, |seconds| {
+                OriginalLifetime::Declared {
+                    seconds,
+                    key: "DETONATION_TIME",
+                }
+            });
+
+    let area = OriginalAreaDeclaration {
+        radius_m: record.first("IMPACT_PROXIMITY"),
+        lifetime_s: record.second_values.get("SMOKE_SCREEN").copied(),
+    };
+
+    let damage = OriginalDamageDeclaration {
+        armor: record.first("ARMOR_DAMAGE"),
+        health: record.first("HEALTH_DAMAGE"),
+        single: record.first("DAMAGE"),
+    };
+
+    let cluster = match record.first("CLUSTER_SIZE") {
+        Some(cluster_size) if record.first("AMMO_LIMIT") == Some(cluster_size) => {
+            OriginalClusterShape::AmmunitionCount {
+                rounds: whole(cluster_size),
+            }
+        }
+        Some(cluster_size) if cluster_size.fract() == 0.0 && cluster_size >= 0.0 => {
+            OriginalClusterShape::Volley {
+                munitions: whole(cluster_size),
+            }
+        }
+        _ => OriginalClusterShape::Undeclared,
+    };
+
+    let mut unknowns = Vec::new();
+    if velocity.is_some() {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_VELOCITY_UNIT,
+            "no file states that VELOCITY is metres per second",
+        ));
+    }
+    if fire_rate.is_some() {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_RELEASE_DELAY,
+            "no file states whether FIRE_RATE is a rate per second or an \
+             interval, nor which delay it governs, so no release delay is \
+             derived",
+        ));
+    }
+    if lifetime == OriginalLifetime::Undeclared {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_NO_EXPIRES,
+            "the member carries no EXPIRES key and this record states no other \
+             duration, so its lifetime is unmeasured",
+        ));
+    }
+    if area.radius_m.is_some() && area.lifetime_s.is_none() {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_AREA_LIFETIME,
+            "the record declares a blast radius and no lifetime for the area",
+        ));
+    }
+    if !statuses.is_empty() {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_STATUS_KIND,
+            "no file states which gameplay status kind the declared effect flag drives",
+        ));
+    }
+    let undated: Vec<&str> = statuses
+        .iter()
+        .filter(|status| status.duration_s.is_none())
+        .map(|status| status.key)
+        .collect();
+    if !undated.is_empty() {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_STATUS_DURATION,
+            format!(
+                "the declared effect flag {} carries no duration",
+                undated.join(", ")
+            ),
+        ));
+    }
+    if matches!(cluster, OriginalClusterShape::Volley { munitions } if munitions > 1) {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_CLUSTER,
+            "CLUSTER_SIZE states how many sub-munitions a launch fires; no file \
+             states what each sub-munition does",
+        ));
+    }
+    if matches!(mount, OriginalMountDeclaration::Unknown { .. }) {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_MOUNT,
+            "no screen states which slot holds a record without a ROCKET flag",
+        ));
+    }
+
+    OriginalComponentLaunch {
+        record: record.record.clone(),
+        family,
+        mount,
+        velocity,
+        fire_rate,
+        lifetime,
+        area,
+        damage,
+        statuses,
+        cluster,
+        unknowns,
+    }
+}
+
+/// A declared count as a whole number. The member stores every `CLUSTER_SIZE`
+/// and `AMMO_LIMIT` as an integer f64, so the truncation is exact; a value that
+/// was not whole would be visible through the equality check that chose this
+/// arm.
+fn whole(value: f64) -> u32 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as u32
+    }
+}
+
+/// Reads the installation's weapon census and its screen layout, and builds the
+/// per-component launch table (task T452.04).
+///
+/// # Errors
+///
+/// [`OriginalComponentError`] when the records or a screen cannot be read.
+pub fn read_original_component_table(
+    install_root: &std::path::Path,
+) -> Result<OriginalComponentTable, OriginalComponentError> {
+    let census =
+        read_original_weapon_census(install_root).map_err(OriginalComponentError::Records)?;
+    let layout = read_original_mount_layout(install_root)?;
+    Ok(original_component_table(&census, &layout))
 }
