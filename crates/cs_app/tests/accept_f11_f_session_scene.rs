@@ -35,8 +35,8 @@ use cs_app::mission_markers::MissionMarkerBindings;
 use cs_app::mission_session::{
     MISSION_PLAYER_LOD_DISTANCE_M, MissionAirframeScene, MissionContent, MissionFlight,
     MissionHostRefusal, MissionHostRestartReport, MissionHostRestartRequest, MissionHostSeed,
-    MissionRadio, MissionStage, StageItem, StageMount, build_headless, no_declared_objectives,
-    stage_for, teardown,
+    MissionRadio, MissionStage, PlayerAirframeSource, StageItem, StageMount, build_headless,
+    no_declared_objectives, stage_for, teardown,
 };
 use cs_app::mission_start::StartPose;
 use cs_app::scene::{
@@ -54,8 +54,8 @@ use cs_sim::flight::original::PROVENANCE_LABEL;
 use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_sim::mission::BlockLifecycleTable;
 use cs_types::asset_id::{PrecedenceClass, WorldGroup};
-use cs_types::content::{ContentId, ContentKind};
-use cs_types::evidence::ContentHash;
+use cs_types::content::{ContentId, ContentKind, Resolved};
+use cs_types::evidence::{ClaimId, ContentHash};
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -357,6 +357,54 @@ fn accept_f11_f_synthetic_composition_carries_no_airframe_scene() {
 }
 
 // --------------------------------------------------------------- retail --
+
+/// **An airframe the start resolution left unknown builds no scene.** The
+/// composition gate reads the stage's own `Resolved<ContentId>`: a source
+/// whose airframe is `Unknown` — the standing resolution of every mission
+/// the engine-facts table commits no row for — composes with no
+/// `MissionAirframeScene`, no live scene and no viewer distance, and nothing
+/// is loaded in the airframe's place (AGENTS.md rule 4).
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_f11_f_unknown_airframe_builds_no_scene() {
+    let root = game_dir();
+    let plan = plan_mission_launch(
+        &root,
+        MissionLabel::new("M06").expect("the label is valid"),
+        "The Red Menace",
+    )
+    .expect("M01's launch closure plans");
+    let mut stage =
+        stage_for(&root, &plan).expect("M01's stage reads through the production readers");
+    // Re-read the stage's own airframe source with an unresolved airframe —
+    // the shape every mission the start resolution leaves `Unknown` carries.
+    // The same production `read`, the same `planes.zbd` sources; only the
+    // resolution differs.
+    stage.player_aircraft = Some(
+        PlayerAirframeSource::read(
+            &root,
+            plan.group_dir.trim_start_matches("zbd/"),
+            &Resolved::unknown(
+                ClaimId::new("f11f.unknown-airframe").expect("the claim id is valid"),
+                "the engine-facts table commits no player airframe row for this mission",
+            )
+            .expect("the unknown resolution is valid"),
+        )
+        .expect("the player airframe's sources read"),
+    );
+    let mut app = build_headless(&stage).expect("the unknown-airframe stage composes headlessly");
+
+    assert!(app.world().get_resource::<MissionAirframeScene>().is_none());
+    assert!(app.world().get_resource::<LiveAirframeScene>().is_none());
+    assert!(app.world().get_resource::<LodDistance>().is_none());
+    assert_eq!(bound_count(&mut app), 0);
+    app.update();
+    // A frame of the composition's own systems does not conjure one either:
+    // no scene source was installed, so nothing served a load.
+    assert!(app.world().get_resource::<LiveAirframeScene>().is_none());
+    assert_eq!(bound_count(&mut app), 0);
+    teardown(&mut app);
+}
 
 /// **A real session start loads the named airframe.** The composition's
 /// session start imports the `player` subtree the mission's own start
