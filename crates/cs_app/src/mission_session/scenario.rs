@@ -26,11 +26,13 @@
 //! that body really is, observed by the production world observer.
 
 use bevy::prelude::{Commands, Res};
+use cs_script::runtime::ObjectiveLifecycle;
 
 use super::MissionStage;
 use super::evidence::{CaptureHandle, CaptureRefusal, request_screenshot};
 use super::host::{MissionHost, MissionHostReport};
 use super::observation::PLAYER_MEMBER;
+use crate::json::json_string;
 use crate::mission_start::StartPose;
 
 /// `x,y,z` metres of the replacement start position.
@@ -210,6 +212,30 @@ fn parse_start(position: &str, heading: &str) -> Result<StartOverride, CaptureRe
     })
 }
 
+/// One `effects[]` row of the `trigger` capture record: the role the
+/// declaration gives the target (`nap`, `wake` or `kill`), the objective
+/// index and the lifecycle the host's model projects for it — `null` when
+/// the model holds no such objective.
+///
+/// Both strings go through the crate's one JSON escaper
+/// ([`crate::json::json_string`]): today every role is a `&'static str`
+/// literal and [`ObjectiveLifecycle`] is a unit enum, so the bytes are the
+/// ones the hand-typed quotes produced — but the row is JSON by construction
+/// now, not by luck, and a Debug spelling that ever grows a payload (Rust
+/// writes `\u{1}`, which JSON rejects) cannot silently break the capture
+/// (Rally #2152).
+#[must_use]
+pub fn trigger_effect_row(role: &str, target: u32, state: Option<ObjectiveLifecycle>) -> String {
+    let state = state.map_or_else(
+        || "null".to_owned(),
+        |state| json_string(&format!("{state:?}")),
+    );
+    format!(
+        "{{\"role\":{},\"target\":{target},\"state\":{state}}}",
+        json_string(role)
+    )
+}
+
 /// Records the tick a watched block completes on, from the real player
 /// position, and asks for a frame of it.
 ///
@@ -242,7 +268,7 @@ pub fn watch_trigger(
     for (name, row) in host.world_facts().observation().members() {
         members.push(format!(
             "{{\"member\":{},\"in_play\":{},\"position_m\":[{},{},{}]}}",
-            super::evidence::json_string(&name.join("/")),
+            json_string(&name.join("/")),
             row.in_play,
             row.position[0],
             row.position[1],
@@ -277,12 +303,10 @@ pub fn watch_trigger(
                 .map(|t| ("kill", *t as u32)),
         );
         for (role, index) in targets {
-            let state = host
-                .lifecycles()
-                .state(index)
-                .map_or_else(|| "null".to_owned(), |state| format!("\"{state:?}\""));
-            effects.push(format!(
-                "{{\"role\":\"{role}\",\"target\":{index},\"state\":{state}}}"
+            effects.push(trigger_effect_row(
+                role,
+                index,
+                host.lifecycles().state(index),
             ));
         }
     }
@@ -292,7 +316,7 @@ pub fn watch_trigger(
         "{{\"kind\":\"trigger\",\"block\":{},\"tick\":{tick},\"frame\":{frame},\
          \"player_member\":{},\"members\":[{}],\"effects\":[{}]}}",
         watch.block,
-        super::evidence::json_string(PLAYER_MEMBER),
+        json_string(PLAYER_MEMBER),
         members.join(","),
         effects.join(","),
     );

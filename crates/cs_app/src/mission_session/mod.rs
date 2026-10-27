@@ -376,7 +376,7 @@ pub use radio::{
 };
 pub use scenario::{
     START_ENV, START_HEADING_ENV, Scenario, StartOverride, TriggerWatch, WATCH_BLOCK_ENV,
-    WATCH_MAX_FRAMES_ENV,
+    WATCH_MAX_FRAMES_ENV, trigger_effect_row,
 };
 pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, BriefingButtonMetrics, BriefingMetrics,
