@@ -100,7 +100,7 @@ does not implement subsystems.
 `content_sha256`
 `148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e`, the same
 installation the M01-A … M24-A stages read (their *asset* digests and spans are
-unchanged; see the fingerprint note at the end). Derived by
+unchanged; see the fingerprint note at the end of this section). Derived by
 `SourceContext::read` + `SourceContext::bind_campaign` over the committed
 `missions/bindings/campaign-inventory.tsv`, recorded verbatim in
 `private/evidence/F50-B/campaign-binding.json`.
