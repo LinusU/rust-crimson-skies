@@ -22,8 +22,8 @@ A profile document's lists are bounded by `cs_types::profile::MAX_LIST_ENTRIES`
 = 512 (`extra` is checked against it in `ProfileDocument::validate`), and the
 designed blueprint layout declares eight id slots per record
 (`synthetic_blueprint_layout`). `extra` therefore holds at most 506 identity
-fields, i.e. **63 records at eight slots**; the 64th importable record refused
-as `SessionError::Field(TooManyEntries { field: "extra" })` before any
+fields, i.e. **63 records at eight slots**; the 64th importable record is
+refused as `SessionError::Field(TooManyEntries { field: "extra" })` before any
 allocation or write. The F64 reader's own designed limit is
 `LegacyLimits::designed().max_records` = 4,096, so a file that is legal to read
 could be impossible to persist. Nothing was truncated or misread, but a real
@@ -38,11 +38,12 @@ identity can be about 150 bytes. `MAX_VALUE_BYTES` is 256, so **two identities
 cannot be packed into one value** without either truncating a legal identity or
 refusing legal ids by length. One identity per field is the only spelling that
 round-trips every identity the reader and the id table can produce, and the
-field count is what bound the import at 63. A dictionary plus per-record
-indices was also rejected: its worst case (every record carrying eight distinct
-long ids) still needs roughly a megabyte of identity text, i.e. thousands of
-fields, and it would store the identity table twice (once in the dictionary,
-once nowhere else) in a spelling no consumer has been built for yet.
+field count is what bound the import at 63. A dictionary of distinct ids plus
+per-record index vectors was also rejected: its worst case (every record
+carrying eight distinct long ids) still needs roughly a megabyte of identity
+text — more than every field of the list can hold — and it would need a second
+encoding no consumer has been built for yet, while adding a way for a
+hand-edited save to name an identity its dictionary never described.
 
 Two further hard bounds sit behind the field count: `MAX_SAVE_LINES` = 4096
 lines and `MAX_SAVE_BYTES` = 256 KiB for the whole encoded document
@@ -132,3 +133,13 @@ The existing `accept_f64_c_persist_` suite keeps its coverage; its assertions
 read the identities from the typed list rather than `extra`, and every case it
 proved before (source untouched, exact importable set, partial and
 stock-rejected filtering, torn-write recovery) still holds.
+
+Sensitivity was checked by mutation, not asserted: reverting `MAX_SAVE_LINES` to
+4,096 fails `..._the_chosen_maximum_persists` on the at-cap document's line
+count (and would fail the reopen, which decodes through the same bound), and
+removing the `MAX_IMPORTED_RECORDS` check fails
+`..._one_record_over_the_maximum_is_refused` with
+`Field(TooManyEntries { field: "blueprint" })` instead of the named refusal —
+the 513th conforming blueprint hits the blueprint list bound, which is exactly
+why a campaign-save import, carrying no blueprints, needs the record cap rather
+than the list bounds alone.
