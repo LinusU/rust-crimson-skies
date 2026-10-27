@@ -56,6 +56,7 @@
 
 mod frame;
 mod objectives;
+pub mod presentation;
 mod session;
 
 pub use frame::{DamageZone, HudFrame, HudSources, MountedGun, MountedOrdnance, WeaponGauge};
