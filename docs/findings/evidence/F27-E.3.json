@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F27-E.3",
+ "candidate_tree": "ffec17dad80cd9eb25683c28cc4054974d6f89d2",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-27T19:51:36Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_f27_e_3_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 5, "executed": 5, "passed": 5, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f27_e_3_armor_positions::accept_f27_e_3_facts_carry_observed_spans_and_decoded_lines", "status": "pass", "evidence": ["cargo-test.log", "armor-vocabulary.json"]}, {"id": "accept_f27_e_3_armor_positions::accept_f27_e_3_gun_groups_stay_unknown_for_every_position", "status": "pass", "evidence": ["cargo-test.log", "armor-vocabulary.json"]}, {"id": "accept_f27_e_3_armor_positions::accept_f27_e_3_measures_four_positions_and_four_points", "status": "pass", "evidence": ["cargo-test.log", "armor-vocabulary.json"]}, {"id": "accept_f27_e_3_armor_positions::accept_f27_e_3_refuses_what_the_members_do_not_state", "status": "pass", "evidence": ["cargo-test.log", "armor-vocabulary.json"]}, {"id": "accept_f27_e_3_armor_positions::accept_f27_e_3_retail_armor_vocabulary_is_four_positions_four_points", "status": "pass", "evidence": ["cargo-test.log", "armor-vocabulary.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "c88a9263c170f7521b5900543658bfbf3167d5bf89907653a78c789712e23f2c", "kind": "log"}, {"path": "armor-vocabulary.json", "sha256": "bce91bbf994b82dfc90d736d30d2481ec6b3ce6f189766c04713c7427e54734f", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer; not independent review)", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES includes retail), plus a second production pass recorded in armor-vocabulary.json. MEASURED: ASSETS/SCRIPTS/ARMOR.SCRIPT in GOSDATA/ASSETS/crimson.rof builds four armor titles (ar_t_nosetitle, ar_t_tailtitle, ar_t_lefttitle, ar_t_righttitle, in that order), declares object X[4] and builds four ar_d_point dropdowns asking the engine through callback 2247, and asks for the armor name and description through callbacks 2220 and 2225; ASSETS/LAYOUT.CSV places each title (IDS_AR_*_TITLE) and each dropdown below its own title and above the next, and declares PUR_T_ARMORLIST, PUR_T_ARMORWEIGHT and PUR_T_ARMORCOST in [@Purchase@]; RESOURCE.H declares IDS_PX_ARMORUNITS. All read through cs_content::damage::read_original_armor_vocabulary with observed_tool provenance naming the member's stored extent and the decoded line. NOT CLAIMED: this is an armor vocabulary. No shipped file maps a gun group onto a position, so f27.d.limit.gun_group_assignment stays deferred, DeclaredGunMountKind gains no side, and OriginalArmorVocabulary::gun_group_for answers Resolved::Unknown. No armor amount, zone or damage rule is recorded (F29 owns that model). Nothing is verified_original and no agent review replaces the owner's human approval."},
+ "claim": "implemented"
+}
