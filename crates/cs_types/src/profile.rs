@@ -25,8 +25,32 @@ pub const MAX_DISPLAY_NAME_BYTES: usize = 64;
 pub const MAX_KEY_BYTES: usize = 64;
 /// Largest accepted free-text value in bytes.
 pub const MAX_VALUE_BYTES: usize = 256;
-/// Largest accepted number of entries in any one list of a document.
+/// Largest accepted number of entries in any one list of a document, except
+/// [`ProfileDocument::import_identities`], which has the wider derived bound
+/// [`MAX_IMPORTED_IDENTITIES`].
 pub const MAX_LIST_ENTRIES: usize = 512;
+/// Largest accepted number of imported records one profile may carry.
+///
+/// This is the save schema's own per-list bound ([`MAX_LIST_ENTRIES`]): it is
+/// also what bounds [`ProfileDocument::blueprints`], so a custom-aircraft
+/// import can never own more conforming blueprints than this. A legacy import
+/// whose importable set is larger is refused, never truncated (F64
+/// non-negotiables 1 and 5).
+pub const MAX_IMPORTED_RECORDS: usize = MAX_LIST_ENTRIES;
+/// Largest accepted number of resolved identities one imported record may
+/// carry. Eight is the widest legacy layout this build declares (the designed
+/// blueprint layout: airframe, engine, four guns, two rockets).
+pub const MAX_IMPORTED_IDENTITIES_PER_RECORD: usize = 8;
+/// Largest accepted number of entries in [`ProfileDocument::import_identities`].
+///
+/// Derived rather than chosen: [`MAX_IMPORTED_RECORDS`] records × the eight id
+/// slots the widest declared layout has. The bound is bigger than
+/// [`MAX_LIST_ENTRIES`] because one identity's `class:id` text can approach
+/// [`MAX_VALUE_BYTES`], so identities cannot be packed several to a field
+/// without refusing legal content ids; the list bound is what keeps the
+/// document finite instead.
+pub const MAX_IMPORTED_IDENTITIES: usize =
+    MAX_IMPORTED_RECORDS * MAX_IMPORTED_IDENTITIES_PER_RECORD;
 
 /// Schema version of a [`ProfileDocument`]. A different major is unreadable;
 /// a newer minor of the same major is readable and its unknown fields are
@@ -39,7 +63,14 @@ pub struct SchemaVersion {
 
 impl SchemaVersion {
     /// The version this build writes.
-    pub const CURRENT: Self = Self { major: 1, minor: 0 };
+    ///
+    /// 1.1 adds [`ProfileDocument::import_identities`], encoded as
+    /// `import.record.<index>.<slot>` lines: the previous 1.0 build wrote the
+    /// same lines into `extra` and reads them back there, so an import within
+    /// that build's `extra` bound round-trips either way. An import at this
+    /// build's 512-record bound is refused by a 1.0 build as an oversized
+    /// `extra` list rather than in any way read wrongly.
+    pub const CURRENT: Self = Self { major: 1, minor: 1 };
 
     /// Whether this build can read a document of this version.
     pub const fn is_readable(self) -> bool {
@@ -186,6 +217,24 @@ pub struct ExtraField {
     pub value: String,
 }
 
+/// One resolved identity of one imported record (F64).
+///
+/// `value` is this build's own `class:id` text — the legacy id class label, a
+/// colon, and the canonical [`ContentId`] the verified id table resolved the
+/// raw id to. It is kept as text rather than a typed pair so this crate stays
+/// free of the legacy vocabulary in `cs_formats`; the save schema bounds it
+/// like any other value. A record's identities are only carried when they are
+/// verified, and a record that resolved no identity carries none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportedIdentity {
+    /// The record's index in the legacy document.
+    pub record_index: u32,
+    /// The record's id slot the identity resolved for, in declaration order.
+    pub slot: u32,
+    /// `class:id`, the `class` being the legacy id class label.
+    pub value: String,
+}
+
 /// One complete profile revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileDocument {
@@ -200,16 +249,22 @@ pub struct ProfileDocument {
     pub settings: Vec<SettingEntry>,
     pub fingerprints: Vec<FingerprintEntry>,
     pub extra: Vec<ExtraField>,
+    /// The resolved identities of every imported record this profile carries
+    /// (F64). Empty for a profile that was not made by an import.
+    pub import_identities: Vec<ImportedIdentity>,
 }
 
 /// Why a key, name or value was refused. `NoSuccessor` is a monotonic counter
 /// at the top of its range: it could never be advanced again, so the document
-/// carrying it is refused rather than written or accepted.
+/// carrying it is refused rather than written or accepted. `Malformed` is a
+/// value that does not have the shape its field requires — today only an
+/// imported identity that is not a `class:id` pair naming a [`ContentId`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProfileFieldError {
     Empty { field: &'static str },
     TooLong { field: &'static str, max: usize },
     BadCharacter { field: &'static str },
+    Malformed { field: &'static str },
     TooManyEntries { field: &'static str, max: usize },
     DuplicateKey { field: &'static str, key: String },
     NoSuccessor { field: &'static str },
@@ -221,6 +276,7 @@ impl fmt::Display for ProfileFieldError {
             Self::Empty { field } => write!(f, "{field} must not be empty"),
             Self::TooLong { field, max } => write!(f, "{field} exceeds {max} bytes"),
             Self::BadCharacter { field } => write!(f, "{field} contains a disallowed character"),
+            Self::Malformed { field } => write!(f, "{field} is malformed"),
             Self::TooManyEntries { field, max } => write!(f, "{field} has more than {max} entries"),
             Self::DuplicateKey { field, key } => write!(f, "{field} repeats key {key:?}"),
             Self::NoSuccessor { field } => write!(
@@ -313,6 +369,7 @@ impl ProfileDocument {
             settings: Vec::new(),
             fingerprints: Vec::new(),
             extra: Vec::new(),
+            import_identities: Vec::new(),
         }
     }
 
@@ -400,8 +457,55 @@ impl ProfileDocument {
             validate_key("extra key", &extra.key)?;
             validate_text("extra value", &extra.value, MAX_VALUE_BYTES, true)?;
         }
+        validate_imported(&self.import_identities)?;
         Ok(())
     }
+}
+
+/// Checks the imported-identity list: its length, one identity per
+/// `(record, slot)`, the record count it spans, and that each value is a
+/// `class:id` pair naming a parseable [`ContentId`].
+///
+/// The last check is what keeps an imported record's identity a *verified
+/// content identity* (F64 non-negotiable 3) even when the bytes were written by
+/// something other than this build's import path: a value that is not
+/// `class:namespace/key` is refused, never kept as a half-understood string.
+fn validate_imported(identities: &[ImportedIdentity]) -> Result<(), ProfileFieldError> {
+    if identities.len() > MAX_IMPORTED_IDENTITIES {
+        return Err(ProfileFieldError::TooManyEntries {
+            field: "import identity",
+            max: MAX_IMPORTED_IDENTITIES,
+        });
+    }
+    let mut slots = std::collections::BTreeSet::new();
+    let mut records = std::collections::BTreeSet::new();
+    for identity in identities {
+        validate_text("import identity", &identity.value, MAX_VALUE_BYTES, false)?;
+        let shaped = identity
+            .value
+            .split_once(':')
+            .filter(|(class, id)| !class.is_empty() && ContentId::parse(id).is_ok())
+            .is_some();
+        if !shaped {
+            return Err(ProfileFieldError::Malformed {
+                field: "import identity",
+            });
+        }
+        if !slots.insert((identity.record_index, identity.slot)) {
+            return Err(ProfileFieldError::DuplicateKey {
+                field: "import identity",
+                key: format!("{}.{}", identity.record_index, identity.slot),
+            });
+        }
+        records.insert(identity.record_index);
+    }
+    if records.len() > MAX_IMPORTED_RECORDS {
+        return Err(ProfileFieldError::TooManyEntries {
+            field: "imported record",
+            max: MAX_IMPORTED_RECORDS,
+        });
+    }
+    Ok(())
 }
 
 /// Persistent id allocation: the registry of live profiles, the active

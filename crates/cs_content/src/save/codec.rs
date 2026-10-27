@@ -10,6 +10,7 @@
 //! campaign.money_minor=<n>
 //! campaign.outcome=<key>          (repeated)
 //! blueprint=<content id>          (repeated)
+//! import.record.<index>.<slot>=<class>:<content id>  (repeated)
 //! record.<key>=<n>
 //! setting.<key>=<live|restart>:<text>
 //! fingerprint.<name>=<16 hex>
@@ -29,14 +30,28 @@ use std::fmt;
 
 use cs_types::content::ContentId;
 use cs_types::profile::{
-    CampaignState, ExtraField, FingerprintEntry, ProfileDocument, ProfileFieldError, ProfileId,
-    ProfileKind, RecordEntry, Revision, SchemaVersion, SettingApply, SettingEntry, validate_key,
+    CampaignState, ExtraField, FingerprintEntry, ImportedIdentity, ProfileDocument,
+    ProfileFieldError, ProfileId, ProfileKind, RecordEntry, Revision, SchemaVersion, SettingApply,
+    SettingEntry, validate_key,
 };
 
 /// Largest accepted encoded document.
-pub const MAX_SAVE_BYTES: usize = 256 * 1024;
+///
+/// The bound follows the largest document this schema admits: a profile may
+/// carry [`MAX_IMPORTED_IDENTITIES`](cs_types::profile::MAX_IMPORTED_IDENTITIES)
+/// identity lines, each value up to
+/// [`MAX_VALUE_BYTES`](cs_types::profile::MAX_VALUE_BYTES), plus
+/// [`MAX_LIST_ENTRIES`](cs_types::profile::MAX_LIST_ENTRIES) blueprint lines and
+/// the fixed fields. 4,096 identity lines with maximal values are about
+/// 1.14 MiB, so 2 MiB holds the worst case with room for the rest of the
+/// document.
+pub const MAX_SAVE_BYTES: usize = 2 * 1024 * 1024;
 /// Largest accepted number of lines.
-pub const MAX_SAVE_LINES: usize = 4096;
+///
+/// Derived from the same worst case: 4,096 identity lines, 512 blueprint
+/// lines, the bounded lists a document may also carry and the fixed fields stay
+/// under 8,192.
+pub const MAX_SAVE_LINES: usize = 8192;
 
 const MAGIC: &str = "CSSAVE";
 
@@ -136,6 +151,12 @@ pub fn encode(document: &ProfileDocument) -> Result<Vec<u8>, ProfileFieldError> 
     }
     for blueprint in &document.blueprints {
         out.push_str(&format!("blueprint={blueprint}\n"));
+    }
+    for identity in &document.import_identities {
+        out.push_str(&format!(
+            "import.record.{}.{}={}\n",
+            identity.record_index, identity.slot, identity.value
+        ));
     }
     for record in &document.records {
         out.push_str(&format!("record.{}={}\n", record.key, record.value));
@@ -273,6 +294,7 @@ pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
     let mut settings = Vec::new();
     let mut fingerprints = Vec::new();
     let mut extra = Vec::new();
+    let mut import_identities = Vec::new();
 
     for (index, line) in covered.lines().enumerate() {
         let number = index + 2;
@@ -367,6 +389,29 @@ pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
                             }
                         })?,
                     });
+                } else if let Some(rest) = key.strip_prefix("import.record.") {
+                    // The imported-record identity of one id slot. The index
+                    // and slot are parsed here so a malformed line is refused
+                    // with its line number instead of being kept as an opaque
+                    // extra field; the value's `class:id` shape is checked by
+                    // the document's own validation.
+                    let (record, slot) = rest.split_once('.').ok_or(DecodeError::Malformed {
+                        line: number,
+                        reason: "import identity needs `import.record.<index>.<slot>`",
+                    })?;
+                    let index = |text: &str| -> Result<u32, DecodeError> {
+                        u32::try_from(parse_u64(number, text)?).map_err(|_| {
+                            DecodeError::Malformed {
+                                line: number,
+                                reason: "import identity index is out of range",
+                            }
+                        })
+                    };
+                    import_identities.push(ImportedIdentity {
+                        record_index: index(record)?,
+                        slot: index(slot)?,
+                        value: value.to_owned(),
+                    });
                 } else {
                     validate_key("extra key", key)?;
                     extra.push(ExtraField {
@@ -390,6 +435,7 @@ pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
         settings,
         fingerprints,
         extra,
+        import_identities,
     };
     document.validate()?;
     Ok(document)
