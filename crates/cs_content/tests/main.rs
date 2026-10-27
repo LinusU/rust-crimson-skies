@@ -98,6 +98,7 @@ mod accept_t2117_guided_rocket_lifetime_end;
 mod accept_t2120_lock_on_target_source;
 mod accept_t2121_beeper_target_values;
 mod accept_t442_shared_damage_key;
+mod accept_t452_02_proximity_fuse;
 mod accept_t454_guidance_loss;
 mod accept_t548_retail_blast;
 mod accept_t574_zeppelin_carrier;

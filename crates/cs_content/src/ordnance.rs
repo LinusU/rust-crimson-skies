@@ -2476,6 +2476,58 @@ impl OriginalRocketBlast {
     }
 }
 
+/// How the original samples the proximity fuse against the target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OriginalProximitySampling {
+    /// One point sample per projectile step: the squared distance between the
+    /// projectile's position at the start of the step and the target's
+    /// current position. No segment is swept.
+    PointSamplePerStep,
+}
+
+/// One retail guided rocket's proximity fuse, read from its record.
+///
+/// **Measured** statically (task #2128,
+/// `docs/findings/2026-10-25-t452-02-proximity-fuse-shape-and-arming.md`): the
+/// trigger is a sphere of radius `DETONATION_DISTANCE` around the target
+/// position (squared distance `<=` the squared radius, boundary inclusive),
+/// sampled once per step ([`OriginalProximitySampling`]). It is live only
+/// while the distance flown is below `RANGE`, the weapon is `LOCK_ON`, a
+/// target is held and `DETONATION_DISTANCE` is positive. `RANGE_MINIMUM` is
+/// not tested on this path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalProximityFuse {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// `DETONATION_DISTANCE`, metres: the sphere radius.
+    pub trigger_radius_m: f64,
+    /// `RANGE`, metres: the fuse is live only below it.
+    pub live_below_range_m: Option<f64>,
+    /// How the fuse is sampled.
+    pub sampling: OriginalProximitySampling,
+    /// `RANGE_MINIMUM`, metres, when declared: it gates impact detonations
+    /// (`0x5b063d`), **not** this fuse. Carried so a catalogue can show the
+    /// record declares an arming window the proximity burst ignores.
+    pub range_minimum_not_tested_m: Option<f64>,
+}
+
+impl OriginalRocketBlast {
+    /// The proximity fuse of a guided rocket with a positive
+    /// `DETONATION_DISTANCE`; `None` otherwise (no lock, or no radius).
+    #[must_use]
+    pub fn proximity_fuse(&self) -> Option<OriginalProximityFuse> {
+        self.lock_on?;
+        let radius = self.detonation_distance.filter(|d| *d > 0.0)?;
+        Some(OriginalProximityFuse {
+            record: self.record.clone(),
+            trigger_radius_m: radius,
+            live_below_range_m: self.range,
+            sampling: OriginalProximitySampling::PointSamplePerStep,
+            range_minimum_not_tested_m: self.range_minimum,
+        })
+    }
+}
+
 /// Reads every `ROCKET` record of the installation's `weapons.zrd`.
 ///
 /// # Errors
