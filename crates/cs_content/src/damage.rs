@@ -1894,3 +1894,933 @@ pub fn synthetic_airframe_damage_vocabulary(
     AirframeDamageVocabulary::try_new(source, vec![group], wreck_materials, Vec::new())
         .expect("the fixture vocabulary is well formed")
 }
+
+// ------------------------------------------------------------------------
+// The original's armor position vocabulary (F27-E.3)
+// ------------------------------------------------------------------------
+//
+// The plane-construction armor screen is the one place the shipped files spell
+// a set of airframe *positions*. `ASSETS/SCRIPTS/ARMOR.SCRIPT` builds four
+// section titles and four per-position dropdowns, `ASSETS/LAYOUT.CSV` places
+// them and declares the purchase columns the armor is bought through, and
+// `ASSETS/SCRIPTS/RESOURCE.H` names the string ids. This is an **armor**
+// vocabulary: nothing in it names a gun group, a hit zone, an integrity value
+// or an armor amount, so it resolves none of F27's gun-group assignment and
+// none of F29's damage model. [`OriginalArmorVocabulary::gun_group_for`] says
+// so with a `Resolved::Unknown` instead of letting a caller read one as the
+// other.
+
+/// The retail container the three members below live in.
+pub const ORIGINAL_ARMOR_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+
+/// The armor screen's script member.
+pub const ORIGINAL_ARMOR_SCRIPT: &str = "ASSETS/SCRIPTS/ARMOR.SCRIPT";
+
+/// The UI layout table member.
+pub const ORIGINAL_LAYOUT_CSV: &str = "ASSETS/LAYOUT.CSV";
+
+/// The `[@Armor@]` section of [`ORIGINAL_LAYOUT_CSV`].
+const ARMOR_SECTION: &str = "[@Armor@]";
+
+/// The `[@Purchase@]` section of [`ORIGINAL_LAYOUT_CSV`].
+const PURCHASE_SECTION: &str = "[@Purchase@]";
+
+/// The macro that names the armor weight unit string.
+const ARMOR_UNITS_MACRO: &str = "IDS_PX_ARMORUNITS";
+
+/// The control-key prefix of an armor point dropdown, as the script spells it.
+const POINT_KEY_PREFIX: &str = "ar_d_point";
+
+/// One of the four positions the original's armor screen names, in the order
+/// the script builds their titles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OriginalArmorPosition {
+    /// `ar_t_nosetitle`.
+    Nose,
+    /// `ar_t_tailtitle`.
+    Tail,
+    /// `ar_t_lefttitle`.
+    Left,
+    /// `ar_t_righttitle`.
+    Right,
+}
+
+impl OriginalArmorPosition {
+    /// The four positions in the script's order.
+    pub const ALL: [Self; 4] = [Self::Nose, Self::Tail, Self::Left, Self::Right];
+
+    /// The control key `ARMOR.SCRIPT` gives this position's title.
+    #[must_use]
+    pub const fn title_control_key(self) -> &'static str {
+        match self {
+            Self::Nose => "ar_t_nosetitle",
+            Self::Tail => "ar_t_tailtitle",
+            Self::Left => "ar_t_lefttitle",
+            Self::Right => "ar_t_righttitle",
+        }
+    }
+
+    /// The `RESOURCE.H` macro the layout row of this position's title names.
+    #[must_use]
+    pub const fn title_string_macro(self) -> &'static str {
+        match self {
+            Self::Nose => "IDS_AR_NOSE_TITLE",
+            Self::Tail => "IDS_AR_TAIL_TITLE",
+            Self::Left => "IDS_AR_LEFT_TITLE",
+            Self::Right => "IDS_AR_RIGHT_TITLE",
+        }
+    }
+
+    /// The position a script title key names, compared case-insensitively.
+    #[must_use]
+    pub fn from_title_control_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|position| position.title_control_key().eq_ignore_ascii_case(key))
+    }
+}
+
+impl fmt::Display for OriginalArmorPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Nose => "nose",
+            Self::Tail => "tail",
+            Self::Left => "left",
+            Self::Right => "right",
+        })
+    }
+}
+
+/// What one purchase-list column of the armor row carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ArmorPurchaseColumn {
+    /// `PUR_T_ARMORLIST`: the armor's name.
+    Name,
+    /// `PUR_T_ARMORWEIGHT`: the armor's weight.
+    Weight,
+    /// `PUR_T_ARMORCOST`: the armor's cost.
+    Cost,
+}
+
+impl ArmorPurchaseColumn {
+    /// The three columns in the layout's order.
+    pub const ALL: [Self; 3] = [Self::Name, Self::Weight, Self::Cost];
+
+    /// The layout key of the column.
+    #[must_use]
+    pub const fn layout_key(self) -> &'static str {
+        match self {
+            Self::Name => "PUR_T_ARMORLIST",
+            Self::Weight => "PUR_T_ARMORWEIGHT",
+            Self::Cost => "PUR_T_ARMORCOST",
+        }
+    }
+}
+
+/// One retail member the armor vocabulary is read from: its decoded bytes and
+/// the span of the stored extent they came from.
+#[derive(Clone, Debug)]
+pub struct ArmorMember {
+    /// The decoded bytes.
+    pub bytes: Vec<u8>,
+    /// The member's stored extent, as the ROF mount reports it.
+    pub span: SourceSpan,
+}
+
+/// Where one measured fact sits: the member's stored extent under an
+/// [`ClaimStatus::ObservedTool`] provenance, and the line inside the *decoded*
+/// member.
+///
+/// The provenance span is the extent, which is what a compressed member's span
+/// can honestly name; `decoded_offset`/`decoded_len` locate the line inside the
+/// bytes that extent decodes to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredLine {
+    provenance: Provenance,
+    line: u32,
+    decoded_offset: u64,
+    decoded_len: u64,
+}
+
+impl MeasuredLine {
+    /// The observed provenance, naming the member's stored extent.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+
+    /// The 1-based line number in the decoded member.
+    #[must_use]
+    pub const fn line(&self) -> u32 {
+        self.line
+    }
+
+    /// Offset of the line's first byte in the decoded member.
+    #[must_use]
+    pub const fn decoded_offset(&self) -> u64 {
+        self.decoded_offset
+    }
+
+    /// Length of the line in bytes, without its terminator.
+    #[must_use]
+    pub const fn decoded_len(&self) -> u64 {
+        self.decoded_len
+    }
+}
+
+/// One position's measured row: its title, its string id and its dropdown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArmorPositionRecord {
+    position: OriginalArmorPosition,
+    title_string_id: u32,
+    title_row_y: i32,
+    point_slot: usize,
+    point_control_key: String,
+    point_row_y: i32,
+    script_title: MeasuredLine,
+    layout_title: MeasuredLine,
+    layout_point: MeasuredLine,
+}
+
+impl ArmorPositionRecord {
+    /// The position.
+    #[must_use]
+    pub const fn position(&self) -> OriginalArmorPosition {
+        self.position
+    }
+
+    /// The `RESOURCE.H` id of the position's title string.
+    #[must_use]
+    pub const fn title_string_id(&self) -> u32 {
+        self.title_string_id
+    }
+
+    /// The Y coordinate of the title's layout row.
+    #[must_use]
+    pub const fn title_row_y(&self) -> i32 {
+        self.title_row_y
+    }
+
+    /// The index of the position's armor point (`P[R]`, `X[R]` in the script).
+    #[must_use]
+    pub const fn point_slot(&self) -> usize {
+        self.point_slot
+    }
+
+    /// The layout key of the position's armor-point dropdown.
+    #[must_use]
+    pub fn point_control_key(&self) -> &str {
+        &self.point_control_key
+    }
+
+    /// The Y coordinate of the dropdown's layout row.
+    #[must_use]
+    pub const fn point_row_y(&self) -> i32 {
+        self.point_row_y
+    }
+
+    /// Where `ARMOR.SCRIPT` builds the title.
+    #[must_use]
+    pub const fn script_title(&self) -> &MeasuredLine {
+        &self.script_title
+    }
+
+    /// Where `LAYOUT.CSV` places the title.
+    #[must_use]
+    pub const fn layout_title(&self) -> &MeasuredLine {
+        &self.layout_title
+    }
+
+    /// Where `LAYOUT.CSV` places the dropdown.
+    #[must_use]
+    pub const fn layout_point(&self) -> &MeasuredLine {
+        &self.layout_point
+    }
+}
+
+/// One measured purchase column of the armor row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArmorPurchaseColumnRecord {
+    column: ArmorPurchaseColumn,
+    layout: MeasuredLine,
+}
+
+impl ArmorPurchaseColumnRecord {
+    /// Which column.
+    #[must_use]
+    pub const fn column(&self) -> ArmorPurchaseColumn {
+        self.column
+    }
+
+    /// Where the layout declares it.
+    #[must_use]
+    pub const fn layout(&self) -> &MeasuredLine {
+        &self.layout
+    }
+}
+
+/// A callback id the armor script passes to the engine, with its line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArmorScriptCallback {
+    id: u32,
+    line: MeasuredLine,
+}
+
+impl ArmorScriptCallback {
+    /// The engine callback id the script passes.
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Where the script makes the call.
+    #[must_use]
+    pub const fn line(&self) -> &MeasuredLine {
+        &self.line
+    }
+}
+
+/// The original's armor position vocabulary, measured.
+///
+/// It states exactly: four positions in the script's order, four armor points
+/// (one dropdown each), the weight/cost/name purchase columns, the units string
+/// id and the three engine callbacks the screen uses. It does **not** state a
+/// gun mount, a side for any wing-station gun group, an armor amount or a
+/// damage zone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalArmorVocabulary {
+    positions: Vec<ArmorPositionRecord>,
+    point_count: usize,
+    point_array: MeasuredLine,
+    purchase_columns: Vec<ArmorPurchaseColumnRecord>,
+    units_string_id: u32,
+    units_macro: MeasuredLine,
+    point_callback: ArmorScriptCallback,
+    name_callback: ArmorScriptCallback,
+    description_callback: ArmorScriptCallback,
+}
+
+impl OriginalArmorVocabulary {
+    /// The four positions, in the script's order.
+    #[must_use]
+    pub fn positions(&self) -> &[ArmorPositionRecord] {
+        &self.positions
+    }
+
+    /// One position's record.
+    #[must_use]
+    pub fn position(&self, position: OriginalArmorPosition) -> Option<&ArmorPositionRecord> {
+        self.positions
+            .iter()
+            .find(|record| record.position == position)
+    }
+
+    /// How many armor points the script declares (`object X[4]`).
+    #[must_use]
+    pub const fn point_count(&self) -> usize {
+        self.point_count
+    }
+
+    /// Where the script declares the point array.
+    #[must_use]
+    pub const fn point_array(&self) -> &MeasuredLine {
+        &self.point_array
+    }
+
+    /// The purchase columns the armor row uses, in the layout's order.
+    #[must_use]
+    pub fn purchase_columns(&self) -> &[ArmorPurchaseColumnRecord] {
+        &self.purchase_columns
+    }
+
+    /// The `RESOURCE.H` id of `IDS_PX_ARMORUNITS`.
+    #[must_use]
+    pub const fn units_string_id(&self) -> u32 {
+        self.units_string_id
+    }
+
+    /// Where the header declares the units macro.
+    #[must_use]
+    pub const fn units_macro(&self) -> &MeasuredLine {
+        &self.units_macro
+    }
+
+    /// The callback each point's dropdown asks the engine through.
+    #[must_use]
+    pub const fn point_callback(&self) -> &ArmorScriptCallback {
+        &self.point_callback
+    }
+
+    /// The callback that asks the engine for the armor's name.
+    #[must_use]
+    pub const fn name_callback(&self) -> &ArmorScriptCallback {
+        &self.name_callback
+    }
+
+    /// The callback that asks the engine for the armor's description.
+    #[must_use]
+    pub const fn description_callback(&self) -> &ArmorScriptCallback {
+        &self.description_callback
+    }
+
+    /// Which gun group sits at an armor position: **unknown**.
+    ///
+    /// Nothing shipped maps a declared gun group onto one of the four armor
+    /// positions, so this never answers; it names `f27.d.limit.gun_group_assignment`
+    /// so a caller that wants the mapping meets the open claim instead of a
+    /// guess.
+    #[must_use]
+    pub fn gun_group_for(
+        &self,
+        position: OriginalArmorPosition,
+    ) -> Resolved<crate::weapons::DeclaredGunGroup> {
+        let claim =
+            ClaimId::new("f27.d.limit.gun_group_assignment").expect("the claim id is valid");
+        Resolved::unknown(
+            claim,
+            &format!(
+                "the {position} armor position is an armor vocabulary; no shipped file maps a \
+                 gun group onto it"
+            ),
+        )
+        .expect("the reason is not empty")
+    }
+}
+
+/// Why the armor vocabulary could not be measured.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArmorVocabularyError {
+    /// A member is not UTF-8 text.
+    NotText {
+        /// The member's spelling.
+        member: &'static str,
+    },
+    /// What a member must state is missing or malformed; the reason names it.
+    Malformed {
+        /// The member's spelling.
+        member: &'static str,
+        /// What was missing or malformed.
+        reason: String,
+    },
+    /// A span or provenance could not be built.
+    Provenance(String),
+    /// The installation could not be discovered or a member read.
+    Read(String),
+}
+
+impl fmt::Display for ArmorVocabularyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotText { member } => write!(f, "{member} is not UTF-8 text"),
+            Self::Malformed { member, reason } => write!(f, "{member}: {reason}"),
+            Self::Provenance(reason) => write!(f, "armor vocabulary provenance: {reason}"),
+            Self::Read(reason) => write!(f, "armor vocabulary read: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for ArmorVocabularyError {}
+
+struct TextLine<'a> {
+    number: u32,
+    offset: u64,
+    len: u64,
+    text: &'a str,
+}
+
+fn text_lines<'a>(
+    member: &'static str,
+    bytes: &'a [u8],
+) -> Result<Vec<TextLine<'a>>, ArmorVocabularyError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ArmorVocabularyError::NotText { member })?;
+    let mut lines = Vec::new();
+    let mut offset = 0_usize;
+    for (index, raw) in text.split('\n').enumerate() {
+        let trimmed = raw.strip_suffix('\r').unwrap_or(raw);
+        lines.push(TextLine {
+            number: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            offset: offset as u64,
+            len: trimmed.len() as u64,
+            text: trimmed,
+        });
+        offset += raw.len() + 1;
+    }
+    Ok(lines)
+}
+
+fn armor_claim() -> ClaimId {
+    ClaimId::new("f27.e3.armor-position-vocabulary").expect("the claim id is valid")
+}
+
+fn locate(member: &ArmorMember, line: &TextLine<'_>) -> Result<MeasuredLine, ArmorVocabularyError> {
+    let provenance = Provenance::new(
+        armor_claim(),
+        ClaimStatus::ObservedTool,
+        Some(member.span.clone()),
+    )
+    .map_err(|error| ArmorVocabularyError::Provenance(format!("{error:?}")))?;
+    Ok(MeasuredLine {
+        provenance,
+        line: line.number,
+        decoded_offset: line.offset,
+        decoded_len: line.len,
+    })
+}
+
+fn malformed(member: &'static str, reason: impl Into<String>) -> ArmorVocabularyError {
+    ArmorVocabularyError::Malformed {
+        member,
+        reason: reason.into(),
+    }
+}
+
+/// The quoted key of a `<recv>.YC = "<key>"` line, if the line is one.
+fn yc_key(text: &str) -> Option<&str> {
+    let rest = &text[text.find(".YC = \"")? + ".YC = \"".len()..];
+    Some(&rest[..rest.find('"')?])
+}
+
+/// The engine callback id of a `callback($$E$$, <id>, ...)` line.
+fn callback_id(text: &str) -> Option<u32> {
+    let args = text.trim().strip_prefix("callback(")?;
+    let mut fields = args.split(',');
+    if fields.next()?.trim() != "$$E$$" {
+        return None;
+    }
+    fields.next()?.trim().parse().ok()
+}
+
+/// The callback line next to line `index`: the one before, else the one after.
+fn adjacent_callback(
+    member: &ArmorMember,
+    lines: &[TextLine<'_>],
+    index: usize,
+) -> Result<Option<ArmorScriptCallback>, ArmorVocabularyError> {
+    for neighbour in [index.checked_sub(1), Some(index + 1)]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(line) = lines.get(neighbour)
+            && let Some(id) = callback_id(line.text)
+        {
+            return Ok(Some(ArmorScriptCallback {
+                id,
+                line: locate(member, line)?,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+struct ScriptFacts {
+    titles: Vec<(OriginalArmorPosition, MeasuredLine)>,
+    point_count: usize,
+    point_array: MeasuredLine,
+    point_callback: ArmorScriptCallback,
+    name_callback: ArmorScriptCallback,
+    description_callback: ArmorScriptCallback,
+}
+
+fn measure_script(member: &ArmorMember) -> Result<ScriptFacts, ArmorVocabularyError> {
+    const NAME: &str = ORIGINAL_ARMOR_SCRIPT;
+    let lines = text_lines(NAME, &member.bytes)?;
+    let mut titles = Vec::new();
+    let mut point_receiver: Option<(&str, usize)> = None;
+    let mut name_at = None;
+    let mut description_at = None;
+    for (index, line) in lines.iter().enumerate() {
+        let Some(key) = yc_key(line.text) else {
+            continue;
+        };
+        let lower = key.to_ascii_lowercase();
+        if lower.starts_with("ar_t_") && lower.ends_with("title") && lower != "ar_t_title" {
+            let position = OriginalArmorPosition::from_title_control_key(&lower)
+                .ok_or_else(|| malformed(NAME, format!("unexpected armor title key {key}")))?;
+            titles.push((position, locate(member, line)?));
+        } else if lower.starts_with(POINT_KEY_PREFIX) && point_receiver.is_none() {
+            let receiver = line.text.trim().split('[').next().unwrap_or_default();
+            point_receiver = Some((receiver, index));
+        } else if lower == "ar_t_armorname" {
+            name_at = Some(index);
+        } else if lower == "ar_s_armordesc" {
+            description_at = Some(index);
+        }
+    }
+    let order: Vec<_> = titles.iter().map(|(position, _)| *position).collect();
+    if order != OriginalArmorPosition::ALL {
+        return Err(malformed(
+            NAME,
+            format!("the armor titles are {order:?}, not nose, tail, left, right in that order"),
+        ));
+    }
+    let (receiver, point_index) = point_receiver
+        .ok_or_else(|| malformed(NAME, "no armor point dropdown (ar_d_point) is built"))?;
+    let declaration = format!("object {receiver}[");
+    let (array_line, point_count) = lines
+        .iter()
+        .find_map(|line| {
+            let rest = line.text.trim().strip_prefix(declaration.as_str())?;
+            let count = rest.strip_suffix(']')?.trim().parse::<usize>().ok()?;
+            Some((line, count))
+        })
+        .ok_or_else(|| malformed(NAME, format!("no `{declaration}N]` declaration")))?;
+    let point_callback = lines[point_index..]
+        .iter()
+        .find_map(|line| callback_id(line.text).map(|id| (id, line)))
+        .ok_or_else(|| malformed(NAME, "no engine callback follows the point dropdown"))?;
+    let name = adjacent_callback(
+        member,
+        &lines,
+        name_at.ok_or_else(|| malformed(NAME, "no ar_t_armorname control"))?,
+    )?
+    .ok_or_else(|| malformed(NAME, "no engine callback beside ar_t_armorname"))?;
+    let description = adjacent_callback(
+        member,
+        &lines,
+        description_at.ok_or_else(|| malformed(NAME, "no ar_s_armordesc control"))?,
+    )?
+    .ok_or_else(|| malformed(NAME, "no engine callback beside ar_s_armordesc"))?;
+    Ok(ScriptFacts {
+        titles,
+        point_count,
+        point_array: locate(member, array_line)?,
+        point_callback: ArmorScriptCallback {
+            id: point_callback.0,
+            line: locate(member, point_callback.1)?,
+        },
+        name_callback: name,
+        description_callback: description,
+    })
+}
+
+/// One `KEY = FIELD,FIELD,...` row of the layout table.
+struct LayoutRow<'a> {
+    key: &'a str,
+    fields: Vec<&'a str>,
+}
+
+fn layout_row<'a>(text: &'a str) -> Option<LayoutRow<'a>> {
+    let text = text.trim();
+    if text.starts_with(';') || text.starts_with('[') {
+        return None;
+    }
+    let (key, rest) = text.split_once('=')?;
+    Some(LayoutRow {
+        key: key.trim(),
+        fields: rest.split(',').map(str::trim).collect(),
+    })
+}
+
+/// The lines of one `[@Name@]` section, by index into `lines`.
+fn section_range(
+    lines: &[TextLine<'_>],
+    section: &'static str,
+) -> Result<std::ops::Range<usize>, ArmorVocabularyError> {
+    let start = lines
+        .iter()
+        .position(|line| line.text.trim().eq_ignore_ascii_case(section))
+        .ok_or_else(|| malformed(ORIGINAL_LAYOUT_CSV, format!("no {section} section")))?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.text.trim().starts_with("[@"))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    Ok(start + 1..end)
+}
+
+struct LayoutTitle {
+    key: String,
+    string_macro: String,
+    y: i32,
+    line: MeasuredLine,
+}
+
+struct LayoutFacts {
+    titles: Vec<LayoutTitle>,
+    points: Vec<(String, i32, MeasuredLine)>,
+    columns: Vec<ArmorPurchaseColumnRecord>,
+}
+
+fn row_y(row: &LayoutRow<'_>, index: usize) -> Result<i32, ArmorVocabularyError> {
+    row.fields
+        .get(index)
+        .and_then(|field| field.parse().ok())
+        .ok_or_else(|| {
+            malformed(
+                ORIGINAL_LAYOUT_CSV,
+                format!("{} has no numeric field {index}", row.key),
+            )
+        })
+}
+
+fn measure_layout(member: &ArmorMember) -> Result<LayoutFacts, ArmorVocabularyError> {
+    let lines = text_lines(ORIGINAL_LAYOUT_CSV, &member.bytes)?;
+    let mut titles = Vec::new();
+    let mut points = Vec::new();
+    for line in &lines[section_range(&lines, ARMOR_SECTION)?] {
+        let Some(row) = layout_row(line.text) else {
+            continue;
+        };
+        let lower = row.key.to_ascii_lowercase();
+        if row.fields.first() == Some(&"T")
+            && OriginalArmorPosition::from_title_control_key(&lower).is_some()
+        {
+            // `ID=T,ResID,X,Y,...`: the macro is field 1 and Y is field 3.
+            titles.push(LayoutTitle {
+                key: lower,
+                string_macro: row.fields.get(1).copied().unwrap_or_default().to_owned(),
+                y: row_y(&row, 3)?,
+                line: locate(member, line)?,
+            });
+        } else if row.fields.first() == Some(&"D") && lower.starts_with(POINT_KEY_PREFIX) {
+            // `ID=D,Slider,Up,Down,DropUp,DropDown,X,Y,...`: Y is field 7.
+            points.push((lower, row_y(&row, 7)?, locate(member, line)?));
+        }
+    }
+    let mut columns = Vec::new();
+    for line in &lines[section_range(&lines, PURCHASE_SECTION)?] {
+        let Some(row) = layout_row(line.text) else {
+            continue;
+        };
+        if let Some(column) = ArmorPurchaseColumn::ALL
+            .into_iter()
+            .find(|column| column.layout_key().eq_ignore_ascii_case(row.key))
+        {
+            if row.fields.first() != Some(&"A") {
+                return Err(malformed(
+                    ORIGINAL_LAYOUT_CSV,
+                    format!("{} is not a text-list row", row.key),
+                ));
+            }
+            columns.push(ArmorPurchaseColumnRecord {
+                column,
+                layout: locate(member, line)?,
+            });
+        }
+    }
+    Ok(LayoutFacts {
+        titles,
+        points,
+        columns,
+    })
+}
+
+/// Measures the armor position vocabulary from the three retail members.
+///
+/// The measurement refuses, by name, anything the members do not state: a title
+/// set other than nose, tail, left, right in that order; a layout whose title
+/// row names a different string macro than the position's; a dropdown that does
+/// not sit between its own title and the next; a point count that is not the
+/// four positions; a missing purchase column.
+///
+/// # Errors
+///
+/// [`ArmorVocabularyError`] naming the member and what it fails to state.
+pub fn measure_original_armor_vocabulary(
+    script: &ArmorMember,
+    layout: &ArmorMember,
+    header: &ArmorMember,
+) -> Result<OriginalArmorVocabulary, ArmorVocabularyError> {
+    let script_facts = measure_script(script)?;
+    let layout_facts = measure_layout(layout)?;
+    let resource = cs_formats::text::resource_header::read_resource_header(
+        &mut ParseContext::with_defaults(crate::weapons::ORIGINAL_RESOURCE_HEADER),
+        &header.bytes,
+    )
+    .map_err(|error| malformed(crate::weapons::ORIGINAL_RESOURCE_HEADER, error.to_string()))?;
+    let header_name = crate::weapons::ORIGINAL_RESOURCE_HEADER;
+    let id_of = |name: &str| {
+        resource
+            .resource_id(name.as_bytes())
+            .ok_or_else(|| malformed(header_name, format!("{name} is not a declared id")))
+    };
+
+    if script_facts.point_count != OriginalArmorPosition::ALL.len() {
+        return Err(malformed(
+            ORIGINAL_ARMOR_SCRIPT,
+            format!(
+                "{} armor points for {} positions",
+                script_facts.point_count,
+                OriginalArmorPosition::ALL.len()
+            ),
+        ));
+    }
+    if layout_facts.titles.len() != 4 || layout_facts.points.len() != 4 {
+        return Err(malformed(
+            ORIGINAL_LAYOUT_CSV,
+            format!(
+                "{} title rows and {} point rows in {ARMOR_SECTION}, expected four of each",
+                layout_facts.titles.len(),
+                layout_facts.points.len()
+            ),
+        ));
+    }
+    if layout_facts.columns.len() != ArmorPurchaseColumn::ALL.len() {
+        return Err(malformed(
+            ORIGINAL_LAYOUT_CSV,
+            format!(
+                "{} of the three armor purchase columns in {PURCHASE_SECTION}",
+                layout_facts.columns.len()
+            ),
+        ));
+    }
+
+    let mut positions = Vec::with_capacity(4);
+    for (slot, (position, script_title)) in script_facts.titles.into_iter().enumerate() {
+        let title = layout_facts
+            .titles
+            .iter()
+            .find(|title| title.key == position.title_control_key())
+            .ok_or_else(|| {
+                malformed(
+                    ORIGINAL_LAYOUT_CSV,
+                    format!("no {} title row", position.title_control_key()),
+                )
+            })?;
+        let macro_name = title.string_macro.as_str();
+        if macro_name != position.title_string_macro() {
+            return Err(malformed(
+                ORIGINAL_LAYOUT_CSV,
+                format!(
+                    "{} names {macro_name}, not {}",
+                    position.title_control_key(),
+                    position.title_string_macro()
+                ),
+            ));
+        }
+        let point_key = format!("{POINT_KEY_PREFIX}{slot}");
+        let (_, point_y, layout_point) = layout_facts
+            .points
+            .iter()
+            .find(|(key, ..)| *key == point_key)
+            .cloned()
+            .ok_or_else(|| {
+                malformed(ORIGINAL_LAYOUT_CSV, format!("no {point_key} dropdown row"))
+            })?;
+        positions.push((
+            position,
+            slot,
+            script_title,
+            id_of(position.title_string_macro())?,
+            title.y,
+            point_key,
+            point_y,
+            title.line.clone(),
+            layout_point,
+        ));
+    }
+    // A dropdown belongs to a title when it sits below it and above the next.
+    for (index, entry) in positions.iter().enumerate() {
+        let next_title_y = positions.get(index + 1).map(|next| next.4);
+        if entry.6 <= entry.4 || next_title_y.is_some_and(|next| entry.6 >= next) {
+            return Err(malformed(
+                ORIGINAL_LAYOUT_CSV,
+                format!(
+                    "{} does not sit between the {} title and the next title",
+                    entry.5, entry.0
+                ),
+            ));
+        }
+    }
+    let units_id = id_of(ARMOR_UNITS_MACRO)?;
+    let header_span = header.span.clone();
+    let units_macro = MeasuredLine {
+        provenance: Provenance::new(armor_claim(), ClaimStatus::ObservedTool, Some(header_span))
+            .map_err(|error| ArmorVocabularyError::Provenance(format!("{error:?}")))?,
+        line: 0,
+        decoded_offset: 0,
+        decoded_len: header.bytes.len() as u64,
+    };
+    Ok(OriginalArmorVocabulary {
+        positions: positions
+            .into_iter()
+            .map(
+                |(position, slot, script_title, title_id, title_y, key, point_y, lt, lp)| {
+                    ArmorPositionRecord {
+                        position,
+                        title_string_id: title_id,
+                        title_row_y: title_y,
+                        point_slot: slot,
+                        point_control_key: key,
+                        point_row_y: point_y,
+                        script_title,
+                        layout_title: lt,
+                        layout_point: lp,
+                    }
+                },
+            )
+            .collect(),
+        point_count: script_facts.point_count,
+        point_array: script_facts.point_array,
+        purchase_columns: layout_facts.columns,
+        units_string_id: units_id,
+        units_macro,
+        point_callback: script_facts.point_callback,
+        name_callback: script_facts.name_callback,
+        description_callback: script_facts.description_callback,
+    })
+}
+
+/// Reads the armor position vocabulary out of an installation.
+///
+/// The three members are opened through the production ROF mount of the base
+/// container; each span names the member's stored extent under the
+/// installation's fingerprint.
+///
+/// # Errors
+///
+/// [`ArmorVocabularyError`] when the installation cannot be discovered, the
+/// container cannot be mounted, a member is missing, or the measurement
+/// refuses.
+pub fn read_original_armor_vocabulary(
+    root: &Path,
+) -> Result<OriginalArmorVocabulary, ArmorVocabularyError> {
+    use cs_assets::rof::mount_rof_into;
+    use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
+    use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
+
+    let read = |reason: String| ArmorVocabularyError::Read(reason);
+    let found = install::discover(root).map_err(|error| read(format!("{error:?}")))?;
+    let install_sha256 = install::fingerprint(&found.manifest);
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_sha256));
+    let source = mount_rof_into(
+        &mut builder,
+        MountBuilder::new(
+            MountId::new("rof-armor-vocabulary").map_err(|error| read(error.to_string()))?,
+            MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| read(error.to_string()))?,
+            PrecedenceClass::Shared,
+            ORIGINAL_ARMOR_CONTAINER,
+        )
+        .retail(),
+        &root.join(ORIGINAL_ARMOR_CONTAINER),
+    )
+    .map_err(|error| read(format!("{error:?}")))?;
+    let session = builder.open();
+    let member = |spelling: &'static str| -> Result<ArmorMember, ArmorVocabularyError> {
+        let key = AssetKey::from_spelling(INSTALL_NAMESPACE, spelling, "default")
+            .map_err(|error| read(error.to_string()))?;
+        session
+            .resolve(&key)
+            .map_err(|error| read(format!("{spelling}: {error:?}")))?;
+        let info = source
+            .member(&key)
+            .ok_or_else(|| read(format!("{spelling} is not in the container")))?;
+        let span = SourceSpan::new(
+            install_sha256,
+            ORIGINAL_ARMOR_CONTAINER,
+            Some(&info.spelling),
+            info.offset,
+            info.stored_len,
+            Some(info.sha256),
+        )
+        .map_err(|error| ArmorVocabularyError::Provenance(format!("{error:?}")))?;
+        let bytes = source
+            .read(&key)
+            .map_err(|error| read(format!("{spelling}: {error:?}")))?
+            .data;
+        Ok(ArmorMember { bytes, span })
+    };
+    let script = member(ORIGINAL_ARMOR_SCRIPT)?;
+    let layout = member(ORIGINAL_LAYOUT_CSV)?;
+    let header = member(crate::weapons::ORIGINAL_RESOURCE_HEADER)?;
+    measure_original_armor_vocabulary(&script, &layout, &header)
+}

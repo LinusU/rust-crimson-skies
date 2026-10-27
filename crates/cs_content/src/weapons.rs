@@ -2915,6 +2915,25 @@ impl OriginalLimitClaim {
         }
     }
 
+    /// A measured lead that lives beside this claim without resolving it.
+    ///
+    /// Only `f27.d.limit.gun_group_assignment` has one: the original's armor
+    /// screen names four positions (nose, tail, left, right) and four armor
+    /// points, recorded in [`crate::damage::OriginalArmorVocabulary`] (F27-E.3,
+    /// #550). That is an **armor** vocabulary; no shipped file maps a gun group
+    /// onto one of those positions, so the claim stays deferred and
+    /// [`DeclaredGunMountKind`] gains no side from it.
+    #[must_use]
+    pub const fn measured_lead(self) -> Option<&'static str> {
+        match self {
+            Self::GunGroupAssignment => Some(
+                "crate::damage::OriginalArmorVocabulary: the armor screen's four positions and \
+                 four armor points; an armor vocabulary, not a gun-mount one",
+            ),
+            _ => None,
+        }
+    }
+
     /// The claim's own subject as the reason a deferral carries, so a report
     /// and a refusal cannot drift apart in wording.
     #[must_use]
