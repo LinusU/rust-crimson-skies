@@ -192,6 +192,16 @@ fn accept_f20_a_looping_propeller_never_repeats_one_shot_gameplay_event() {
         vec![0, 1, 2, 3]
     );
 
+    // The clip time is unwrapped across loops: pass * duration + the authored
+    // tick, so every pass's cue lands at the same offset inside its pass.
+    assert!(
+        presentation
+            .iter()
+            .all(|event| event.clip_time / 4 == event.pass
+                && event.clip_time % 4 == presentation[0].clip_time % 4),
+        "clip time is the authored position unwrapped by pass"
+    );
+
     // Every fired event has a unique id carrying the session, tick and
     // producer the caller supplied.
     let ids: Vec<_> = gameplay

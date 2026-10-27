@@ -693,6 +693,11 @@ fn accept_f20_c_marker_consumer_a_skip_across_the_marker_reaches_the_mission_onc
         "the raise is stamped with the session tick the crossing was published \
          on — the skip's — because that is what the event id carries"
     );
+    assert_eq!(
+        skipped.markers.raised()[0].clip_time,
+        SYNTHETIC_DOOR_OPEN_TICK,
+        "the clip time is the marker's authored position, not where the skip landed"
+    );
     assert_eq!(signals_raised(&skipped.tick, REACHED_WRECK), 1);
     assert_eq!(reveals(&skipped.tick, SECONDARY), 1);
     assert!(

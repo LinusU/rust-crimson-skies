@@ -660,6 +660,13 @@ pub struct AnimationEvent {
     pub effect: MarkerEffect,
     /// The loop pass the firing belonged to (0 for the first pass).
     pub pass: u64,
+    /// The absolute clip time at which the marker was authored to fire:
+    /// `marker.tick + pass * duration`, unwrapped across loops like
+    /// [`TickOutcome::clip_time`]. Unlike `id.tick` (the session tick the
+    /// publishing advance ran at) this is where in the cinematic the
+    /// crossing happened, so a skip past the marker still reports the
+    /// marker's own position rather than where the head landed.
+    pub clip_time: u64,
 }
 
 /// A marker crossing that was **blocked** because its effect is unknown.
@@ -839,7 +846,7 @@ impl AnimatedObject {
 
         let mut events = Vec::new();
         let mut blocked = Vec::new();
-        for (_instant, index, pass) in candidates {
+        for (instant, index, pass) in candidates {
             let marker = &self.clip.markers()[index];
             match &marker.effect {
                 Resolved::Unknown { claim_id, reason } => {
@@ -875,6 +882,7 @@ impl AnimatedObject {
                             marker: marker.key.clone(),
                             effect: effect.value.clone(),
                             pass,
+                            clip_time: instant,
                         });
                         self.sequence += 1;
                     }

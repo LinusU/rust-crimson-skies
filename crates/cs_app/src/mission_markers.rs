@@ -490,12 +490,12 @@ pub struct RaisedMarker {
     /// The simulation tick the firing was stamped with.
     ///
     /// This is the tick the publishing advance ran at, so a **skip** stamps the
-    /// tick it jumped to rather than the marker's clip tick. The crossing's
-    /// position inside the clip is not on the event at all
-    /// ([`AnimationEvent`](cs_sim::animated_object::AnimationEvent) carries no
-    /// clip time), so this layer cannot report it; recovering it would be a
-    /// producer-side addition.
+    /// tick it jumped to rather than the marker's clip tick; see `clip_time`
+    /// for the crossing's position inside the clip.
     pub at: Tick,
+    /// The absolute clip time the marker was authored to fire at, copied from
+    /// the event; a skip still reports the marker's own position.
+    pub clip_time: u64,
 }
 
 /// Why a gameplay marker did not become a mission signal.
@@ -862,6 +862,7 @@ impl MissionMarkerConsumer {
             signal,
             pass: event.pass,
             at: event.id.tick,
+            clip_time: event.clip_time,
         })
     }
 
