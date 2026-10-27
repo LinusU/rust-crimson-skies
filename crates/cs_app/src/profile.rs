@@ -74,8 +74,8 @@ use cs_content::save::store::CommitError;
 use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
 use cs_types::profile::{
-    CampaignState, ExtraField, MAX_DISPLAY_NAME_BYTES, ProfileDocument, ProfileFieldError,
-    ProfileId, ProfileKind, Revision, validate_text,
+    CampaignState, ExtraField, ImportedIdentity, MAX_DISPLAY_NAME_BYTES, MAX_IMPORTED_RECORDS,
+    ProfileDocument, ProfileFieldError, ProfileId, ProfileKind, Revision, validate_text,
 };
 
 use crate::ui::import::{ConfirmedImport, MigrationVerdict};
@@ -407,6 +407,16 @@ pub enum SessionError {
         /// The id the population's high-water mark would hand out next.
         expected_next: u64,
     },
+    /// A confirmed import carries more importable records than one profile can
+    /// persist. Nothing was written and nothing was truncated: the bound is the
+    /// save schema's, and the whole import is refused by name so the import
+    /// screen can explain it (F64-C-FU1).
+    ImportTooLarge {
+        /// The number of records the import asked to carry.
+        records: usize,
+        /// The largest number a persisted profile holds.
+        max: usize,
+    },
     /// The save owns content this session cannot provide, so it was not
     /// selected (F53 AC04). Nothing was written; `code` is the stable code of
     /// the host's decision and `lines` are the report's own lines.
@@ -456,6 +466,11 @@ impl fmt::Display for SessionError {
                 "the import names profile {offered}, but this population would \
                  allocate {expected_next} next: the offered id was already \
                  issued or the offer is stale, so nothing was written"
+            ),
+            Self::ImportTooLarge { records, max } => write!(
+                f,
+                "the import carries {records} records, more than the {max} records \
+                 one profile can hold; nothing was written and no record was dropped"
             ),
             Self::SaveRefused {
                 profile,
@@ -840,8 +855,8 @@ impl ProfileSession {
     /// The retained state lands in the document's own fields rather than a
     /// sidecar: `extra` carries the source's spelling, size and full SHA-256
     /// plus the verdict, the layout id and the fixture-admission marker
-    /// (spec F64 non-negotiable 1), one `import.record.<index>.<slot>` field
-    /// per resolved identity of every
+    /// (spec F64 non-negotiable 1), `import_identities` carries one
+    /// `class:id` entry per resolved identity of every
     /// [`ConfirmedImport::importable_records`] index, and `blueprints`
     /// carries the catalog id of every blueprint the stock rules judged
     /// conforming inside that same list — nothing outside
@@ -854,9 +869,10 @@ impl ProfileSession {
     ///
     /// [`SessionError::Library`]`(ForeignDocument)` when the import targets
     /// another population's kind; [`SessionError::ImportTargetMismatch`] when
-    /// the target id is not the next allocation; [`SessionError::Field`] when
-    /// a retained value cannot fit a save's bounds; [`SessionError::Library`]
-    /// for the write itself.
+    /// the target id is not the next allocation; [`SessionError::ImportTooLarge`]
+    /// when the import has more importable records than a profile can hold;
+    /// [`SessionError::Field`] when a retained value cannot fit a save's bounds;
+    /// [`SessionError::Library`] for the write itself.
     pub fn persist_confirmed_import(
         &mut self,
         confirmed: &ConfirmedImport,
@@ -1368,16 +1384,25 @@ impl ProfileSession {
 /// the source's spelling, byte size and full SHA-256 hex, the verdict's
 /// stable label, the layout the document was read through and whether the
 /// report could only be produced through designed-fixture admission. Each
-/// resolved identity of an importable record lands in its own
-/// `import.record.<index>.<slot>` field as a `class:id` pair, so the record
-/// set the profile carries is exactly
+/// resolved identity of an importable record lands in
+/// `import_identities` as a `class:id` pair, one entry per record and id slot,
+/// so the record set the profile carries is exactly
 /// [`ConfirmedImport::importable_records`] — a record that was planned but
-/// stock-rejected, or never resolved at all, names no field and mints no
+/// stock-rejected, or never resolved at all, names no identity and mints no
 /// blueprint id. The conforming blueprints inside that same set
 /// land in `blueprints` under the deterministic `blueprint.legacy.*` ids
 /// the assessment minted. `settings` is the session's catalog seed, so an
 /// imported profile's first revision records its resolved defaults exactly
 /// like a profile [`ProfileSession::create`] made.
+///
+/// An import whose importable set is larger than [`MAX_IMPORTED_RECORDS`] is
+/// refused whole as [`SessionError::ImportTooLarge`] before the document is
+/// built: a profile's `blueprints` list is bounded by the same number, and the
+/// identity list's own bound is that number times the widest layout's id
+/// slots, so carrying more would exceed the save schema. Nothing is truncated
+/// and no allocation is consumed — the reader admits up to
+/// `LegacyLimits::designed().max_records` records, so a file that is legal to
+/// read can still be too large to persist, and that refusal is by name.
 ///
 /// The document is validated before it is offered to the library, so a
 /// retained value that cannot fit a save's bounds refuses as
@@ -1389,7 +1414,14 @@ fn import_document(
     let target = confirmed.target();
     let source = confirmed.source();
     let report = confirmed.report();
-    let mut extra = vec![
+    if confirmed.importable_records().len() > MAX_IMPORTED_RECORDS {
+        return Err(SessionError::ImportTooLarge {
+            records: confirmed.importable_records().len(),
+            max: MAX_IMPORTED_RECORDS,
+        });
+    }
+    let mut import_identities = Vec::new();
+    let extra = vec![
         ExtraField {
             key: "import.source.spelling".to_owned(),
             value: source.spelling().to_owned(),
@@ -1426,13 +1458,13 @@ fn import_document(
             .iter()
             .find(|record| record.record_index == index)
             .expect("importable records are a subset of the report's records");
-        // One bounded field per resolved identity: a `class:id` pair fits a
-        // save value, where the whole list joined could overflow it, and the
-        // field count bounds the import the same way every save list is
-        // bounded.
+        // One bounded entry per resolved identity: an identity's `class:id`
+        // pair always fits a save value, and the list's own bound is what
+        // keeps the import finite.
         for (slot, (class, id)) in record.resolved_ids.iter().enumerate() {
-            extra.push(ExtraField {
-                key: format!("import.record.{index}.{slot}"),
+            import_identities.push(ImportedIdentity {
+                record_index: index,
+                slot: u32::try_from(slot).expect("a record has far fewer than u32::MAX id slots"),
                 value: format!("{}:{id}", class.label()),
             });
         }
@@ -1454,6 +1486,7 @@ fn import_document(
         blueprints,
         settings,
         extra,
+        import_identities,
         ..ProfileDocument::synthetic(target.id(), Revision(1))
     };
     document.validate()?;

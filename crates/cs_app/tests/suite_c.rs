@@ -26,6 +26,7 @@ mod accept_f16_e3_zrd_angle_consumer;
 mod accept_f17_b_rgb565_expansion;
 mod accept_f52_w3_modern_controls;
 mod accept_f60_a_benchmark_contracts;
+mod accept_f64_c_import_capacity;
 mod accept_f64_c_import_dialog;
 mod accept_f64_c_import_report;
 mod accept_f64_c_persist_import;

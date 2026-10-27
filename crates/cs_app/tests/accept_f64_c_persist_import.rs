@@ -99,22 +99,24 @@ fn extra<'d>(document: &'d ProfileDocument, key: &str) -> Option<&'d str> {
         .map(|field| field.value.as_str())
 }
 
-/// The distinct `import.record.<index>` prefixes a stored document carries,
-/// in order — the carried record set.
-fn record_indices(document: &ProfileDocument) -> Vec<String> {
+/// The `class:id` identity a stored document keeps for one record's id slot.
+fn identity(document: &ProfileDocument, record_index: u32, slot: u32) -> Option<&str> {
+    document
+        .import_identities
+        .iter()
+        .find(|entry| entry.record_index == record_index && entry.slot == slot)
+        .map(|entry| entry.value.as_str())
+}
+
+/// The distinct imported record indices a stored document carries, in order —
+/// the carried record set.
+fn record_indices(document: &ProfileDocument) -> Vec<u32> {
     let mut seen = std::collections::BTreeSet::new();
     document
-        .extra
+        .import_identities
         .iter()
-        .filter(|field| field.key.starts_with("import.record."))
-        .filter_map(|field| {
-            field
-                .key
-                .strip_prefix("import.record.")
-                .and_then(|rest| rest.split('.').next())
-                .filter(|index| seen.insert(index.to_owned()))
-                .map(str::to_owned)
-        })
+        .filter(|entry| seen.insert(entry.record_index))
+        .map(|entry| entry.record_index)
         .collect()
 }
 
@@ -236,17 +238,18 @@ fn accept_f64_c_persist_a_confirmed_import_lands_in_a_new_profile() {
                 .any(|entry| entry.key == cs_formats::legacy_profile::LEGACY_SAVE_IMPORT_SWITCH),
             "the catalog seed is materialized in the first revision"
         );
-        // Exactly the importable set is carried: one record field per index,
-        // naming the resolved identities, and the conforming blueprint ids.
+        // Exactly the importable set is carried: one identity entry per id
+        // slot, naming the resolved identities, and the conforming blueprint
+        // ids.
         assert_eq!(confirmed.importable_records(), &[0]);
-        assert_eq!(record_indices(document), vec!["0".to_owned()]);
+        assert_eq!(record_indices(document), vec![0]);
         for (slot, (class, id)) in confirmed.report().records()[0]
             .resolved_ids
             .iter()
             .enumerate()
         {
             assert_eq!(
-                extra(document, &format!("import.record.0.{slot}")),
+                identity(document, 0, u32::try_from(slot).expect("a slot fits")),
                 Some(format!("{}:{id}", class.label())).as_deref(),
                 "the stored record names {id} under class {class}"
             );
@@ -318,11 +321,11 @@ fn accept_f64_c_persist_a_save_import_carries_records_without_blueprints() {
     assert_eq!(extra(document, "import.verdict"), Some("full import"));
     assert_eq!(
         record_indices(document),
-        vec!["0".to_owned(), "1".to_owned()],
+        vec![0, 1],
         "both resolved records are carried"
     );
     assert_eq!(
-        extra(document, "import.record.0.0"),
+        identity(document, 0, 0),
         Some(
             format!(
                 "airframe:{}",
@@ -371,11 +374,11 @@ fn accept_f64_c_persist_carries_only_the_importable_records() {
     assert_eq!(extra(document, "import.verdict"), Some("partial import"));
     assert_eq!(
         record_indices(document),
-        vec!["0".to_owned()],
-        "only the importable record is carried — index 1 names no field"
+        vec![0],
+        "only the importable record is carried — index 1 names no identity"
     );
     assert!(
-        extra(document, "import.record.1.0").is_none(),
+        identity(document, 1, 0).is_none(),
         "the unresolved record is not carried"
     );
     assert_eq!(
@@ -466,11 +469,11 @@ fn accept_f64_c_persist_drops_a_record_the_stock_rules_refuse() {
 
     assert_eq!(
         record_indices(document),
-        vec!["0".to_owned()],
-        "the non-conforming record names no field"
+        vec![0],
+        "the non-conforming record names no identity"
     );
     assert!(
-        extra(document, "import.record.1.0").is_none(),
+        identity(document, 1, 0).is_none(),
         "a resolved but non-conforming record is not carried"
     );
     assert_eq!(
