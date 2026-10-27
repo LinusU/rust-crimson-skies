@@ -60,6 +60,7 @@ const PREFIX: &str = "accept_f11_f_";
 /// report declares: each reads `$CS_GAME_DIR` (and `CS_ENGINE_IMAGE` for the
 /// mission descriptors).
 const RETAIL_TESTS: &[&str] = &[
+    "accept_f11_f_unknown_airframe_builds_no_scene",
     "accept_f11_f_session_start_loads_the_named_airframe",
     "accept_f11_f_retry_supersedes_the_scene_generation",
     "accept_f11_f_session_end_releases_every_entity",
@@ -369,11 +370,12 @@ fn review_method() -> String {
          airframe player_pfighter under scene root planes-planes.player, the superseding scene \
          generation and the released bindings rather than trusting the tests' own output. \
          LIMITS OF WHAT WAS MEASURED: `retail` is read access to original files, never a run \
-         of the original; the viewer distance 150 m is the designed playtest stage value, not \
-         a measured original LOD switch distance; SceneCollisionGeometry starts empty because \
-         no per-node collision geometry is measured; every mission but zbd/c3/m01 resolves its \
-         player airframe Resolved::Unknown and carries no canonical scene, which is pinned by \
-         the unknown-airframe arm in the crash-B suite rather than by this report. `claim` is \
+         of the original; the viewer distance 20 m is the designed playtest stage value \
+         (PLAYTEST_AIRCRAFT_LOD_DISTANCE_M), not a measured original LOD switch distance; \
+         SceneCollisionGeometry starts empty because no per-node collision geometry is \
+         measured; every mission but zbd/c3/m01 resolves its player airframe \
+         Resolved::Unknown and carries no canonical scene, which is pinned by \
+         accept_f11_f_unknown_airframe_builds_no_scene in this report's own suite. `claim` is \
          `implemented` only. `candidate_tree` is the tree of the commit the suite ran on; the \
          only later delta is this report's own copy under docs/findings/evidence/, whose bytes \
          are that file.",
