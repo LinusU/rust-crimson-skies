@@ -12,7 +12,8 @@
 //!   frame: the aircraft's rotation with the viewpoint's head rotation, and
 //!   the frame's orientation with the look offset.
 //! * [`rotate_vector`] — rotate a **non-unit** vector, which is what a
-//!   [`BodyOffset`] is. `Quaternion::rotate` cannot take one, and quietly
+//!   [`BodyOffset`](cs_content::cameras::BodyOffset) is. `Quaternion::rotate`
+//!   cannot take one, and quietly
 //!   normalizing a metre-valued offset would move the camera.
 //! * [`yaw_pitch`] and [`look_rotation`] — the two orientations a rig builds:
 //!   a head/look turn, and "look at this world point".

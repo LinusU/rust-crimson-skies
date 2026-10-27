@@ -16,7 +16,7 @@
 //!   flies the original game's recovered fixed-wing law
 //!   ([`scene::PlaytestOriginalFlight`], provenance `OWNER-STATIC-2026-10-08`,
 //!   still uncalibrated against an original run #358), which integrates its own
-//!   attitude, so [`drive_original_flight`] submits the step's force *and*
+//!   attitude, so `drive_original_flight` submits the step's force *and*
 //!   writes the attitude the step integrated while the body integrates no
 //!   torque at all. The synthetic scene keeps the synthetic airframe.
 //! * **Input** is the F22 session through [`crate::input::platform::BevyInputPlugin`]:
@@ -302,7 +302,7 @@ pub struct PlaytestCamera {
 
 impl PlaytestCamera {
     /// Re-seats the rig at the aircraft's pose on its next resolve, the same
-    /// way a reset does. The mission smoke ([`crate::mission_session::smoke`])
+    /// way a reset does. The mission smoke (`crate::mission_session::smoke`)
     /// calls it after it places the production player body somewhere else, so
     /// the chase camera does not spend the probe frame swinging across the
     /// world.

@@ -675,7 +675,7 @@
 //! from out of the content a run actually loaded, [`capture::state`] is the
 //! only producer of per-tick state hashes in the runtime (a pose read back from
 //! Avian plus the forces the tick's own law computed — never a hash of the
-//! input), [`capture::replay`] drives the production flight world from a
+//! input), [`mod@capture::replay`] drives the production flight world from a
 //! recorded `cs_types::input::CommandStream` and reports AC01's envelope
 //! comparison beside AC02's compatibility verdict, and [`capture::render`] is
 //! the single boundary between a capture record's exact

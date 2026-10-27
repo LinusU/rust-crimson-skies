@@ -4,17 +4,20 @@
 //! Tasks #1434 and #1440 drew the horizon, the cloud deck and the haze.
 //! `weather.zrd` also authors precipitation — M01's is `TYPE RAIN` — and
 //! [`crate::environment::cosmetic`] resolves it into a
-//! [`PrecipitationEffect`] with a [`CosmeticField`] drawn from the run's
+//! [`PrecipitationEffect`](crate::environment::cosmetic::PrecipitationEffect) with a
+//! [`CosmeticField`](crate::environment::cosmetic::CosmeticField) drawn from the run's
 //! *cosmetic* stream. This module is the consumer: both windowed compositions
 //! install [`PrecipitationPlugin`] right after the weather.
 //!
 //! # What is original and what is designed
 //!
-//! Every field of a drawn field carries a [`WeatherOrigin`]:
+//! Every field of a drawn field carries a
+//! [`WeatherOrigin`](crate::render::weather::WeatherOrigin):
 //!
 //! * **bound** — only the *kind* (rain or snow), with the provenance of the
 //!   record's `TYPE` claim (task #636, `ClaimStatus::ObservedTool`);
-//! * **designed** — everything else, labelled by [`DESIGNED_LABEL`]: the
+//! * **designed** — everything else, labelled by
+//!   [`DESIGNED_LABEL`](crate::render::horizon::DESIGNED_LABEL): the
 //!   particle size, the fall speed, the colour (the record's `COLOR
 //!   (128,128,128)` has an unmeasured scale and is unbound), the count (the
 //!   record's `PARTICLES 100` is unbound; the count is the cosmetic field's
@@ -24,8 +27,9 @@
 //! # Gameplay is untouched
 //!
 //! Particle offsets come from the cosmetic stream only
-//! ([`CosmeticField::particles`]); this module draws no random number of its
-//! own, owns no game state and is read by no gameplay query. The motion is a
+//! ([`CosmeticField::particles`](crate::environment::cosmetic::CosmeticField::particles));
+//! this module draws no random number of its own, owns no game state and is
+//! read by no gameplay query. The motion is a
 //! function of the render clock and the camera position alone. The
 //! authoritative wind is **not** applied to the drawn motion in this task;
 //! that is recorded in `docs/findings/2026-10-16-m01-play-precipitation.md`.

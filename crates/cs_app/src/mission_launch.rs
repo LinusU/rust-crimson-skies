@@ -1338,7 +1338,7 @@ fn measure_actor_readers(
 /// carrier, a staged `+0x8d` team lane outside the measured vocabulary or
 /// an unmodelled `NODES` element (#1155, #1177)).
 ///
-/// This is exactly the text [`measure_actor_readers`] reports; it is `pub`
+/// This is exactly the text `measure_actor_readers` reports; it is `pub`
 /// so an acceptance test can build the detail without an original
 /// installation. No retail mission reaches this branch today — M01's own
 /// `world_actors` surface is `Satisfied` — so without this the tail could

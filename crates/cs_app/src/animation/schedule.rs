@@ -48,7 +48,8 @@
 //!   or a render frame that pumps no new fixed tick, is not a second pass;
 //! * **a backwards tick** — forwarded, so the F20-B hold rule can report:
 //!   every instance is held where it is, nothing is re-applied and
-//!   [`AnimationRefusal::Held`] is published once per occurrence
+//!   [`AnimationRefusal::Held`](crate::animation::AnimationRefusal::Held) is
+//!   published once per occurrence
 //!   (non-negotiable behavior 5). The forwarded tick becomes the new
 //!   `advanced_through`, so an immediate repeat of it is a repeat and is not
 //!   forwarded again — the hold cannot be reported twice for one occurrence;
@@ -72,8 +73,9 @@
 //! [`release_superseded_instances`] is a directly callable entry, not a
 //! system: the scene load path must call it in the step in which it despawns
 //! the superseded scene, together with
-//! [`release_attachments_before_despawn`], and a fixed-tick system could not
-//! be ordered against a despawn that happens in `Update`.
+//! [`release_attachments_before_despawn`](super::attachment::release_attachments_before_despawn),
+//! and a fixed-tick system could not be ordered against a despawn that
+//! happens in `Update`.
 
 use avian3d::prelude::PhysicsSystems;
 use bevy::app::{App, Plugin};

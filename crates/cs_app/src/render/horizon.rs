@@ -9,14 +9,15 @@
 //! # What is original and what is designed
 //!
 //! Every value the dome, the sea and the fog are built from carries a
-//! [`HorizonOrigin`]:
+//! [`HorizonOrigin`](crate::render::horizon::HorizonOrigin):
 //!
 //! * **bound** — the value came out of the mission's own
 //!   [`EnvironmentDefinition`](cs_content::environment::EnvironmentDefinition),
 //!   which for a retail mission is the production bind of `weather.zrd`
 //!   (task #636), carrying that record's own provenance.
 //! * **designed** — the value is this build's own, labelled by
-//!   [`DESIGNED_LABEL`]. M01's `weather.zrd` binds no fog colour, no ambient
+//!   [`DESIGNED_LABEL`](crate::render::horizon::DESIGNED_LABEL). M01's `weather.zrd`
+//!   binds no fog colour, no ambient
 //!   colour, no sky texture, no sea level and no viewing distance (those
 //!   conventions are unmeasured — `docs/findings/
 //!   2026-10-05-m01-lc-weather-bind.md`), so every drawn value of M01's
@@ -25,7 +26,9 @@
 //!
 //! A composed mission with a `weather.zrd` additionally binds the flight
 //! zone's fog colour, fog near/far (times the viewing tier's fog scale) and
-//! ambient colour through [`HorizonSpec::bind_weather`] (PARITY-M01-ATMO-B,
+//! ambient colour through
+//! [`HorizonSpec::bind_weather`](crate::render::horizon::HorizonSpec::bind_weather)
+//! (PARITY-M01-ATMO-B,
 //! #1649; `docs/findings/2026-10-18-parity-m01-atmo-a-weather-units-and-sky-
 //! consumers.md`). The sky zenith, sea colour, dome and ambient brightness stay
 //! designed; the sentence above about "every drawn value" describes the
@@ -41,23 +44,26 @@
 //!
 //! # The three things drawn
 //!
-//! * **Sky**: an unlit unit sphere scaled to [`HorizonSpec::dome_radius_m`],
-//!   whose every vertex colour comes from [`HorizonSpec::sky_colour_at`]:
-//!   above the horizon it blends from [`HorizonSpec::sky_horizon`] at eye
-//!   level to [`HorizonSpec::sky_zenith`] at the zenith, and below the
+//! * **Sky**: an unlit unit sphere scaled to `HorizonSpec::dome_radius_m`,
+//!   whose every vertex colour comes from
+//!   [`HorizonSpec::sky_colour_at`](crate::render::horizon::HorizonSpec::sky_colour_at):
+//!   above the horizon it blends from `HorizonSpec::sky_horizon` at eye
+//!   level to `HorizonSpec::sky_zenith` at the zenith, and below the
 //!   horizon it *is* the fog colour — so the sea's far edge fades into
 //!   exactly what the dome shows under the horizon, and no seam appears
 //!   where the dome occludes the sea. The dome is not fogged
 //!   (`fog_enabled: false`): its distance from the camera is constant, so
 //!   fog would wash the whole gradient flat.
 //! * **Sea**: a flat unlit plane of half extent
-//!   [`HorizonSpec::sea_extent_m`] at [`HorizonSpec::sea_level_m`], kept
+//!   `HorizonSpec::sea_extent_m` at `HorizonSpec::sea_level_m`, kept
 //!   horizontally under the camera so the sea always reaches past the fog's
 //!   far distance and its edge is never seen as an edge.
-//! * **Fog**: a [`DistanceFog`] with a linear falloff on the camera itself,
-//!   from [`HorizonSpec::fog_start_m`] to [`HorizonSpec::fog_end_m`] in
-//!   [`HorizonSpec::fog_colour`], plus the scene's [`GlobalAmbientLight`] in
-//!   [`HorizonSpec::ambient_colour`].
+//! * **Fog**: a [`DistanceFog`](bevy::prelude::DistanceFog) with a linear
+//!   falloff on the camera itself,
+//!   from `HorizonSpec::fog_start_m` to `HorizonSpec::fog_end_m` in
+//!   `HorizonSpec::fog_colour`, plus the scene's
+//!   [`GlobalAmbientLight`](bevy::prelude::GlobalAmbientLight) in
+//!   `HorizonSpec::ambient_colour`.
 //!
 //! # F19 behaviour 3
 //!
@@ -396,7 +402,7 @@ impl HorizonSpec {
     /// Binds the fog the mission's own `weather.zrd` authors for the zone the
     /// viewer flies in (PARITY-M01-ATMO-B, #1649).
     ///
-    /// The zone is [`FLIGHT_ZONE`] (`ZONE1`, the one below the cloud band's
+    /// The zone is `FLIGHT_ZONE` (`ZONE1`, the one below the cloud band's
     /// midpoint: all of M01's flight) and the viewing tier is the document's
     /// first (`HIGH`, scales 1.0 for M01; which tier the original selects at
     /// run time is unmeasured, so that choice is designed). From the zone:
@@ -529,8 +535,8 @@ impl HorizonSpec {
     }
 
     /// How far below [`Self::sea_level_m`] the sea plane is drawn for a camera
-    /// at `camera_y_m`: [`SEA_DROP_PER_HEIGHT`] of its height above the level,
-    /// never less than [`SEA_DROP_MIN_M`]. The world's own water tiles stay at
+    /// at `camera_y_m`: `SEA_DROP_PER_HEIGHT` of its height above the level,
+    /// never less than `SEA_DROP_MIN_M`. The world's own water tiles stay at
     /// the level; the plane only continues them, so it must lose every depth
     /// test against them.
     #[must_use]
@@ -701,7 +707,7 @@ const FLIGHT_ZONE: &str = "ZONE1";
 /// Why [`HorizonSpec::bind_weather`] could not bind a record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HorizonWeatherError {
-    /// The document has no [`FLIGHT_ZONE`].
+    /// The document has no `FLIGHT_ZONE`.
     MissingZone,
     /// The document has no `VIEWING_RANGE` tier.
     MissingTier,

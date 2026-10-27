@@ -32,7 +32,7 @@
 //! # What is measured, and what stays unknown
 //!
 //! For each carrier the survey runs the production two-key
-//! [`dispatch`] on the container's own header bytes, records the validated
+//! [`dispatch()`] on the container's own header bytes, records the validated
 //! signature/version, the manifest's SHA-256 and size, and reads the sibling
 //! reader archive's version-one trailer through
 //! [`read_version_one_index`]/[`read_reader_archive`] to account for the
@@ -478,7 +478,7 @@ impl std::error::Error for AnimationSurveyError {}
 /// `install_root` declares.
 ///
 /// One production discovery and one campaign-layout walk, then per scope:
-/// the carrier's header through [`dispatch`], its fingerprint from the
+/// the carrier's header through [`dispatch()`], its fingerprint from the
 /// manifest, and the sibling reader's `*anim*` members through
 /// [`read_version_one_index`] + [`read_reader_archive`]. See the module doc
 /// for what is expected, what is measured and what stays unknown.

@@ -7,7 +7,8 @@
 //! apart:
 //!
 //! * the decoder ([`MpegAudioSource`], [`MpegVideoSource`]);
-//! * the real output stream ([`AudibleDevice`], opened behind the `audio`
+//! * the real output stream
+//!   ([`AudibleDevice`](crate::audio::AudibleDevice), opened behind the `audio`
 //!   capability gate): the decoded MP2 audio is one voice, and **how far the
 //!   output stream has pulled that voice** is the master clock — samples
 //!   actually played, not wall time;

@@ -18,14 +18,16 @@
 //!   A reading is a pose read back out of Avian plus the forces the tick's own
 //!   law computed; nothing here derives a hash from the input frame, so a state
 //!   digest that agrees with a promise is evidence rather than a tautology.
-//! * [`replay`] drives the production flight world from a recorded
+//! * [`mod@replay`] drives the production flight world from a recorded
 //!   [`CommandStream`](cs_types::input::CommandStream), measures every tick and
 //!   either records the run ([`replay::record`]) or replays a record and reports
 //!   AC01's envelope comparison beside AC02's compatibility verdict
 //!   ([`replay::replay`]).
 //! * [`render`] is the single boundary between a capture record's exact
 //!   `u32`-thousandths [`RenderConfig`](cs_content::replay::RenderConfig) and the
-//!   renderer's `f32` [`ComparisonSettings`], so a record's pinned settings and
+//!   renderer's `f32`
+//!   [`ComparisonSettings`](crate::render::capture::ComparisonSettings), so a
+//!   record's pinned settings and
 //!   the settings a frame was actually rendered under cannot drift apart.
 //!
 //! # What this stage does not do

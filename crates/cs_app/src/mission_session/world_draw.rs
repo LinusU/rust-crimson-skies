@@ -877,7 +877,7 @@ fn measure_water_level(
 }
 
 /// The sea altitude of a set of water-vertex altitudes: the lowest one, when
-/// more than half of the vertices lie within [`WATER_FLATNESS_M`] of it. `ZBD/C1C`'s
+/// more than half of the vertices lie within `WATER_FLATNESS_M` of it. `ZBD/C1C`'s
 /// water is all one flat surface; `ZBD/C3`'s `wtr00000` also binds raised
 /// pools and falls (up to ~13 m above the surface in M01), so a rule that
 /// demanded every vertex flat would find no sea there. A set with no majority
@@ -1101,7 +1101,8 @@ pub struct GroundTargetLayoutReport {
 /// The pass is state-driven and convergent, the same shape the damage
 /// schedule's own consumers take: every run it derives the whole drawn state
 /// of each live [`MissionGroundTarget`]'s presented slots from
-/// [`SessionDamageResolver::part_state`] — `Destroyed` hides the intact
+/// [`DamageResolver::part_state`](cs_sim::damage::DamageResolver::part_state) —
+/// `Destroyed` hides the intact
 /// slots and shows the `destroyed` ones, and every other state asserts the
 /// authored initial layout (intact shown, `destroyed` hidden) — then writes
 /// only what differs, so a stale generation asserts nothing and a restart's
@@ -1188,14 +1189,14 @@ pub fn apply_ground_target_layout(
 }
 
 /// Marks a drawn child whose material binds the world's water texture
-/// ([`WATER_TEXTURE_NAME`] or [`C3_WATER_TEXTURE_NAME`]): the world's own sea
+/// (`WATER_TEXTURE_NAME` or `C3_WATER_TEXTURE_NAME`): the world's own sea
 /// tiles. The owner-command smoke hides exactly these to measure how much of
 /// the drawn sea they are.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorldWaterPart;
 
-/// Installs [`attach_world_parts`]. Added once by
-/// [`super::compose::add_composition`], so every composition (windowed and
+/// Installs `attach_world_parts`. Added once by
+/// `add_composition`, so every composition (windowed and
 /// headless, first load and the composed restart) draws its world.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MissionWorldDrawPlugin;

@@ -782,7 +782,7 @@ pub struct NetTeardown {
 /// Every field answers for the run `at` names. `host_notices` and
 /// `client_notices` are the `cs_net` notices forwarded verbatim — the "own
 /// state" the lifecycle's handoff names — bounded at
-/// [`MAX_REPORTED_NOTICES`] with the overflow counted.
+/// `MAX_REPORTED_NOTICES` with the overflow counted.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct NetSessionReport {
     /// Fixed ticks the drive has run, including this one.
@@ -1062,7 +1062,7 @@ fn pump_host(
 /// detection first, then the host pump/drain/publish, then the client
 /// pump/feed — in that order — recorded in [`NetSessionReport`].
 ///
-/// The host pump is staged ([`pump_host`]) whenever a committed tick exists,
+/// The host pump is staged (`pump_host`) whenever a committed tick exists,
 /// so the F58-B tick window and match-phase check are live here.
 ///
 /// Exclusive over the world because the session owners are resources and the

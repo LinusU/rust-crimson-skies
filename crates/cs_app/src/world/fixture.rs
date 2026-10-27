@@ -1448,7 +1448,8 @@ pub fn spawn_swept_probe(app: &mut App, spec: &ProbeSpec) -> Result<Entity, Prob
 /// This is the body the sensor role is measured with, because of a measured
 /// property of the pinned engine: Avian's swept CCD has no sensor filter —
 /// `solve_swept_ccd` stops a body at the first time of impact against *any*
-/// collider its swept path reaches, [`Sensor`] included — so a **swept**
+/// collider its swept path reaches, [`Sensor`](avian3d::prelude::Sensor)
+/// included — so a **swept**
 /// body crossing a trigger volume is held at that volume's near face for the
 /// crossing frame (measured here: 2.416 m of a 400 m/s probe's travel, which
 /// is exactly the distance from its previous sample to the sensor face).
@@ -1544,7 +1545,9 @@ pub fn world_app() -> App {
 }
 
 /// [`world_app`] plus the F23 bodies runtime's **spawn preflight** and its
-/// gameplay consumer, [`SpawnTickTriggerPlugin`]: the two systems that decide
+/// gameplay consumer,
+/// [`SpawnTickTriggerPlugin`](crate::objectives::SpawnTickTriggerPlugin):
+/// the two systems that decide
 /// what a body's *first* tick sweeps against and deliver a trigger crossing the
 /// discrete narrow phase cannot see.
 ///

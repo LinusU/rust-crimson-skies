@@ -12,7 +12,7 @@
 //! | --- | --- | --- |
 //! | archive | the highest-numbered `rtexture<N>.zbd` tier of the world group, else `texture.zbd` | [`PLAYTEST_TEXTURE_ARCHIVE_IS_DESIGNED`] |
 //! | name reading | the stored name up to its first `.`, ASCII lower case ([`NAME_READING`]) | [`PLAYTEST_TEXTURE_NAME_READING_IS_DESIGNED`] |
-//! | presentation | a plain lit `StandardMaterial`, sRGB, repeat addressing, keyed coverage as a 0.5 mask, stored corner colours normalized by [`stored_colour_channel`] | [`PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL`] |
+//! | presentation | a plain lit `StandardMaterial`, sRGB, repeat addressing, keyed coverage as a 0.5 mask, stored corner colours normalized by `stored_colour_channel` | [`PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL`] |
 //! | decal rule | a part whose bound texture **carries keyed coverage** is drawn with its vertices offset [`DECAL_OFFSET_M`] along their normals; nothing in the stored records marks a decal, so this is a designed rule over the alpha-plane bit | [`PLAYTEST_DECAL_OFFSET_IS_DESIGNED`] |
 //!
 //! # The decal rule (#794)

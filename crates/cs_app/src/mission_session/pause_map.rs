@@ -276,7 +276,7 @@ pub struct PauseMapScene {
 
 impl PauseMapScene {
     /// The bitmap drawn as the memento photo: the cabin memento the pilot
-    /// chose, which is [`DEFAULT_MEMENTO_PHOTO`] until a choice exists, in
+    /// chose, which is `DEFAULT_MEMENTO_PHOTO` until a choice exists, in
     /// place of the script's `momento_temp` placeholder. Any other bitmap the
     /// script names is drawn as named.
     #[must_use]
@@ -762,7 +762,7 @@ pub struct PlayerFix {
 }
 
 /// What the screen shows of the running mission. The presenter reads only this
-/// resource; [`read_pause_map_live`] fills it from the mission host and the
+/// resource; `read_pause_map_live` fills it from the mission host and the
 /// player body every frame.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct PauseMapLive {
@@ -892,7 +892,7 @@ fn read_pause_map_live(
 
 /// A button of the screen was pressed. Resume has already resumed the
 /// session when this is written, Quit has asked the app to exit, Restart
-/// is acted on by [`restart_on_press`] and Preferences has already written
+/// is acted on by `restart_on_press` and Preferences has already written
 /// [`OpenPreferencesOverlay`].
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PauseMapPress(pub PauseButtonKind);

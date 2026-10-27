@@ -50,7 +50,8 @@
 //! [`WorldMeshAssets`] is the map that makes it one: the first object to name a
 //! reference uploads it, and every later object naming that reference gets a
 //! clone of the **same strong handle**, so the second object's `Mesh3d` *is* the
-//! first one's, and both records collide from the one [`WorldMesh`] their
+//! first one's, and both records collide from the one
+//! [`WorldMesh`](super::meshes::WorldMesh) their
 //! reference resolves to. The cache is
 //! keyed by the authored [`ContentId`] *and* the upload's [`ContentHash`], so a
 //! caller that registers different geometry under a reference it used before is
@@ -156,7 +157,7 @@
 //!   this module's one use of it; a mesh-derived object is the exception, for
 //!   the reason [`AffinePlacementError::ShearedMeshUndecided`] names;
 //! * **mission overlays and visibility-driven streaming policy** are F18-C;
-//!   [`super::residency`] owns the load/unload transaction itself;
+//!   [`mod@super::residency`] owns the load/unload transaction itself;
 //! * **retail geometry import** is F18-B/D: everything spawned from a fixture
 //!   here is `Origin::SyntheticFixture` and never claims to be original.
 
@@ -452,7 +453,7 @@ pub struct SpawnedCollider {
     /// It is `None` for exactly one role: [`WorldCollisionRole::Sensor`], whose
     /// collider is deliberately spawned on an entity with **no** rigid body so
     /// Avian's swept CCD cannot stop a body there (task #401; the module docs
-    /// and [`trigger_volume_layout`] carry the measurement). A standalone
+    /// and `spawn_mesh_trigger_volume` carry the measurement). A standalone
     /// collider is not a broken collider — Avian gives it its own broad-phase
     /// tree and still reports its overlaps — but a consumer that needs a body
     /// entity to stamp, move or despawn must be told there is none rather than
@@ -463,7 +464,7 @@ pub struct SpawnedCollider {
 }
 
 /// One object's entities, as both [`spawn_world`] and the load transaction in
-/// [`super::residency`] need them.
+/// [`mod@super::residency`] need them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpawnedObject {
     /// The object these entities belong to.
@@ -1023,7 +1024,7 @@ fn shared_collider(app: &mut App, upload: ResolvedUpload<'_>) -> Collider {
 /// Spawns one object instance into `app`.
 ///
 /// This is the unit [`spawn_world`] and the sector load transaction in
-/// [`super::residency`] both use, so a world loaded whole and a sector loaded
+/// [`mod@super::residency`] both use, so a world loaded whole and a sector loaded
 /// later produce the *same* entities for the same record.
 ///
 /// # Errors
@@ -1678,7 +1679,8 @@ const fn is_trigger_volume(role: WorldCollisionRole) -> bool {
 
 /// Spawns every instance of `definition` into `app`.
 ///
-/// The contact recorder ([`WorldPlugin`]) is part of the **app composition**,
+/// The contact recorder ([`WorldPlugin`](super::contacts::WorldPlugin)) is part
+/// of the **app composition**,
 /// not of this call: [`super::fixture::world_app`] adds it before the app is
 /// finished, because a world load happens *after* `App::finish` in a real
 /// mission and an `add_plugins` at that point would panic. An app that runs a

@@ -4,7 +4,8 @@
 //! stage `### F23-C`. Shared contract: `docs/contracts/FLIGHT-PHYSICS.md`.
 //!
 //! F23-B measured a hole in Avian 0.7's swept detection: the swept AABB a
-//! [`SweptCcd`] body uses is written at the *end* of a tick, so a fast body
+//! [`SweptCcd`](avian3d::prelude::SweptCcd) body uses is written at the *end*
+//! of a tick, so a fast body
 //! spawned inside one tick's travel of an obstacle tunnels on its very first
 //! tick — detection is only guaranteed from its second tick on
 //! (`docs/findings/2026-09-30-f23-b-body-creation-forces-sweeps-and-transitions.md`,
@@ -13,7 +14,7 @@
 //! This module is the producer-side repair. A body spawned through the
 //! session ([`crate::physics::PhysicsSession::spawn`]) that needs swept
 //! detection and is already moving carries the [`SpawnPreflight`] marker;
-//! [`resolve_spawn_preflights`] runs in `FixedPostUpdate` **before**
+//! `resolve_spawn_preflights` runs in `FixedPostUpdate` **before**
 //! `PhysicsSystems::Prepare` — the same verified pre-step slot the force
 //! drain uses — and shape-casts the collider over exactly one tick of its
 //! velocity, before the body has moved:

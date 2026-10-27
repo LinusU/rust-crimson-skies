@@ -154,7 +154,7 @@ pub struct TextCapture {
     /// How many distinct luminance levels the frame holds. One means the whole
     /// frame is the background.
     pub distinct_luminance: usize,
-    /// Pixels that differ from [`CLEAR_COLOR`].
+    /// Pixels that differ from `CLEAR_COLOR`.
     pub covered_pixels: usize,
     /// [`Self::covered_pixels`] over the frame's pixel count.
     pub covered_permille: u32,

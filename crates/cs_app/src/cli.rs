@@ -19,7 +19,7 @@
 //! non-negotiable behavior 5 ("Screenshot CLI accepts a reproducible world
 //! pose, mission id, tick and deterministic settings; report all overrides").
 //! `--synthetic --headless --mission <id> --tick <n> --pose <x,y,z>` parses
-//! into the [`CaptureRequest`](crate::camera::CaptureRequest) a
+//! into the [`CaptureRequest`] a
 //! [`CameraSession`](crate::camera::CameraSession) consumes, and
 //! [`crate::run::run_capture`] applies it to the frame at that tick and prints
 //! the applied report. Nothing is drawn: this stage has no renderer, so the
@@ -171,9 +171,9 @@ pub enum CliRequest {
     /// launch closure is not satisfied exits nonzero with its source
     /// diagnostics.
     Mission(MissionRequest),
-    /// `--cs-path <dir> --front-end [--smoke-seconds <n> [--capture-dir
-    /// <dir>]]`: open the windowed front end presenting the original
-    /// `ASSETS/LAYOUT.CSV` sections (FE-MENU-1, task #1833).
+    /// `--cs-path <dir> --front-end` with optional `--smoke-seconds <n>` and
+    /// `--capture-dir <dir>`: open the windowed front end presenting the
+    /// original `ASSETS/LAYOUT.CSV` sections (FE-MENU-1, task #1833).
     FrontEnd(FrontEndRequest),
     /// `--cs-path <dir>` alone: open the windowed start flow on the original
     /// main menu, driven by the F45 front-end machine (Rally #1830).

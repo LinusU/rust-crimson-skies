@@ -62,12 +62,12 @@
 //! awake). The composed host step consumes every such emission the control
 //! program has published and not already applied ([`WakeEnemiesLedger`]), and
 //! a name that resolves to a **sleeping** scripted aircraft is **released**
-//! ([`release_woken_aircraft`]): the held kinematic body becomes the dynamic
+//! (`release_woken_aircraft`): the held kinematic body becomes the dynamic
 //! body an awake record spawns as — the record's own measured airframe on the
 //! law's AI seat, the behaviour the record's measured fields select once the
 //! sleep is consumed, and the mass the law's force request integrates
 //! against. Its weapons follow on the next fixed tick through the same
-//! [`arm_mission_ai`] every other flown record goes through. A name that
+//! `arm_mission_ai` every other flown record goes through. A name that
 //! resolves to nothing this runtime drives is refused **by name**, never
 //! silently dropped: `blackswanzep` is a zeppelin, and the world-actor wake
 //! (dormant byte, route) is not modelled here (`WorldActorSession` declares
@@ -79,14 +79,14 @@
 //! before the fixed-tick flight driver of [`crate::playtest`] steps any
 //! record:
 //!
-//! * [`arm_mission_ai`] gives every flown record the mission's designed gun
+//! * `arm_mission_ai` gives every flown record the mission's designed gun
 //!   rig once the weapon session exists — the guns registered for the
 //!   record's own session actor, the same hardpoint mounts the player's rig
 //!   hangs, and the faction the shot's relation reads
 //!   ([`crate::mission_session::designed_target_rules`]). It skips entities
 //!   already bound to this generation, so a restart's re-opened session
 //!   re-arms the actors the restart respawned;
-//! * [`decide_mission_aircraft_ai`] writes the held [`FlightInput`] on the
+//! * `decide_mission_aircraft_ai` writes the held [`FlightInput`] on the
 //!   aircraft's own [`PlaytestOriginalFlight`] and, for a pursuer inside
 //!   the designed window and cone ([`should_fire`]), queues a fire intent.
 //!
@@ -324,7 +324,7 @@ pub struct MissionAiFireOrders {
 pub enum MissionAiBehaviour {
     /// The record's measured `starts_asleep` field is set (#681): no law is
     /// attached and the body stays kinematic at its measured pose until
-    /// `WAKEUP_ENEMIES` names it ([`release_woken_aircraft`]).
+    /// `WAKEUP_ENEMIES` names it (`release_woken_aircraft`).
     Asleep,
     /// A record opposed to the player's flight: close on [`TargetRule`] and
     /// hold it.
@@ -884,7 +884,7 @@ impl WakeRefusal {
 /// [`crate::mission_animations::WakeAnimationLedger`] deduplicates the
 /// animation wakes (the log holds the whole session, so only the key says
 /// which entry is new), and releases each name that resolves to a sleeping
-/// scripted aircraft ([`release_woken_aircraft`]) at the tick being stepped.
+/// scripted aircraft (`release_woken_aircraft`) at the tick being stepped.
 ///
 /// The measured effect wakes a vehicle whose asleep byte is set and a
 /// zeppelin whose dormant byte is set, and does nothing for a name already

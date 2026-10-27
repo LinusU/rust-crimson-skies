@@ -63,13 +63,13 @@
 //! 7. **A released batch takes its assets back with it.** A batch entity
 //!    *owns* the store entries this module added for it: the
 //!    [`Assets<Mesh>`] entry the spawn uploaded, the material entry
-//!    [`add_material`] created and the [`Assets<Image>`] entry that binds the
+//!    `add_material` created and the [`Assets<Image>`] entry that binds the
 //!    batch's texture (the composed paint, or the canonical image). Its
 //!    per-instance entities *borrow* the mesh and the material handles
-//!    ([`BatchAssets`]). Releasing the batch despawns the entity and its
+//!    (`BatchAssets`). Releasing the batch despawns the entity and its
 //!    placements first and only then hands each owned entry back to its store,
 //!    and hands back only an entry no live batch and no live material entry
-//!    still names ([`BatchAssetRefs`]), so one entry is returned once and a
+//!    still names (`BatchAssetRefs`), so one entry is returned once and a
 //!    handle some live entity still draws with is left in place
 //!    ([`FrameSync::reclaimed`]).
 //!
@@ -82,8 +82,8 @@
 //!    batch being released is removed before that question is asked.
 //!
 //!    An entity that no longer carries the material component of its own kind
-//!    is not reused at all: [`reuse_batch`] releases it through the same
-//!    [`release_entity`] the stale batch goes through, and the frame spawns a
+//!    is not reused at all: `reuse_batch` releases it through the same
+//!    `release_entity` the stale batch goes through, and the frame spawns a
 //!    fresh entity for the draw. A replacement entry is therefore always added
 //!    by a spawn that records it, and a live owner record never names an entry
 //!    its entity does not draw with.
@@ -92,7 +92,7 @@
 //!    respawns a batch every other tick: rule 6's own release path. Without
 //!    rule 7 that path would leave one mesh, one material and one image in
 //!    their stores on each pass, the way a reused batch would leave one
-//!    material per frame if [`add_material`] had no reuse guard either.
+//!    material per frame if `add_material` had no reuse guard either.
 //!
 //! # What the presentation reaches, and what it does not
 //!
@@ -951,7 +951,7 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// no texture slot has no texels to paint.
 ///
 /// A batch this frame spawns records the mesh, material and image entries it
-/// added ([`BatchAssets`]), and a batch it releases hands them back
+/// added (`BatchAssets`), and a batch it releases hands them back
 /// ([`FrameSync::reclaimed`]) — the image only once no live batch owns it and
 /// no material entry samples it. A frame that reuses every batch does neither,
 /// so neither the reuse path nor the release path grows a store: one asset per
@@ -1735,7 +1735,7 @@ fn apply_presentation(
 ///
 /// A no-op when nothing is live, so a repeated teardown, a teardown after a
 /// refused request and a teardown at shutdown are all safe. The owner counts in
-/// [`BatchAssetRefs`] are left in place: they are the accounting for live
+/// `BatchAssetRefs` are left in place: they are the accounting for live
 /// owners, every release above already dropped the one it held, and an owner that
 /// a caller dropped without releasing would be a leak to report rather than a
 /// count to reset behind.

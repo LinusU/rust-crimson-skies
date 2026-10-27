@@ -257,7 +257,7 @@ impl ConstructionSession {
 
     /// Validates, then commits purchases and sales as one profile revision.
     ///
-    /// The blueprint is judged by [`Self::policy`] — the same policy, and so
+    /// The blueprint is judged by `Self::policy` — the same policy, and so
     /// the same rule, the live preview drew. What still belongs to the profile
     /// is priced against `state` itself, so the buy list is the truth at the
     /// moment of the commit; a profile that changed since [`Self::begin`] is

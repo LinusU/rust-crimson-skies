@@ -23,7 +23,8 @@
 //!   the other verbatim, so the fixed set F17 pins and the fixed set F59 pins
 //!   are one set.
 //! * **The tone-curve vocabularies are the same words.**
-//!   [`replay::TonemapKind`] and [`Tonemap`] both spell the curves
+//!   [`replay::TonemapKind`](cs_content::replay::TonemapKind) and
+//!   [`Tonemap`] both spell the curves
 //!   `none`/`filmic`, and [`tonemap_for`]/[`tonemap_label`] are the only two
 //!   places that translate, so a record cannot name a curve the renderer has
 //!   no name for.

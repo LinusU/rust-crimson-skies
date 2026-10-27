@@ -19,7 +19,8 @@
 //! | 3 | `lflare4` | `C − (P − C)` | `W·f·0.0625·1.5` |
 //!
 //! The engine's sprite routine returns without drawing a quad whose half-extent
-//! is below one pixel; so does [`flare_quads`]. Provenance `static`; nothing
+//! is below one pixel; so does [`flare_quads`](crate::render::lens_flare::flare_quads).
+//! Provenance `static`; nothing
 //! here is `verified_original`.
 
 /// The fraction of the viewport width that is the glow's half-extent at full

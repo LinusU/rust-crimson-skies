@@ -1222,7 +1222,7 @@ pub struct MissionGunHold {
 /// or a control handover is *not* reported as held: the session released it
 /// there, exactly as it released the press.
 ///
-/// [`HeldEdge`]: cs_app::input::HeldEdge
+/// [`HeldEdge`]: crate::input::HeldEdge
 #[must_use]
 pub fn guns_key_held(world: &World) -> bool {
     world
@@ -1240,8 +1240,8 @@ pub fn guns_key_held(world: &World) -> bool {
 
 /// Whether a hold-to-fire repeat is due at `at`.
 ///
-/// The cadence is [`MISSION_TICKS_BETWEEN_SHOTS`] — the rate the loadout's
-/// own gun records declare ([`designed_gun`]), which is also the rate the F27
+/// The cadence is `MISSION_TICKS_BETWEEN_SHOTS` — the rate the loadout's
+/// own gun records declare (`designed_gun`), which is also the rate the F27
 /// step's per-mount cooldown enforces — so a repeat is minted exactly when the
 /// last fired tick has aged out. A press edge does not consult this: a press
 /// fires at once and is refused by name if the gun is still cooling down.

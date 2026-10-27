@@ -22,7 +22,7 @@
 //! replacement keeps the original's coverage class (an opaque original stays
 //! opaque, a keyed one takes its coverage from the replacement's alpha
 //! channel). With the pack installed, every engine texture built through
-//! [`crate::playtest_textures::to_bevy_image`] also gets a mip chain
+//! `crate::playtest_textures::to_bevy_image` also gets a mip chain
 //! ([`add_mips`]): an 8× texture without one shimmers at any distance.
 //!
 //! The pack is process-wide ([`install`] once from `main`, [`pack`]

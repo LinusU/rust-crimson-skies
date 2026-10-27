@@ -14,7 +14,8 @@
 //! * [`lower::lower_record`] / [`lower::lower_catalog`] — the conversion
 //!   boundary: a validated declared record becomes the runtime
 //!   [`cs_sim::audio_events::AudioAssetSpec`], with every mandatory playback
-//!   field that is [`Resolved::Unknown`] **refused** by claim rather than
+//!   field that is [`Resolved::Unknown`](cs_types::content::Resolved::Unknown)
+//!   **refused** by claim rather than
 //!   played as a guessed bus, level or loop mode;
 //! * [`AudioEmitterBinding`] — the ECS record tying an entity to its
 //!   session-qualified [`cs_sim::audio_events::AudioEmitterId`], bus and asset,
@@ -36,7 +37,8 @@
 //! * [`mixer`] — the consumer that turns the session's outcomes and the spatial
 //!   law into device commands, with [`mixer::device_lost`] as the
 //!   device-failure path that leaves the simulation untouched (behavior 2);
-//! * [`device`] — the audible backend: the one [`AudioDevice`] that opens real
+//! * [`device`] — the audible backend: the one
+//!   [`AudioDevice`](cs_sim::audio_events::AudioDevice) that opens real
 //!   output hardware, gated on the `audio` capability so a machine that cannot
 //!   play refuses by name (task #635, F41-D);
 //! * [`samples`] — the population pass: the delivered closure's audio members
@@ -46,7 +48,8 @@
 //!   step decoded reach that same library under the exact dialogue id a
 //!   `RadioLine` names (task #1465, M01-RADIO-SAMPLE-IDENTITY);
 //! * [`music`] — the mission's music state requests: the owner-ruled
-//!   track-level [`ContentKind::Music`] identity and the executable's
+//!   track-level [`ContentKind::Music`](cs_types::content::ContentKind::Music)
+//!   identity and the executable's
 //!   measured selection rule (task #1463, M01-PLAY-MUSIC);
 //! * [`handoff::insert_audio_session`] and [`AudioPlugin`] — the wiring: the
 //!   loading handoff owns the session, and the plugin registers the systems in

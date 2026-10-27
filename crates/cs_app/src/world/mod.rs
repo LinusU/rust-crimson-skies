@@ -40,7 +40,7 @@
 //!   that asked for no collider but has no geometry to draw, in
 //!   [`spawn::SpawnedWorld::presentation_gaps`]) with a reason instead of being
 //!   filled in with a guess.
-//! * [`residency`] is the load transaction: one world at a time, one sector in
+//! * [`mod@residency`] is the load transaction: one world at a time, one sector in
 //!   and out at a time, and the per-object condition that survives both
 //!   (acceptance scenario AC02). It carries no streaming *policy* — that is
 //!   [`visibility`] and [`overlays`] (acceptance scenarios AC02 and AC03).

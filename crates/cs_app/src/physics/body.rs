@@ -11,7 +11,8 @@
 //!
 //! * the declared [`CollisionLayer`] becomes the entity's [`BodyLayer`] marker
 //!   (the key the contact reporter classifies with) **and** an Avian
-//!   [`CollisionLayers`] membership/filter pair built from
+//!   [`CollisionLayers`](avian3d::prelude::CollisionLayers)
+//!   membership/filter pair built from
 //!   [`CollisionLayer::designed_partners`], so the engine's broad phase
 //!   filters by the declared matrix rather than by a restated copy of it;
 //! * [`ShapeClass::Sensor`] becomes Avian's [`Sensor`], which keeps a

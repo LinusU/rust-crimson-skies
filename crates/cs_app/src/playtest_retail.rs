@@ -79,7 +79,7 @@
 //!   [`PlaytestAircraftReport::undrawn`] with its reason. Nothing falls back to
 //!   the fuselage alone.
 //!
-//! The selection is documented on [`select_aircraft_parts`].
+//! The selection is documented on `select_aircraft_parts`.
 //!
 //! # Why the area's graph is built over a subtree
 //!
@@ -491,7 +491,7 @@ pub const CAPTURE_HEIGHT: u32 = 480;
 // ------------------------------------------------------- the propeller hub --
 
 /// The hub of one drawn propeller disc, **measured from that mesh's own
-/// geometry** in the mesh's own frame (the frame [`grow`] puts the stored
+/// geometry** in the mesh's own frame (the frame `grow` puts the stored
 /// vertices in, before the node's composed transform places them).
 ///
 /// Nothing here is a hard-coded axis or an offset read off another node: the
@@ -1426,7 +1426,7 @@ impl AircraftSources {
 /// Reads the airframe container and the texture archive out of an
 /// installation, through the same production discovery pass
 /// [`read_playtest_sources`] runs — one [`install::discover`], one
-/// [`read_container`] and one [`PlaytestTextureArchive::open`], never a
+/// `read_container` and one [`PlaytestTextureArchive::open`], never a
 /// second parser.
 ///
 /// # Errors
@@ -1486,7 +1486,7 @@ impl WorldSources {
 
 /// Reads the world container and the texture archive out of an installation,
 /// through the same production discovery pass [`read_playtest_sources`] runs
-/// — one [`install::discover`], one [`read_container`] and one
+/// — one [`install::discover`], one `read_container` and one
 /// [`PlaytestTextureArchive::open`], never a second parser.
 ///
 /// # Errors
@@ -1620,7 +1620,7 @@ pub struct PlaytestWorldGroupSources {
 /// [`install::discover`] hashes the whole installation — a property of the
 /// installation rather than of one group — so a caller that wants every
 /// world group's sources pays for it once here rather than once per group
-/// through [`read_playtest_sources`]. The same private [`read_container`]
+/// through [`read_playtest_sources`]. The same private `read_container`
 /// serves every group, so a per-group read and this read cannot disagree.
 #[derive(Debug)]
 pub struct PlaytestAllSources {
@@ -3290,7 +3290,7 @@ pub struct AircraftVisual {
 
 /// The aircraft half of [`spawn_playtest_content`], callable on its own:
 /// builds the `SceneGraph` over the airframe container, resolves the pinned
-/// [`select_aircraft_parts`] selection (`config`'s `aircraft_*` fields),
+/// `select_aircraft_parts` selection (`config`'s `aircraft_*` fields),
 /// uploads each drawn mesh through the F17-B adapter and cuts it into
 /// textured (or neutral) pieces ready for [`AircraftPartAsset::spawn`].
 ///
@@ -3482,7 +3482,7 @@ pub fn build_aircraft_visual(
 ///
 /// The node is found by its authored name, which must be unique in the
 /// container; its authored subtree is cut out through [`area_graph`], the
-/// selection is the area's own ([`select_area_parts`] at `lod_distance_m`, the
+/// selection is the area's own (`select_area_parts` at `lod_distance_m`, the
 /// same LOD, damage-alternative and flat-card rules the drawn area uses), and
 /// each drawn mesh is uploaded and textured through the same path the aircraft
 /// uses. Every part's transform is the node's own composed transform inverted
@@ -3649,7 +3649,7 @@ pub struct WorldScenery {
 /// nodes world actors draw, the load-removed `dzpath` records). The direct
 /// child's **own** mesh is the world draw's and is not drawn here. Every walked
 /// subtree is cut out through [`area_graph`] and selected by the area's own rule
-/// ([`select_area_parts`] at `lod_distance_m`: one LOD band, the intact
+/// (`select_area_parts` at `lod_distance_m`: one LOD band, the intact
 /// variant, no flat-colour cards).
 ///
 /// # Errors
@@ -4544,7 +4544,7 @@ pub enum CaptureError {
         /// How many distinct luminance levels it held. Always one.
         distinct_luminance: usize,
     },
-    /// The frame drew less than [`MIN_ENVIRONMENT_PERMILLE`] of anything that is
+    /// The frame drew less than `MIN_ENVIRONMENT_PERMILLE` of anything that is
     /// not the clear colour: it framed sky rather than geometry.
     NoEnvironment {
         /// The view being captured.

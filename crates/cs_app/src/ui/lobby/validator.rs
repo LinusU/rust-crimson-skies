@@ -6,7 +6,8 @@
 //! validated server action"). This is the seam its finding recorded: the hook
 //! `cs_net::lobby::LoadoutValidator` had only test doubles (`AcceptAll` /
 //! `RejectAll`), because `cs_net` cannot depend on the content crates and the
-//! shared validator needs an authored [`AircraftBlueprint`] a flat loadout id
+//! shared validator needs an authored
+//! [`AircraftBlueprint`](cs_content::construction::AircraftBlueprint) a flat loadout id
 //! list does not carry.
 //!
 //! [`ConstructionLoadoutValidator`] is the thin adapter: it holds the
@@ -15,7 +16,9 @@
 //! [`LobbyConstructionCatalog::judge`] in `cs_content::lobby_loadout`, which documents
 //! the mapping and the stable reason codes. Nothing is judged here, so the
 //! rule the lobby enforces and the rule the construction screen enforces are
-//! the same [`ConstructionRules::validate`] (F44-B).
+//! the same
+//! [`ConstructionRules::validate`](cs_content::construction::ConstructionRules::validate)
+//! (F44-B).
 //!
 //! The catalog is *injected*, never invented: the application supplies the
 //! authored blueprints, their airframes' rule profiles, the pairing/ban policy

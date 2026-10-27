@@ -53,7 +53,7 @@
 //!
 //! # What the rule is, precisely
 //!
-//! [`retire_contact_residual`] runs in `FixedPostUpdate` **after**
+//! `retire_contact_residual` runs in `FixedPostUpdate` **after**
 //! [`PhysicsSystems::StepSimulation`] — the same slot the contact reporter
 //! reads, so it sees this tick's contacts and this tick's post-step velocity.
 //! For every **dynamic** body in a *touching* contact with **immovable** world
@@ -208,7 +208,7 @@ pub const RESTING_CONTACT_MEMORY_TICKS: u32 = 12;
 ///
 /// The rule's own answer to "is this body still where it stopped", recorded as
 /// a component rather than left to be re-derived from a velocity. It is
-/// inserted when [`retire_contact_residual`] retires a body's drift, and
+/// inserted when `retire_contact_residual` retires a body's drift, and
 /// withdrawn by the same measurement that inserted it, read the other way round
 /// — see the module docs.
 ///

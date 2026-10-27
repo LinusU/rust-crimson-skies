@@ -237,7 +237,8 @@ impl ImportOutcome {
 /// One user-facing line of a migration report.
 ///
 /// Every line has a stable machine [`Self::code`] so a screen can style,
-/// count and test a line without parsing its prose, and a [`Display`] that
+/// count and test a line without parsing its prose, and a
+/// [`Display`](std::fmt::Display) that
 /// says the same thing in words. The typed variants keep the fields a report
 /// must not lose: the resolved identities, the exact [`LimitBreach`] pairs
 /// and the broken [`ConstraintViolation`]s are carried as values, never as a

@@ -39,7 +39,8 @@
 //! * [`ProfileSession::finish`] is the explicit teardown that reports whether
 //!   uncommitted work was dropped; dropping the session releases the claim
 //!   either way, so an error path cannot leak ownership.
-//! * [`open_sandbox`] is the sandbox rule: an automated session over the
+//! * [`open_sandbox`](ProfileSession::open_sandbox) is the sandbox rule: an
+//!   automated session over the
 //!   synthetic population, which is never a player's live profile tree.
 //! * Opening a population **reads** the persisted active pointer and never
 //!   rewrites it, so launching costs no write and a read-only profile tree is

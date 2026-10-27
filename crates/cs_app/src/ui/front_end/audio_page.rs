@@ -7,7 +7,7 @@
 //! other section; this page reads the rows the shell only counts
 //! ([`super::widgets`]) and owns their behaviour. Nothing here renders: the
 //! windowed presenter draws what [`AudioPage`] holds
-//! ([`super::audio_view`]) and a headless drive reads the same model.
+//! (`super::audio_view`) and a headless drive reads the same model.
 //!
 //! # What the original data says (static readings, not `verified_original`)
 //!

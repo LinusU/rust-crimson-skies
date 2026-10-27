@@ -64,8 +64,9 @@
 //!
 //! [`MaterialCoverage`] counts, for one subject's mesh, how many of its
 //! stored material records establish a render class and how many do not,
-//! with every refusal reason grouped by [`ClassificationFailure::code`]. A
-//! stored GameZ record alone asserts no class
+//! with every refusal reason grouped by
+//! [`ClassificationFailure::code`](crate::render::material::ClassificationFailure::code).
+//! A stored GameZ record alone asserts no class
 //! ([`MaterialFacts::for_raw_record`]), so on original data the measured
 //! table is *every material unclassified, reason `undeclared`*: that is this
 //! stage's finding, recorded rather than defaulted. Nothing here ever turns

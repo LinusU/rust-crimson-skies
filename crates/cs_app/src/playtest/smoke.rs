@@ -63,7 +63,7 @@ fn frame_of(seconds: f64) -> u32 {
     (seconds * SMOKE_FRAME_HZ).round() as u32
 }
 
-/// Simulated seconds one pass of [`script`] takes.
+/// Simulated seconds one pass of `script` takes.
 pub const CYCLE_SECONDS: u32 = 20;
 
 /// Seconds into a pass at which `R` resets the aircraft.

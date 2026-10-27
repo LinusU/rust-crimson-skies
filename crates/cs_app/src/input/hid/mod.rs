@@ -13,12 +13,12 @@
 //!   and its USB PID driver; [`device`] is the hidapi thread that owns the
 //!   device.
 //! * [`HostJoystickPlugin`] runs that thread and hands its reports to the
-//!   F22 seam: [`crate::input::platform::pump_platform_input`] takes the frame's
+//!   F22 seam: `crate::input::platform::pump_platform_input` takes the frame's
 //!   [`DeviceEvent`]s from [`HostJoysticks::take_events`] and skips Bevy's own
 //!   gamepad for the same device, so the stick is one input source, not two.
 //! * [`HostJoysticks`] also carries the [`FlightFeel`] force feedback, which the
 //!   mission drives from the flight's state
-//!   ([`crate::mission_session::flight_feel`]).
+//!   (`crate::mission_session::flight_feel`).
 //!
 //! Input and force feedback are independent: a stick whose motors cannot be
 //! taken over still flies, and the reason is reported.

@@ -120,13 +120,13 @@ pub struct CrashMetrics {
     pub dive_frame: Option<u32>,
     /// Where the dive was placed, metres.
     pub dive_from_m: Option<[f32; 3]>,
-    /// The surface the ray found under [`PLATEAU_CRASH_POINT_M`], metres, with
+    /// The surface the ray found under `PLATEAU_CRASH_POINT_M`, metres, with
     /// what it is (`scenery`, `sea`, `ground` or `other`); `None`: no collider
     /// answered, the plateau surface there is unknown.
     pub surface_m: Option<([f32; 3], String)>,
     /// What the crash's terrain entity is.
     pub contact_terrain: Option<String>,
-    /// The crash position's horizontal distance from [`PLATEAU_CRASH_POINT_M`].
+    /// The crash position's horizontal distance from `PLATEAU_CRASH_POINT_M`.
     pub crash_offset_m: Option<f32>,
     /// The script frame the wing hit for the dial frame was applied in.
     pub dial_hit_frame: Option<u32>,

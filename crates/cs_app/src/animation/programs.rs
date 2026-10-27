@@ -875,7 +875,7 @@ impl AnimationDefinitionMember {
     }
 
     /// The authoring paths the member names through
-    /// [`ANIMATION_DEFINITION_FILE`], in stored order.
+    /// [`ANIMATION_DEFINITION_FILE_FIELD`], in stored order.
     ///
     /// These are **not** installable paths: they are the paths the original's
     /// authoring tree used (`..\data\common\zrdr\planes\player.zrd`). Their

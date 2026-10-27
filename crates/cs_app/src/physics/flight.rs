@@ -23,7 +23,7 @@
 //!   principal values with `NoAutoMass`/`NoAutoAngularInertia`, so the
 //!   collider's derived properties cannot silently change what the declared
 //!   tuning says the integrator must use.
-//! * [`drive_flight_aircraft`] runs in `FixedUpdate`, once per fixed tick and
+//! * `drive_flight_aircraft` runs in `FixedUpdate`, once per fixed tick and
 //!   before the `FixedPostUpdate` drain: it reads the body's authoritative
 //!   `Rotation`/`LinearVelocity`/world-space `AngularVelocity` (rotated into
 //!   body space), advances the spool, computes the tick's forces and submits
@@ -60,7 +60,7 @@
 //!
 //! * [`FlightEquipment`] is the mission/loadout producer: the declared loadout
 //!   mass, damage state and boost reserve a body carries. When present,
-//!   [`drive_flight_aircraft`] binds it into the [`FlightAircraft`] record
+//!   `drive_flight_aircraft` binds it into the [`FlightAircraft`] record
 //!   *before* computing the tick; a rejected equipment record refuses the tick
 //!   by name ([`FlightRefusalReason::Equipment`]) instead of flying half-applied
 //!   state, and the next tick retries with whatever the producer declares then.
@@ -73,7 +73,7 @@
 //!   [`HandlingProfile`] become the production [`AirframeTuning`], refusing a
 //!   record that names a different profile rather than silently choosing one.
 //! * [`FlightInstruments`] is the panel consumer: after the drive,
-//!   [`publish_flight_instruments`] copies the tick's measured
+//!   `publish_flight_instruments` copies the tick's measured
 //!   [`InstrumentState`] together with its [`FlightEvidenceClass`]. The class is
 //!   derived from the tuning's [`Origin`], so a synthetic-model trace can never
 //!   be published as an original-reference result.
@@ -492,7 +492,7 @@ pub fn declared_flight_model(
 /// (`set_loadout`/`set_damage`/`set_boost_capacity`): the same three values,
 /// named as one record so a mission can insert or rewrite them without
 /// reaching into the flight model. When a body carries it,
-/// [`drive_flight_aircraft`] binds it into the [`FlightAircraft`] record every
+/// `drive_flight_aircraft` binds it into the [`FlightAircraft`] record every
 /// tick, so a mid-flight fuel burn, ordnance release or damage event reaches the
 /// equations (non-negotiable behavior 4: the same mass a UI performance bar
 /// reads is the mass the integrator flies).
@@ -1628,7 +1628,7 @@ impl FlightEvidenceClass {
 
 /// The last measured instrument reading of one aircraft, for a panel consumer.
 ///
-/// [`publish_flight_instruments`] writes it after the drive, so a panel reads a
+/// `publish_flight_instruments` writes it after the drive, so a panel reads a
 /// snapshot instead of reaching into the flight record. `tick` is the fixed tick
 /// that produced the reading — never the tick it was published on — so a
 /// reading that survived a refused tick is still labelled with the tick that

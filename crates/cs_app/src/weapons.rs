@@ -272,7 +272,8 @@ pub struct MountPoseBinding {
 
 /// Component: marks an entity as the visual face of one weapon actor.
 ///
-/// `actor` is the session-qualified [`ActorId`] the [`FireResolver`]
+/// `actor` is the session-qualified [`ActorId`] the
+/// [`FireResolver`](cs_sim::weapons::FireResolver)
 /// registered weapons for, `guns` the catalog ids the runtime definitions
 /// were lowered from, `loadout` the declared loadout they came from, and
 /// `generation` the scene generation that spawned the binding — so a reload
@@ -1457,7 +1458,8 @@ pub struct WeaponSession {
 impl WeaponSession {
     /// Opens a weapon session for one session generation, positioned at `tick`.
     ///
-    /// `router_producer` is the serial the routed [`HitEvent`]s are stamped
+    /// `router_producer` is the serial the routed
+    /// [`HitEvent`](cs_sim::damage::HitEvent)s are stamped
     /// with; the session's schedule allocates one serial for this stage, exactly
     /// as it does for `DamageResolver::new`'s producer.
     ///

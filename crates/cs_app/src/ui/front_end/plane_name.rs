@@ -19,7 +19,7 @@
 //! * **Placement.** The script centres the plate on the surface
 //!   (`location = (resolution - plate) / 2`) and sets `relative = 1` on every
 //!   control it creates but the backdrop, so the rows' `X,Y` are offsets from
-//!   the plate. The shell applies [`centre_dialog`] when it presents the
+//!   the plate. The shell applies `centre_dialog` when it presents the
 //!   section; the page applies the same origin to its edit box and captions.
 //!   Integer division is assumed.
 //! * **The script.** Escape and *Cancel* leave the screen; *OK* with an empty

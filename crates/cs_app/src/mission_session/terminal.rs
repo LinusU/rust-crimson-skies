@@ -89,7 +89,7 @@ impl fmt::Display for MissionTerminalSource {
 /// the player sees differently, so it is never reported as a plain success,
 /// and the control program's `Aborted` arrives here as
 /// [`TerminalOutcome::Failure`] (see
-/// [`super::host`] for the mapping) rather than as a zero exit.
+/// `super::host` for the mapping) rather than as a zero exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissionExit(TerminalOutcome);
 

@@ -1780,7 +1780,7 @@ pub const fn eye_placement() -> CockpitEyeCoverage {
 /// be given another's geometry. A node that resolves but references no stored
 /// mesh is [`CockpitNodeCoverage::NoMesh`] — present, named by the original, and
 /// not drawable — because "the node exists" is not "there is a cockpit there".
-/// See [`subtree_indices`] for what the walk follows and what it measures.
+/// See `subtree_indices` for what the walk follows and what it measures.
 ///
 /// # Errors
 ///
@@ -2014,7 +2014,7 @@ impl CockpitContentNode {
 /// What the subtree of one node a binding resolved to holds.
 ///
 /// `subtree` is the candidate node's own children closure under
-/// [`subtree_indices`] — the same walk the coverage audit applies to the
+/// `subtree_indices` — the same walk the coverage audit applies to the
 /// airframe root, so a binding's content is measured the same way its
 /// resolution was. `geometry` is the members of that closure that store a
 /// non-negative `mesh_index`, in array order; the candidate itself appears
@@ -2290,7 +2290,7 @@ impl CockpitContentReport {
 /// This is the pass F21-D deferred: the coverage audit answers *which node* a
 /// declared name resolves to, and this answers *what content that node
 /// carries*. Every candidate a binding's [`CockpitNodeCoverage`] names gets
-/// its own children-closure walk under [`subtree_indices`], and the closure's
+/// its own children-closure walk under `subtree_indices`, and the closure's
 /// mesh-bearing members are the binding's drawable instrument geometry. A
 /// `Bound` leaf's subtree is itself; a `NoMesh` container's is its contents;
 /// an `Ambiguous` name gets one subtree per candidate and stays ambiguous;
@@ -2399,7 +2399,7 @@ pub fn resolve_cockpit_content(
 /// owner-supplied executable — see [`super::eye::EyeMechanism`]: the
 /// registration calls a recursive, **byte-exact** child-by-name search, so
 /// this pass compares the constant byte for byte rather than through
-/// [`same_name`]. A stored `Cockpit_Camera` would not be found by the
+/// `same_name`. A stored `Cockpit_Camera` would not be found by the
 /// original's own lookup and is not found here.
 pub const COCKPIT_EYE_NODE: &str = "cockpit_camera";
 
@@ -2590,7 +2590,7 @@ impl CockpitEyeReport {
 /// mechanism task #542 measured (`super::eye::EyeMechanism`), not by the
 /// declared binding set. The search is each airframe's **whole children
 /// closure**, matching the original's recursive lookup, under the same
-/// [`subtree_indices`] walk that can never leave the airframe it started
+/// `subtree_indices` walk that can never leave the airframe it started
 /// from. The name compare is byte-exact because the measured lookup is.
 ///
 /// # Errors

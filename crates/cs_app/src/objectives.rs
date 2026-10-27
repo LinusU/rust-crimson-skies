@@ -147,7 +147,7 @@
 //! # F39-E5: completion effects cross the boundary
 //!
 //! The third piece of this module is the lowering of the declared completion
-//! effects ([`lower_effect`]): a `DeclaredObjective`'s
+//! effects (`lower_effect`): a `DeclaredObjective`'s
 //! [`completion_effects`](cs_content::objectives::DeclaredObjective::completion_effects)
 //! become the runtime's [`CompletionEffect`]s on the lowered [`ObjectiveSpec`],
 //! field-wise like every other declared field. The runtime applies them with
@@ -4815,7 +4815,7 @@ pub struct MeasuredScopeMember {
     /// classification can be read against the vocabulary it was drawn from.
     pub keys: Vec<(String, u32)>,
     /// How many text nodes the walks stopped short of, because the document nested
-    /// deeper than [`SCOPE_WALK_DEPTH`].
+    /// deeper than `SCOPE_WALK_DEPTH`.
     ///
     /// **Zero for every document the production `.zrd` decoder produced**, which is
     /// what makes both inventories above complete. It is reported rather than

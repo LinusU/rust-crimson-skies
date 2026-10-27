@@ -277,7 +277,7 @@ pub enum LandingReadError {
     MemberAbsent {
         /// The archive's logical key.
         archive: String,
-        /// The member that was looked for ([`LANDING_MEMBER`]).
+        /// The member that was looked for (`LANDING_MEMBER`).
         member: String,
     },
     /// The member's bytes did not decode through the production `.zrd`
@@ -374,7 +374,7 @@ pub struct ParsedLandings {
 /// top level, or a list that begins with a number (neither a row nor a
 /// container of rows); or when the row claim id itself would not spell.
 /// Row-level problems are not errors — they are the named refusals in
-/// [`ParsedLandings::refusals`].
+/// `ParsedLandings::refusals`.
 pub fn parse_landings(
     document: &ZrdValue,
     span: &SourceSpan,
@@ -554,7 +554,7 @@ fn parse_row(
 ///
 /// `directory` is the mount's logical directory (the stage's
 /// [`super::compose::StageMount::directory`], e.g. `zbd/c1c`): the rows come
-/// from `<directory>/zrdr.zbd`'s [`LANDING_MEMBER`] member and the nodes
+/// from `<directory>/zrdr.zbd`'s `LANDING_MEMBER` member and the nodes
 /// from `<directory>/gamez.zbd`'s node array — the same world-group
 /// archives every other reader of this mount reads. The container's node
 /// positions go through `world_scene_graph_from_gamez` with the **retail

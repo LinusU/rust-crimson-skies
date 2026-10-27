@@ -1124,7 +1124,8 @@ impl MissionStartConfiguration {
     /// `.data` record that carries the deciding byte. The pose becomes the
     /// stored pose through [`stored_heading_radians`], position through
     /// [`STORED_POSITION_METRES_PER_UNIT`], with its provenance pointing at
-    /// the conversion sequence. Both keep the claim ids [`read`] gave them and
+    /// the conversion sequence. Both keep the claim ids
+    /// [`read`](Self::read) gave them and
     /// are [`ClaimStatus::ObservedTool`]: static analysis of the owner-supplied
     /// image, never `verified_original`.
     ///
@@ -1187,7 +1188,8 @@ impl MissionStartConfiguration {
     ///
     /// * **Airframe**: the mission's own `[[mission]]` row decides. A
     ///   `known` row binds the airframe-table row it commits (the same
-    ///   [`Resolved::Known`] and image span [`bind_engine_state`] would
+    ///   [`Resolved::Known`] and image span
+    ///   [`bind_engine_state`](Self::bind_engine_state) would
     ///   produce — the table is the committed citation for those bytes);
     ///   an `unknown` row or an absent one keeps the refusal, naming the
     ///   table's reason or the missing row.

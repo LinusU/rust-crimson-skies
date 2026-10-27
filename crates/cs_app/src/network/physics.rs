@@ -1915,9 +1915,9 @@ pub struct Tracer {
 
 /// Bounded client-side tracers, keyed by shot.
 ///
-/// Bounded twice over: [`TRACER_HARD_CAP`] is the hard ceiling the constructor
+/// Bounded twice over: [`Tracers::TRACER_HARD_CAP`] is the hard ceiling the constructor
 /// refuses to exceed, and each entry carries the tick it may be presented for
-/// until ([`TRACER_LIFETIME_TICKS`]) so a shot nobody ever answers cannot pin
+/// until ([`Tracers::TRACER_LIFETIME_TICKS`]) so a shot nobody ever answers cannot pin
 /// memory forever. A confirmed tracer is *not* dropped early: it stays until its
 /// presentation window ends, so a pilot can see the hit they earned.
 #[derive(Clone, Debug)]

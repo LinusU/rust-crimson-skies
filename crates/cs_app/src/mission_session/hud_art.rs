@@ -178,7 +178,7 @@ pub struct InstrumentPlacement {
 }
 
 /// The `instruments.zrd` read: the measured placements, or why none can be
-/// claimed — the same refusal-vs-measured-absence rule [`super::parts`]
+/// claimed — the same refusal-vs-measured-absence rule `super::parts`
 /// carries.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InstrumentTable {
@@ -191,7 +191,7 @@ pub struct InstrumentTable {
 }
 
 /// Reads `ZBD/zrdr.zbd`'s `instruments.zrd` member the way
-/// [`super::parts::read_scope_turrets`] reads `ai.zrd`: the manifest names
+/// `super::parts::read_scope_turrets` reads `ai.zrd`: the manifest names
 /// the host path, `discover_container` finds the member and `decode_zrd`
 /// parses it. A member that will not decode is a refusal, never an empty
 /// table; a carrier that holds no such member is a measured absence.
@@ -833,7 +833,7 @@ pub struct MissionHudArt {
 }
 
 /// Spawns the built cluster under a fresh HUD pass: a root entity carrying
-/// [`CinematicOwnedVisibility`], a `Camera3d` on [`HUD_CAMERA_LAYER`] with the
+/// `CinematicOwnedVisibility`, a `Camera3d` on [`HUD_CAMERA_LAYER`] with the
 /// measured 4:3 fit, and every part re-rooted at its `instruments.zrd`
 /// placement. Returns the root entity.
 pub fn spawn_hud_art(world: &mut World, art: &HudArt) -> Entity {
@@ -1243,7 +1243,7 @@ type AttitudeBalls<'w, 's> = Query<
 
 /// Per-frame drive of the drawn cluster: needles from telemetry, pips and
 /// glyph counts from the weapon/ordnance authorities, zone materials from the
-/// damage resolver — the same session reads [`super::cockpit_hud`] makes.
+/// damage resolver — the same session reads `super::cockpit_hud` makes.
 #[allow(clippy::too_many_arguments)]
 pub fn update_hud_art(
     state: Res<PlaytestState>,

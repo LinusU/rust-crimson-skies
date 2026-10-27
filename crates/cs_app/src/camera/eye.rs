@@ -26,7 +26,7 @@
 //!    record) into the eye-offset globals `0x71c328..0x71c330`. A null
 //!    vehicle restores the triple from the defaults at
 //!    `0x75d1b8..0x75d1c0`. `0x4d1cc0` is the same local-translate reader
-//!    [`horizon`]'s measured apply path reads node translations through —
+//!    [`horizon`](super::horizon)'s measured apply path reads node translations through —
 //!    two mechanism claims pin the same reader.
 //! 3. The camera dispatcher at `0x42c5c0` loads the camera-mode index
 //!    (`[cam + 0x14c]`), bounds it to ten entries, and jumps through the
@@ -141,7 +141,8 @@ pub const EYE_OVERRIDE_LENGTH: u64 = 0x84;
 /// the owner-supplied decrypted image.
 ///
 /// Built by [`eye_mechanism_source`], which refuses an image that is not the
-/// measured one — the same idiom [`horizon::mechanism_source`] uses for its
+/// measured one — the same idiom
+/// [`horizon::mechanism_source`](super::horizon::mechanism_source) uses for its
 /// own static-analysis spans.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EyeMechanism {

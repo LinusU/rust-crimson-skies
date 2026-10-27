@@ -1092,7 +1092,8 @@ fn node_collider_bundle(
 /// What the load publishes from it, per damage graph node the actor's graph
 /// names:
 ///
-/// * the node's **own** [`scene_binding`](DamageNode::scene_binding) is the
+/// * the node's **own**
+///   [`scene_binding`](cs_content::damage::DeclaredDamageNode::scene_binding) is the
 ///   node → scene-node identity the load inverts to find the part entity —
 ///   the damage side's record, never a second map this resource could drift
 ///   from — and a node whose binding names no entity of *this* import belongs

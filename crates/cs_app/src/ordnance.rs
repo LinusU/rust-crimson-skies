@@ -530,7 +530,8 @@ fn known_or_refuse<T: Clone>(
     }
 }
 
-/// The [`SceneNodeId`] a declared component's visual launcher binding names,
+/// The [`SceneNodeId`](cs_content::scene::SceneNodeId) a declared component's
+/// visual launcher binding names,
 /// when it declares one.
 ///
 /// F28-B reads the live aircraft hierarchy through this id; the ordnance
@@ -1250,7 +1251,8 @@ impl OrdnanceSession {
     ///
     /// # Errors
     ///
-    /// [`SessionRefusal::NoSession`] for session generation zero.
+    /// [`SessionRefusal::NoSession`](crate::weapons::SessionRefusal::NoSession)
+    /// for session generation zero.
     pub fn new(
         session: u64,
         tick: Tick,

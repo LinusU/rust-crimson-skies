@@ -32,7 +32,8 @@
 //! * [`CapitalActorBinding`] — the ECS record tying an entity to its actor
 //!   and catalog subject, generation-stamped like
 //!   [`crate::scene::SceneNodeBinding`] and
-//!   [`cs_app::damage::DamageActorBinding`] so a reload can never leave a
+//!   [`cs_app::damage::DamageActorBinding`](crate::damage::DamageActorBinding) so
+//!   a reload can never leave a
 //!   stale binding looking live.
 //!
 //! Nothing here owns runtime behavior: the subsystem state machine,

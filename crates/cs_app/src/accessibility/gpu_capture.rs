@@ -36,7 +36,7 @@
 //! * **Not the row's width.** [`ObjectivePage`] records no row width and no
 //!   text extent, so the band runs from the end of the cue column to the
 //!   page's right edge — the frame's edge while the page fits the frame
-//!   1:1, and uniformly short of it when [`page_scale`] scales the page
+//!   1:1, and uniformly short of it when `page_scale` scales the page
 //!   down. That span is a frame choice, documented here, not a
 //!   measurement; inventing a text width would be a guess.
 //! * **Not the scrolled page.** [`ObjectivePage`] carries no scroll state, so
@@ -112,7 +112,7 @@ fn page_scale(page: &ObjectivePage) -> Option<f32> {
 /// viewport, and its cue's glyph box, likewise clipped: the frame shows
 /// exactly the part of each row a player would see. A row is never moved or
 /// trimmed to make it fit, and no row is ever resized on its own — when the
-/// viewport does not fit the frame, [`page_scale`] scales **every** row
+/// viewport does not fit the frame, `page_scale` scales **every** row
 /// together by one uniform factor instead. A page with no visible line —
 /// every row hidden or the viewport empty — yields no box, which is what
 /// makes [`capture_objective_page`] refuse rather than write an empty

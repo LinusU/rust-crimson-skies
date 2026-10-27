@@ -5,7 +5,9 @@
 //!
 //! An object's record names the mesh it draws in exactly one field
 //! ([`cs_content::world::WorldObjectInstance::mesh`]), and its collision shape
-//! names **no** mesh of its own: [`WorldCollisionShape::FromMesh`] means "the
+//! names **no** mesh of its own:
+//! [`WorldCollisionShape::FromMesh`](cs_content::world::WorldCollisionShape::FromMesh)
+//! means "the
 //! geometry of that same reference". This module is where a reference meets an
 //! actual upload, so there is exactly one place a mesh can be looked up, one
 //! conversion to the engine's mesh type, and one fingerprint to compare.

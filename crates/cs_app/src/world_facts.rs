@@ -4,7 +4,9 @@
 //! The simulation owns the other two maps — [`cs_sim::mission::ActorFactTable`]
 //! writes `actors` and [`cs_sim::mission::BlockLifecycleTable`] writes
 //! `objectives` — and both document that the world-side maps are somebody
-//! else's to fold in through [`MissionFacts::absorb`]. This module is that
+//! else's to fold in through
+//! [`MissionFacts::absorb`](cs_script::runtime::MissionFacts::absorb). This module is
+//! that
 //! somebody: the host that observes the world.
 //!
 //! # What the record spells, and what has to answer
@@ -33,13 +35,16 @@
 //! they are deliberately kept apart:
 //!
 //! 1. **Does the operand name anything in the observed world?** That is
-//!    resolution, and it is [`MemberResolver`]'s job for the member chains — a
-//!    chain that names nothing is recorded as [`MemberPresence::Missing`] and
+//!    resolution, and it is [`MemberResolver`](crate::world_facts::MemberResolver)'s
+//!    job for the member chains — a
+//!    chain that names nothing is recorded as
+//!    [`MemberPresence::Missing`](cs_script::runtime::MemberPresence::Missing) and
 //!    never given a presence, a position or a count. The contract's own rule
 //!    applies — "Validate names/ids/ranges" and measure rather than assume
 //!    (`docs/contracts/SCRIPT-MISSION.md`, "Program security").
 //! 2. **What does the world say about it this tick?** That is observation, and
-//!    it is [`WorldObservation`]'s job: the host's per-tick report of the
+//!    it is [`WorldObservation`](crate::world_facts::WorldObservation)'s job: the
+//!    host's per-tick report of the
 //!    in-play state of the members it is holding, the living count of the
 //!    groups it tracks, the pending spawns a generator owes, the state byte
 //!    of an animation it is running and the danger-zone flags it has set.
@@ -52,9 +57,12 @@
 //!
 //! # The resolver is the admission ticket
 //!
-//! [`WorldFactTable::facts`] answers nothing at all when the table has no
-//! resolver ([`WorldFactTable::drop_resolver`]): every spelled chain is
-//! recorded [`MemberPresence::Missing`] and no count is reported, whatever the
+//! [`WorldFactTable::facts`](crate::world_facts::WorldFactTable::facts) answers
+//! nothing at all when the table has no resolver
+//! ([`WorldFactTable::drop_resolver`](crate::world_facts::WorldFactTable::drop_resolver)):
+//! every spelled chain is recorded
+//! [`MemberPresence::Missing`](cs_script::runtime::MemberPresence::Missing)
+//! and no count is reported, whatever the
 //! observation holds. The resolver is what ties an operand to the observed
 //! world; without it there is no way to tell a chain the record spelled from a
 //! chain nothing could look up, so the writer refuses to name anything.
@@ -66,7 +74,8 @@
 //! chained member lookup on the previous result, so the arguments are one
 //! hierarchy (finding
 //! `2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics.md`).
-//! [`MemberResolver`] implements exactly that over the installation's own node
+//! [`MemberResolver`](crate::world_facts::MemberResolver) implements exactly that over
+//! the installation's own node
 //! hierarchy: element 0 must name exactly one node, each later element must
 //! name exactly one **descendant** of the node the previous element matched,
 //! and anything else — no match, or more than one — is unresolved rather than a

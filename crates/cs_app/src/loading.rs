@@ -648,7 +648,7 @@ enum ItemStatus {
 ///
 /// Constructed by [`LoadTransaction::issue`], which assigns the
 /// process-unique [`LoadSerial`]. States advance only through the methods
-/// below, each checking [`LoadState::permits`]; there is no path from a
+/// below, each checking `LoadState::permits`; there is no path from a
 /// terminal state back into the load, and no path for a foreign or stale
 /// completion into the item records.
 #[derive(Debug)]

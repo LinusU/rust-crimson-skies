@@ -1796,7 +1796,7 @@ impl PendingTargetDamage {
     }
 }
 
-/// What one [`drive_targeting_schedule`] frame did, pass by pass.
+/// What one `drive_targeting_schedule` frame did, pass by pass.
 ///
 /// The report is the schedule's observable side: a driver (or a test) reads
 /// the passes' own reports and errors here instead of calling any targeting
@@ -1864,7 +1864,7 @@ struct TrackedTargetingSession {
 
 /// Registers the rendered-frame targeting schedule.
 ///
-/// One exclusive system in [`Update`] — [`drive_targeting_schedule`] — runs
+/// One exclusive system in [`Update`] — `drive_targeting_schedule` — runs
 /// the five entries a session drives, once per rendered frame, in the order
 /// the consumer contract requires:
 ///

@@ -34,7 +34,7 @@
 //!   (`UvOrigin`, `VertexColor`) are open. The capture is
 //!   evidence about *geometry*, drawn through the real pipeline. It draws under
 //!   the fidelity baseline — one sample per pixel, no tone curve,
-//!   ([`capture_camera`]) — and that is the comparison set this project chose,
+//!   (`capture_camera`) — and that is the comparison set this project chose,
 //!   never a claim that the original renderer used it (spec F17 non-negotiable
 //!   5: antialiasing is a designed improvement, not evidence of original
 //!   parity).
@@ -201,7 +201,7 @@ pub struct GpuCapture {
     /// How many distinct luminance levels the frame holds. One means the whole
     /// frame is the background.
     pub distinct_luminance: usize,
-    /// Pixels that differ from [`CLEAR_COLOR`]: the geometry's own coverage.
+    /// Pixels that differ from `CLEAR_COLOR`: the geometry's own coverage.
     pub covered_pixels: usize,
     /// [`Self::covered_pixels`] over the frame's pixel count.
     pub covered_permille: u32,

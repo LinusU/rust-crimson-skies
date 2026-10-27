@@ -3292,38 +3292,38 @@ fn artwork_image(artwork: &Artwork) -> Image {
 /// yet (the owner-command smoke of the whole flow is #1842).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SmokeScene {
-    /// The main-menu walk ([`script`]).
+    /// The main-menu walk (`script`).
     MainMenu,
-    /// The cabin hub's hover, press and focus pass ([`cabin_script`]).
+    /// The cabin hub's hover, press and focus pass (`cabin_script`).
     Cabin,
     /// The whole start flow (#1842): main menu → Campaign → a new pilot →
     /// intro movie → cabin → a not-implemented notice → back to the main
-    /// menu ([`flow_script`]).
+    /// menu (`flow_script`).
     Flow,
     /// The owner-command smoke's first leg (#1832 `PARITY5-START-FLOW.04`):
     /// `cs --cs-path <retail> --smoke-seconds <n> --capture-dir <dir>` walks
     /// the main menu → Campaign → a typed new pilot → Continue → the intro
     /// movie → the cabin, then presses **Next Mission** so the run hands the
     /// process over to the mission instead of ending on a timer
-    /// ([`start_flow_script`]).
+    /// (`start_flow_script`).
     StartFlow,
     /// The owner-command smoke's return leg (#1832):
     /// `cs --cs-path <retail> --resume-start-flow <end> --smoke-seconds <n>
     /// --capture-dir <dir>` opens on the cabin, photographs it and presses
     /// **Next Mission** again, replaying the mission the player left
-    /// ([`start_flow_resumed_script`]).
+    /// (`start_flow_resumed_script`).
     StartFlowResumed,
     /// The Preferences → Audio page (#1996): Main Menu → Preferences →
     /// Audio, the check box, a slider drag, the drop-down, Accept, a second
-    /// visit that Cancels ([`audio_script`]).
+    /// visit that Cancels (`audio_script`).
     Audio,
     /// The cabin's Change Memento screen (#1957): Change Memento, the arrows,
-    /// Cancel, then again and Accept ([`memento_script`]).
+    /// Cancel, then again and Accept (`memento_script`).
     Memento,
     /// The Plane Construction hub's Sell hangar (#2063): the cabin, the Plane
     /// Name dialog, the hub, Sell over **synthetic** saved planes (the pilot
     /// store has none yet), the list, a refused sale, a sale answered no and
-    /// yes, Export's marked notice and Done ([`hangar_script`]).
+    /// yes, Export's marked notice and Done (`hangar_script`).
     Hangar,
 }
 
@@ -3444,7 +3444,7 @@ pub struct ShellSmokeReport {
     pub unhandled: usize,
     /// The cursor art found.
     pub cursor: Option<String>,
-    /// What each presented `M` row did (see [`ShellRun::movies`]).
+    /// What each presented `M` row did (see `ShellRun::movies`).
     pub movies: Vec<String>,
     /// Decoded movie frames delivered to a texture.
     pub movie_frames: u64,

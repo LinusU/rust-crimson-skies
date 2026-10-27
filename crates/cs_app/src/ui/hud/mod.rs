@@ -33,7 +33,7 @@
 //! gauge, and an absent authority produces no rows rather than invented
 //! ones. See `docs/findings/2026-10-07-f46-b-hud-gauges-and-target-display.md`.
 //!
-//! [`HudSession`] (F46-C, in [`session`]) is the in-flight page state the
+//! [`HudSession`] (F46-C, in `session`) is the in-flight page state the
 //! flight loop drives: the cockpit frame, the mission map's read-only
 //! projection of the world record/objective display/target roster, and the
 //! mode-aware pause — a request that answers with the input path's own

@@ -73,7 +73,7 @@ use super::screens::ScreenView;
 
 /// The capture frame's width in pixels: the extent every front-end screen
 /// background in `GOSDATA/ASSETS/crimson.rof` stores (measured `800x600`, see
-/// [`super::retail`]), so an original screen maps onto the frame one-to-one.
+/// `super::retail`), so an original screen maps onto the frame one-to-one.
 /// A 640x480 authored screen — the F45 fixture's own size, and the stored
 /// extent of `mainmenu` and `escapemenu` in `ZBD/rimage.zbd` — letterboxes by
 /// exactly the same [`AspectFit`] a player's surface would.
@@ -279,7 +279,7 @@ pub struct ScreenCapture {
     /// How many distinct luminance levels the frame holds. One means the whole
     /// frame is the background.
     pub distinct_luminance: usize,
-    /// Pixels that differ from [`CLEAR_COLOR`].
+    /// Pixels that differ from `CLEAR_COLOR`.
     pub covered_pixels: usize,
     /// [`Self::covered_pixels`] over the frame's pixel count.
     pub covered_permille: u32,

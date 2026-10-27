@@ -7,7 +7,7 @@
 //!
 //! * **Script.** `gui_create` reads `@globals@XQ` (`DKA`, then clears it) and
 //!   `@globals@ZQ` (`-1` the pilot's plane, `-2` the wingmate's; the flight
-//!   check sets it, see [`super::flow`]), calls `E 2014(ZQ, -3, DKA)` and
+//!   check sets it, see `super::flow`), calls `E 2014(ZQ, -3, DKA)` and
 //!   `E 2035(ZQ, DKA)`, then builds the background pane, the accept and
 //!   cancel buttons, seven titles, the plane-info text, two plane diagrams,
 //!   **four** gun-name texts (`OL_T_GUNNAME0..3`), **four** ammunition

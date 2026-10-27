@@ -92,8 +92,10 @@
 //!   original measurement.
 //!
 //! Nothing here is `verified_original`: measured fields are
-//! [`ClaimStatus::ObservedTool`], the session rate is
-//! [`ClaimStatus::Designed`], and every refusal is [`ClaimStatus::Unknown`].
+//! [`ClaimStatus::ObservedTool`](cs_types::evidence::ClaimStatus::ObservedTool), the
+//! session rate is
+//! [`ClaimStatus::Designed`](cs_types::evidence::ClaimStatus::Designed), and every
+//! refusal is [`ClaimStatus::Unknown`](cs_types::evidence::ClaimStatus::Unknown).
 //! `docs/findings/2026-10-08-m01-lc-world-actor-spawn.md` records the claim
 //! boundary and the residues verbatim.
 
@@ -1277,7 +1279,7 @@ pub struct StartupStatement {
     pub activation: String,
     /// The three numbers as the document states them — degrees for a
     /// rotate, the triple as parsed for a translate (#791). A rotate's
-    /// degrees convert to radians in [`attitude_for`] through the
+    /// degrees convert to radians in `attitude_for` through the
     /// `retail_zrd` adapter (F16-E-4, #1429), not here.
     pub values: [f32; 3],
     /// The statement's `STATE` list, spanned inside the reader archive.

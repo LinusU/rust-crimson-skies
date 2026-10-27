@@ -13,9 +13,9 @@
 //!
 //! [`run_capture`] is the same scene driven by F21-E's deterministic capture
 //! flags: the world advances to the capture's tick, the installed
-//! [`CaptureRequest`](crate::camera::CaptureRequest) applies to the one
-//! [`CameraSession`](crate::camera::CameraSession) frame produced there, and
-//! the typed output is the [`CaptureReport`](crate::camera::CaptureReport)
+//! [`CaptureRequest`] applies to the one
+//! [`CameraSession`] frame produced there, and
+//! the typed output is the [`CaptureReport`]
 //! listing every override the request made — the report the CLI prints.
 
 use std::fmt;

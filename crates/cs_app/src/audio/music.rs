@@ -21,7 +21,8 @@
 //! * one [`ContentKind::Music`] id **per track**, over F14-D.7's
 //!   [`install_file_key`]
 //!   spelling of `"<container>/<member>"` — the #1465 dialogue shape: one
-//!   derivation, no new spelling. [`music_member_id`] is the [`voice_member_id`]
+//!   derivation, no new spelling. [`music_member_id`] is the
+//!   [`voice_member_id`](super::voice::voice_member_id)
 //!   sibling the ruling names, and the cue's id and any published id go
 //!   through this one function;
 //! * the container is #1438's **labelled choice**: `ZBD/soundsh.zbd` preferred

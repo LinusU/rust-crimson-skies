@@ -14,7 +14,8 @@
 //!
 //! * [`play_animation`] takes a validated declared
 //!   [`AnimationClip`], lowers it
-//!   through [`lower::lower_clip`] and starts **one live instance** of it in
+//!   through [`lower::lower_clip`](super::lower::lower_clip) and starts
+//!   **one live instance** of it in
 //!   the [`AnimationPlayback`] resource — refused when the world has no
 //!   session, when that `(track, instance)` identity already plays, or when
 //!   the clip does not survive the boundary;
@@ -733,7 +734,8 @@ impl std::error::Error for AnimationPlayError {
 /// [`AnimationInstance`] of that `animation_track`.
 ///
 /// The clip is lowered and re-validated at the boundary
-/// ([`lower::lower_clip`]), so a playback can only ever drive the track
+/// ([`lower::lower_clip`](super::lower::lower_clip)), so a playback can
+/// only ever drive the track
 /// kinds, tick ranges and marker keys that both records accept. The
 /// instance's event ids are stamped with the playback's session and a fresh
 /// producer serial, and its clip time starts at `at`.

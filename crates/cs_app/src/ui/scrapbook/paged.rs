@@ -486,7 +486,8 @@ impl ScrapbookUi {
     }
 
     /// Tears the screen down: no pages, no selection, no saved ids. Calling it
-    /// twice is the same as calling it once, and a later [`refresh`] reopens
+    /// twice is the same as calling it once, and a later
+    /// [`refresh`](Self::refresh) reopens
     /// the screen from the producer's records.
     pub fn close(&mut self) {
         self.pages.clear();

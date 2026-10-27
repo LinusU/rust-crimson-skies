@@ -348,7 +348,7 @@ pub const SUN_SCREEN_FRACTION: [f32; 2] = [0.35, 0.20];
 pub const MAX_SUN_SCREEN_ERROR: f32 = 0.05;
 /// The least pixels a drawn quad's rect may add over the hidden frame. The
 /// faintest of the four (the `lflare2` ring, at the designed 50% alpha) still
-/// changes tens of thousands of pixels on the sky at [`FLARE_PIXEL_DELTA`],
+/// changes tens of thousands of pixels on the sky at `FLARE_PIXEL_DELTA`,
 /// so the floor separates *drawn* from *never drew*, nothing more.
 /// **Designed.**
 pub const MIN_FLARE_QUAD_PIXELS: usize = 256;
@@ -464,7 +464,7 @@ pub const MIN_TERRAIN_DETAIL_PERMILLE: u32 = 20;
 /// terrain to be called *textured*. A flat grey fill under any light yields
 /// one colour; the smallest real texture yields dozens. Measured flat state:
 /// 711 (the fog band's gradient), so this floor alone is never the decider —
-/// [`Self::MIN_TERRAIN_DETAIL_PERMILLE`] is.
+/// [`MIN_TERRAIN_DETAIL_PERMILLE`] is.
 pub const MIN_TERRAIN_DISTINCT_COLOURS: usize = 24;
 /// The least luminance spread **in the nearest terrain** (the lowest third of
 /// lowest unbroken run of rows the frame's terrain tiles fill, see
@@ -5509,7 +5509,7 @@ fn flight_check_metrics(
 }
 
 /// Pixels inside `region` (`[x, y, width, height]`, clamped to the frame) that
-/// differ between two same-sized RGBA frames by more than [`FLIGHT_CHECK_PIXEL_DELTA`]
+/// differ between two same-sized RGBA frames by more than `FLIGHT_CHECK_PIXEL_DELTA`
 /// levels in any colour channel. The alpha channel is ignored.
 #[must_use]
 pub fn region_difference(a: &[u8], b: &[u8], width: u32, height: u32, region: [u32; 4]) -> usize {
@@ -6416,8 +6416,8 @@ const TERRAIN_TILE_DETAIL_DENOMINATOR: usize = 10;
 /// The old probe sampled the frame's bottom third, which at some starts is
 /// open water (C3/M01 starts over the sea: the check measured the sea, spread
 /// 5). Terrain is found from the draw itself instead: the frame is cut into
-/// [`TERRAIN_TILE`] squares, a square is terrain when its world pixels carry
-/// local detail (see [`TERRAIN_TILE_DETAIL_DENOMINATOR`]), and the near field
+/// `TERRAIN_TILE` squares, a square is terrain when its world pixels carry
+/// local detail (see `TERRAIN_TILE_DETAIL_DENOMINATOR`), and the near field
 /// is the lowest third (at least one row) of the lowest unbroken run of rows
 /// holding such squares — the closest terrain, where fog is least, wherever
 /// the camera points, and not a textured cloud bank further up the frame. The
@@ -6482,7 +6482,7 @@ const HORIZON_MARGIN_ROWS: usize = 4;
 /// clear pixel of a column that has one, the ties going to the lower row): the
 /// sea columns share the water tiles' far edge, terrain columns end it higher,
 /// on the terrain's skyline. A clear pixel more than
-/// [`HORIZON_MARGIN_ROWS`] below that row is a hole: nothing stands between
+/// `HORIZON_MARGIN_ROWS` below that row is a hole: nothing stands between
 /// the camera and the clear colour although the sea is below the horizon
 /// everywhere. The island of M01 had one for want of its terrain groups (a flat
 /// gap between two hills, whose lower edge was a straight cut at the waterline).

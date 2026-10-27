@@ -6,7 +6,8 @@
 //! `cs_content::mesh::RenderMesh` is the lossless, Bevy-free handoff the
 //! GameZ reader produced (`docs/findings/2026-09-28-f10-a-lossless-mesh-ir-
 //! and-strip-fixtures.md`). This module is the adapter that turns one of its
-//! [`RenderGroup`]s — the triangles of one stored material index — into the
+//! [`RenderGroup`](cs_content::mesh::RenderGroup)s — the triangles of one stored
+//! material index — into the
 //! buffers a Bevy draw call indexes. It is the piece F10-C.01's findings left
 //! open on purpose: "whether an upload builds a contiguous index range per
 //! material, splits into one buffer per material or keeps one buffer" is
@@ -397,7 +398,7 @@ impl ColliderMesh {
 
     /// Canonicalises `collision` for the physics backend.
     ///
-    /// Positions are copied through [`canonicalise_position_component`], the
+    /// Positions are copied through `canonicalise_position_component`, the
     /// same rule the drawn upload applies, so both views of one mesh agree
     /// bit-for-bit on every position they share — including on the subnormal
     /// extent that would otherwise overflow parry's binned BVH builder

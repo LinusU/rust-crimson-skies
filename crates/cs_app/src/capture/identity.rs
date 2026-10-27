@@ -21,7 +21,8 @@
 //! * [`rules_digest`] covers what changes how the *same* content is evaluated:
 //!   the flight law, the handling profile and the fixed rate. Keeping it out of
 //!   the content digest is what makes "a rules table changed" reportable as
-//!   [`CompatibilityDifference::Rules`] rather than as a content change.
+//!   [`CompatibilityDifference::Rules`](cs_content::replay::CompatibilityDifference::Rules)
+//!   rather than as a content change.
 //! * [`engine_digest`] names the engine build and the state format version the
 //!   digests use. Source changes move [`BuildId`] (the candidate tree), not this.
 //!

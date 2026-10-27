@@ -241,7 +241,7 @@ pub struct NotImplemented {
 /// would open a marked "not implemented" screen (rule 5: a missing screen
 /// blocks release, it never passes); none is left. (Previous Missions was
 /// built by #1956: [`super::previous_missions`]; Change Memento by #1957:
-/// [`super::memento`]; the Plane Name dialog by #1958: [`super::plane_name`].)
+/// `super::memento`; the Plane Name dialog by #1958: [`super::plane_name`].)
 pub const NOT_IMPLEMENTED: &[NotImplemented] = &[];
 
 /// The layout section that presents `screen` through the shell. The extra

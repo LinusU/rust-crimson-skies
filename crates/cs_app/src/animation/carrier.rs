@@ -1282,7 +1282,7 @@ fn bind_references(
 /// Binds every animation carrier the installation declares.
 ///
 /// One production discovery pass, then per carrier: its own header through
-/// [`dispatch`], its index through [`read_animation_index`], its sibling
+/// [`dispatch()`], its index through [`read_animation_index`], its sibling
 /// reader's paired records through the production `.zrd` reader, and the join
 /// between them.
 pub fn survey_animation_bindings(

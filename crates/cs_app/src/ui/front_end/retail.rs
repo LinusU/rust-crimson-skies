@@ -346,8 +346,8 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Discovery`], [`RetailError::Session`],
-    /// [`RetailError::Archive`] or [`RetailError::Member`].
+    /// `RetailError::Discovery`, `RetailError::Session`,
+    /// `RetailError::Archive` or `RetailError::Member`.
     pub fn open(install_root: &Path) -> Result<Self, RetailError> {
         let found = discover(install_root).map_err(|error| RetailError::Discovery {
             path: install_root.display().to_string(),
@@ -455,8 +455,8 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Texture`] when a stored texture refuses to resolve or
-    /// decode through the production reader, [`RetailError::Member`] when a
+    /// `RetailError::Texture` when a stored texture refuses to resolve or
+    /// decode through the production reader, `RetailError::Member` when a
     /// container member will not read. A single image the *image decoder*
     /// refuses is not an error: it is recorded with [`OriginalImage::refusal`].
     pub fn inventory(&self) -> Result<FrontEndInventory, RetailError> {
@@ -553,8 +553,8 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Image`] when the image is not in the inventory's source
-    /// or will not decode, [`RetailError::Texture`]/[`RetailError::Member`]
+    /// `RetailError::Image` when the image is not in the inventory's source
+    /// or will not decode, `RetailError::Texture`/`RetailError::Member`
     /// for the read itself.
     pub fn artwork(&self, image: &OriginalImage) -> Result<Artwork, RetailError> {
         match image.source {
@@ -630,7 +630,7 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Texture`] when the archive lists no such texture, and
+    /// `RetailError::Texture` when the archive lists no such texture, and
     /// the errors of [`Self::artwork`].
     pub fn ui_artwork(&self, name: &str) -> Result<Artwork, RetailError> {
         let stored = self
@@ -666,7 +666,7 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Member`] when the archive does not open, index or list
+    /// `RetailError::Member` when the archive does not open, index or list
     /// the member, or when the member does not decode.
     pub fn sound_member(&self, container: &str, member: &str) -> Result<SoundMember, RetailError> {
         let fail = |reason: String| RetailError::Member {
@@ -703,7 +703,7 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Member`] when the member will not read or its text does
+    /// `RetailError::Member` when the member will not read or its text does
     /// not parse as a layout.
     pub fn original_layout(&self) -> Result<OriginalLayout, RetailError> {
         let (text, _) = self.layout_text()?;
@@ -717,7 +717,7 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Member`] when the member will not read or is not UTF-8
+    /// `RetailError::Member` when the member will not read or is not UTF-8
     /// or Latin-1 text.
     pub fn layout_text(&self) -> Result<(String, String), RetailError> {
         let member_error = |reason: String| RetailError::Member {
@@ -768,7 +768,7 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Member`] when the key is invalid, the file does not
+    /// `RetailError::Member` when the key is invalid, the file does not
     /// resolve or its bytes will not read.
     pub fn movie_bytes(&self, file: &str) -> Result<Vec<u8>, RetailError> {
         let member_error = |reason: String| RetailError::Member {
@@ -886,7 +886,7 @@ impl FrontEndScreens {
     ///
     /// # Errors
     ///
-    /// [`RetailError::Texture`] for a name the archive refuses.
+    /// `RetailError::Texture` for a name the archive refuses.
     pub fn resolve(
         &self,
         name: &str,

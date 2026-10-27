@@ -333,7 +333,8 @@ pub fn controls_screen_text(controls: &ControlsMap, paused: bool, help_open: boo
     text
 }
 
-/// Adds the F1 help screen (the Esc pause screen is [`super::pause_map`]). Windowed compositions only.
+/// Adds the F1 help screen (the Esc pause screen is `super::pause_map`).
+/// Windowed compositions only.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MissionControlsHelpPlugin;
 

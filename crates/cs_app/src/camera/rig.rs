@@ -24,7 +24,7 @@
 //! Both offsets are declared in the **aircraft's body frame** and read in that
 //! frame's own convention: `forward_m` is a distance along the body's forward
 //! axis, so a chase view's negative value puts the camera astern and looking
-//! the way the aircraft flies. [`oriented_pose`] is where that convention is
+//! the way the aircraft flies. `oriented_pose` is where that convention is
 //! turned into a world position, once, for every rig.
 //!
 //! The spyglass is the interesting one, because it is the only rig with an

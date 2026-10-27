@@ -452,7 +452,7 @@ pub enum MissionCompositionError {
     /// The flak effect could not be measured.
     FlakEffect(super::flak_burst_fx::FlakEffectError),
     /// The mission's sound-group table or a member it names could not be read
-    /// for the radio dialogue ([`super::radio`]).
+    /// for the radio dialogue (`super::radio`).
     Radio(super::radio::RadioError),
     /// The audio backend refused: the machine cannot play the launch sound.
     /// The device error carries the stable code `audibility_exit_code` maps
@@ -617,7 +617,7 @@ fn measure_stage_cinematic(
 /// VS-M01-RT-CONTENT stage); the announced load is the world group's own
 /// `gamez.zbd`, the container the residency will spawn from, measured to
 /// the byte from the installation the plan was bound under. The private
-/// cache defaults to [`DEFAULT_MISSION_CACHE_DIR`] under the working
+/// cache defaults to `DEFAULT_MISSION_CACHE_DIR` under the working
 /// directory — never inside the installation.
 ///
 /// # Errors

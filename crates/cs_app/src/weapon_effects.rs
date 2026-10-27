@@ -678,7 +678,7 @@ pub fn drive_weapon_effect_presentation(world: &mut World) {
 /// [`AudioSession`], and the schedule serves whichever pair is installed.
 ///
 /// Register it once. It initialises [`WeaponShotSequences`],
-/// [`WeaponEffectScheduleReport`] and [`WeaponEffectScheduleState`], and adds
+/// [`WeaponEffectScheduleReport`] and `WeaponEffectScheduleState`, and adds
 /// [`drive_weapon_effect_presentation`] to `FixedPostUpdate` after the weapon
 /// step.
 #[derive(Clone, Copy, Debug, Default)]

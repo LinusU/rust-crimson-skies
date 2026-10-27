@@ -121,7 +121,7 @@ pub struct ConvoyWorld<'w, 's> {
     layout: Option<Res<'w, ConvoyLayoutRows>>,
 }
 
-/// One truck's drawn node state in a [`ConvoyLayoutRows`] sample: the count
+/// One truck's drawn node state in a `ConvoyLayoutRows` sample: the count
 /// of its drawn scenery nodes that are effectively visible (`*_visible`) or
 /// hidden (`*_hidden`), split between the intact presentation and the
 /// `destroyed` layout. A truck with no authored `destroyed` child carries

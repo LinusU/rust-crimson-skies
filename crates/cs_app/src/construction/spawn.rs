@@ -36,7 +36,8 @@
 //! callbacks live in the executable, and inventing a conversion would be a
 //! guess. AC04's equality is therefore stated in the unit both sides share,
 //! and the spawned body's kilograms are asserted only against the one-mass
-//! rule (tuning plus declared [`LoadoutMass`]), never against the game-weight
+//! rule (tuning plus declared [`LoadoutMass`](cs_sim::flight::LoadoutMass)),
+//! never against the game-weight
 //! total.
 //!
 //! Paint travels as [`PaintSelection`] references — never as pixels — so the

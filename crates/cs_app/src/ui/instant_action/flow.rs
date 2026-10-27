@@ -200,7 +200,7 @@ use IaScreen as S;
 /// [`IaEffect::AskDiscard`] opens, so they are refused while no prompt is
 /// pending (and every other action is refused while one is) — that gating
 /// lives in [`InstantActionFlow::apply`], not in a row. Both screens a draft
-/// can be lost from carry [`IaGuard::DiscardsDraft`]: `Customize`, where the
+/// can be lost from carry `IaGuard::DiscardsDraft`: `Customize`, where the
 /// draft is edited, and `Select`, which a launched custom draft comes back to
 /// when its session is abandoned — leaving the Instant Action screens with it
 /// still holds the draft, so the same confirmation has to guard it there.

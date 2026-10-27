@@ -183,7 +183,7 @@ pub fn resolve_muzzle_drawable(
 }
 
 /// Resource: the burst art the stage loaded from the installation, waiting
-/// for [`build_muzzle_burst_drawing`] to turn it into engine assets.
+/// for `build_muzzle_burst_drawing` to turn it into engine assets.
 #[derive(Resource, Clone, Debug)]
 pub struct MuzzleBurstArtResource(pub MuzzleBurstArt);
 
@@ -639,7 +639,7 @@ fn update_notice_line(
 /// Wires the mission's weapon presentation: the two drawn mirrors, their
 /// orientation and the refusal notice.
 ///
-/// Installed by [`super::compose::add_composition`] beside
+/// Installed by `add_composition` beside
 /// [`super::world_draw::MissionWorldDrawPlugin`], so every composition —
 /// windowed and headless — presents its weapons the same way. The headless
 /// face draws nothing on a screen, but it still spawns the drawn children,

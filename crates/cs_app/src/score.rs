@@ -232,7 +232,8 @@ fn recorded_outcome(terminal: &MissionTerminal) -> Result<Outcome, OutcomeRecord
 /// authority the caller owns, and the verdict and **score** the settled run
 /// itself carries.
 ///
-/// The score is read from `terminal`, which [`MissionHost::settle`]
+/// The score is read from `terminal`, which
+/// [`MissionHost::settle`](crate::mission_session::MissionHost::settle)
 /// filled from the session's [`SessionScoreLedger`]
 /// (`crate::mission_session::host`); this function never tallies anything.
 /// The caller's [`OutcomeId`] is kept verbatim, so the campaign's applied

@@ -168,7 +168,7 @@ impl PropellerSpin {
     }
 
     /// Accumulated whole and partial revolutions, wrapped at
-    /// [`REVOLUTION_WRAP`]: the monotonic reading a test or a HUD observes.
+    /// `REVOLUTION_WRAP`: the monotonic reading a test or a HUD observes.
     #[must_use]
     pub const fn revolutions(&self) -> f32 {
         self.revolutions

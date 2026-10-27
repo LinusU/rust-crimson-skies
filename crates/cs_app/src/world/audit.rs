@@ -128,7 +128,7 @@ use cs_types::asset_id::SourceSpan;
 /// It is a **measured** fact about this installation family, not a general rule:
 /// the survey asks the session for the key and reports what the resolution
 /// actually was, so a group that stores its geometry elsewhere is describable
-/// without editing this constant — see [`WorldGroupSurvey::container_for`].
+/// without editing this constant — see `WorldGroupSurvey::container_for`.
 pub const GEOMETRY_CONTAINER_FILE: &str = "gamez.zbd";
 
 /// The logical key every world group's material-dependency archive has.

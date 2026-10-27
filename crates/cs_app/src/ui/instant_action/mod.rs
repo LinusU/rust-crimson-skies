@@ -768,7 +768,8 @@ fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerE
 /// enemies are not wingmates, so they report `None` rather than colliding with
 /// the ally numbering. The slot index is the declared one, so this reports
 /// whether an ally can be placed at all instead of silently dropping it —
-/// building the [`WingmateAssignment`] itself is F49-B's spawn work.
+/// building the [`WingmateAssignment`](cs_sim::allies::WingmateAssignment)
+/// itself is F49-B's spawn work.
 #[must_use]
 pub fn wingmate_slot(actor: &LoweredScenarioActor) -> Option<WingmateSlot> {
     (actor.side == ScenarioSide::Ally).then(|| WingmateSlot(actor.slot.index()))
@@ -811,7 +812,7 @@ pub enum CustomDimension {
 
 impl CustomDimension {
     /// The stable dimension name, matching
-    /// [`ScenarioProblemCode::dimension`].
+    /// [`ScenarioProblemCode::dimension`](cs_content::instant_action::ScenarioProblemCode::dimension).
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {

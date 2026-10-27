@@ -370,7 +370,7 @@ pub fn sync_mission_target_poses(world: &mut World) {
 /// original's acceptance angle is unmeasured and nothing here pretends to
 /// have it. The occluded set is the producer's
 /// ([`crate::targeting::produce_crosshair_occlusion`]) over
-/// [`mission_sight_blocked`]; with no physics world there is no producer and
+/// `mission_sight_blocked`; with no physics world there is no producer and
 /// the set stays empty, so the select is cone-and-distance only. A session
 /// the observer does not belong to yields no ray rather than another store's
 /// occlusion.

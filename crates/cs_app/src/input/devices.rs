@@ -623,7 +623,7 @@ impl DeviceAdapters {
     /// A refused event changes **nothing**: not the frame, not the holds, not
     /// the axes the device was driving and not the report counter. Every
     /// reading the report carries is calibrated before any of it is applied
-    /// ([`calibrated_readings`](Self::calibrated_readings)), and the input the
+    /// (`calibrated_readings`), and the input the
     /// frame already collected from other devices is left alone, so a bad
     /// report cannot swallow a press or drop another device's command.
     pub fn apply(

@@ -10,7 +10,8 @@
 //!
 //! * [`lower::lower_clip`] — the conversion boundary: a validated declared
 //!   clip becomes a runtime [`cs_sim::animated_object::AnimatedClip`], with
-//!   every [`Resolved::Unknown`] carried through so the runtime still blocks
+//!   every [`Resolved::Unknown`](cs_types::content::Resolved::Unknown) carried through
+//!   so the runtime still blocks
 //!   the transitions it gates (F20 non-negotiable behavior 2);
 //! * [`presentation::interpolated_pose`] — the render-side pose sampler.
 //!   It runs on fractional alpha between two committed tick poses and

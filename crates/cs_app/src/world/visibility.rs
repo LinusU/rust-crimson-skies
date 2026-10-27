@@ -6,7 +6,7 @@
 //!
 //! # What the policy is
 //!
-//! [`super::residency`] is the transaction — what a load *means*. This module is
+//! [`mod@super::residency`] is the transaction — what a load *means*. This module is
 //! the *decision* about which sectors a load should hold right now, given a
 //! focus point and a radius. It is a radius policy because that is the smallest
 //! honest answer: a sector's own [`Aabb`] is the extent
@@ -20,7 +20,7 @@
 //! # Safe, in two rules
 //!
 //! 1. **A gameplay-required object is never streamed away.** The load declares
-//!    it ([`WorldInstance::required_objects`]), and this policy holds every
+//!    it (`WorldInstance::required_objects`), and this policy holds every
 //!    sector that holds one whatever the focus is. That is the first half of F18
 //!    non-negotiable behavior 3: the object is still there, still collidable and
 //!    still stamped, not summarized.
@@ -62,7 +62,8 @@
 //! Streaming loads and despawns entities through
 //! [`super::residency::load_sector`] and [`super::residency::unload_sector`],
 //! and a sector load reaches the mesh spawn path, which takes an [`App`] rather
-//! than a [`World`]. A scheduled system cannot hold an `App`, so the pass is a
+//! than a [`World`](bevy::prelude::World). A scheduled system cannot hold
+//! an `App`, so the pass is a
 //! function a mission composition calls when its focus moves — the same shape as
 //! the load transaction itself, and for the same reason. The decision half —
 //! [`holds_sector`], [`retained_sectors`] and

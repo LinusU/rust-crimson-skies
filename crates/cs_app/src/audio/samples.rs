@@ -1,5 +1,6 @@
 //! The population pass: the delivered load's audio members decoded into the
-//! device's [`SampleLibrary`] (task #652, `M01-LC-AUDIO-LOAD`).
+//! device's [`SampleLibrary`](super::device::SampleLibrary)
+//! (task #652, `M01-LC-AUDIO-LOAD`).
 //!
 //! Spec: `specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
 //! `### F41-D` (real audible playback) on top of `### F41-A`'s declared
@@ -24,7 +25,8 @@
 //!
 //! For the newest delivered load only, and only for members that are
 //!
-//! * delivered by that closure (a [`LoadedItemBinding`] whose kind is an audio
+//! * delivered by that closure
+//!   (a [`LoadedItemBinding`](crate::loading::LoadedItemBinding) whose kind is an audio
 //!   kind),
 //! * **declared** by the world's [`AudioCatalog`] — an undeclared id is already
 //!   refused by name in the same pass and is not decoded behind the catalog's

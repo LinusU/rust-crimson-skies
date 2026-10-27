@@ -29,7 +29,8 @@
 //!   layer at all (the original-assets playtest, which carries no record):
 //!   one horizontal, unlit, translucent quad whose per-vertex alpha is a
 //!   designed, deterministic pattern whose *area* is the deck's coverage, so
-//!   it is never a uniform sheet. It is labelled [`DESIGNED_LABEL`] on every
+//!   it is never a uniform sheet. It is labelled
+//!   [`DESIGNED_LABEL`](crate::render::horizon::DESIGNED_LABEL) on every
 //!   field.
 //!
 //! The deck is kept horizontally under the camera on every frame and never
@@ -242,7 +243,7 @@ impl WeatherLayerSpec {
     /// The layer's mesh: one flat grid in the XZ plane, twice
     /// [`Self::half_extent_m`] across, whose every vertex carries the layer's
     /// colour in linear space and the layer's own alpha at that vertex's
-    /// position ([`Self::alpha_with`]).
+    /// position (`Self::alpha_with`).
     ///
     /// The entity's transform carries the altitude; the mesh is built at the
     /// origin so the layer's own coordinates are the ones the pattern reads.

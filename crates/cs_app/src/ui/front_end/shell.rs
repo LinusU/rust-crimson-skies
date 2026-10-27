@@ -223,7 +223,7 @@ pub struct ShellPane {
     /// frame 0 and records any other count).
     pub frames: u32,
     /// The strip frame drawn: 0 unless a screen's script picks another (the
-    /// cabin's map pins, [`super::cabin`]).
+    /// cabin's map pins, `super::cabin`).
     pub frame: u32,
     /// The row's `IsRegion?` column — kept for the record; the shell does
     /// not hit-test panes.
@@ -232,7 +232,7 @@ pub struct ShellPane {
     /// pane draws with its stored alpha and this flags the record.
     pub color_keyed: bool,
     /// The `scale`/`rotate`/`origin` the screen's script gave the pane, drawn
-    /// as [`PaneTransform`] places it ([`super::cabin`]'s memento picture):
+    /// as [`PaneTransform`] places it (`super::cabin`'s memento picture):
     /// `rect.x`/`rect.y` is then the `render` position and `rect`'s extent
     /// the picture's own. `None` draws the pane as the layout wrote it.
     pub transform: Option<PaneTransform>,
@@ -305,7 +305,7 @@ pub struct ShellButton {
     /// The effect pressing it takes.
     pub effect: ButtonEffect,
     /// `Some(checked)` for a check-box button (the row's `Type` column is
-    /// `1`): its art is [`CHECK_STATE_FRAMES`] frames — the four state frames
+    /// `1`): its art is `CHECK_STATE_FRAMES` frames — the four state frames
     /// unchecked, then the same four checked — and a press flips the state
     /// instead of running [`Self::effect`].
     pub check: Option<bool>,

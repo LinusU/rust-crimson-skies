@@ -20,7 +20,7 @@ pub type SampleRate = u32;
 /// The master media clock, counted in audio samples actually played.
 ///
 /// The audio device reports samples; while paused it is told to stop, so
-/// [`MediaClock::position`] holds. Video asks the clock, so a pause can never
+/// [`MediaClock::position_us`] holds. Video asks the clock, so a pause can never
 /// leave video running ahead of audio.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaClock {

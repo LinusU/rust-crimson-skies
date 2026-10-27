@@ -232,7 +232,7 @@ impl std::error::Error for TickViolation {}
 /// the schedule*, not a flight model. Avian's semi-implicit (symplectic) Euler
 /// step is exact in velocity under a constant force and carries a first-order
 /// position error of `0.5 * a * T * dt`, which is what
-/// [`symplectic_error_m`](Self::symplectic_error_m) compares against.
+/// [`symplectic_error_m`](ConvergenceProbe::symplectic_error_m) compares against.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConvergenceScenario {
     /// The body's total mass, in kilograms. Strictly positive.

@@ -292,8 +292,10 @@ pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateE
 /// facts that select the culling class:
 ///
 /// * `unculled_billboard` — the mesh's stored type words say it is an unculled
-///   billboard ([`RenderMesh::is_unculled_billboard`]: word0 == 1, word1 in
-///   {0, 1}). Such a mesh draws under [`CullingClass::Billboard`] whatever its
+///   billboard
+///   ([`RenderMesh::is_unculled_billboard`](cs_content::mesh::RenderMesh::is_unculled_billboard):
+///   word0 == 1, word1 in {0, 1}). Such a mesh draws under
+///   [`CullingClass::Billboard`] whatever its
 ///   material declares, because the original skipped the back-face test for the
 ///   whole mesh. Only the culling exemption is applied; nothing of the
 ///   billboard's facing is.

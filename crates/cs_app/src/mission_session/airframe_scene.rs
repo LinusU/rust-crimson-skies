@@ -62,7 +62,7 @@ use super::player_visual::PlayerAirframeSource;
 /// the load consumes.
 ///
 /// Built once per composition by [`MissionAirframeScene::build`], inserted
-/// by [`super::compose::add_composition`] and removed by
+/// by `add_composition` and removed by
 /// [`super::compose::teardown`]. The collision table is empty today: no
 /// node-level airframe geometry is measured or declared, so the load
 /// reports every collider-role socket by name rather than fit a shape

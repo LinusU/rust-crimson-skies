@@ -359,7 +359,7 @@ pub struct MissionHostSeed {
     /// read, named by [`MissionHostRefusal::BlockLifecycles`].
     pub block_lifecycles: BlockLifecycleTable,
     /// The recovered engine lifecycle model for the same record
-    /// ([`crate::objectives::ObjectiveRecovery::engine_objectives`]), when
+    /// ([`declared_engine_objectives`](super::compose::declared_engine_objectives)), when
     /// every field the model needs loaded. A stage that carries one runs it
     /// as the `objectives` lifecycle — dormancy timers, `TICK_DEPENDS_ON_OBJ`,
     /// `WAKE`/`NAP`/`KILL`/`SLEEP` effects and all — and the declared table
@@ -389,7 +389,7 @@ pub struct MissionHostSeed {
     /// being granted. An engine design, not an original rule.
     pub rewards: Vec<ContentId>,
     /// The mission's sound-group cues resolved to voice lines
-    /// ([`super::radio`]): the group table, the members its declarations
+    /// (`super::radio`): the group table, the members its declarations
     /// reach and each member's measured length, read at content preparation.
     /// A stage with no audio (the synthetic acceptance stages) carries
     /// [`MissionRadio::empty`], which answers every cue by refusing it.
@@ -580,7 +580,7 @@ pub struct MissionHostTick {
     /// What the mission's sound-group cues produced on this tick, in
     /// emission order: the voice lines handed to the audio session's radio
     /// queue, the music state requests, and every cue that was refused
-    /// by name ([`super::radio`]). Empty when this tick emitted no cue.
+    /// by name (`super::radio`). Empty when this tick emitted no cue.
     ///
     /// `Queued` is the offer, not the queue's own verdict: the radio queue
     /// answers with `RadioEvent`s on the session, so a refusal of its own (a
@@ -1980,7 +1980,7 @@ pub(crate) struct MissionHostRestartWatch {
 ///
 /// * the playtest's own meta reset (`R`/[`PlaytestRequests`](crate::playtest::PlaytestRequests)
 ///   → `perform_reset` in `Update`), observed through
-///   [`PlaytestState::resets`] against [`MissionHostRestartWatch`];
+///   [`PlaytestState::resets`] against `MissionHostRestartWatch`;
 /// * a [`MissionHostRestartRequest`] another system inserted — the seam a
 ///   terminal handler latches "restart after this terminal" through.
 ///

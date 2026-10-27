@@ -21,7 +21,7 @@
 //! declares none produces one. The two censuses therefore cannot disagree
 //! about the population, and the acceptance suite reconciles this census's
 //! rows against
-//! [`cs_app::mission_control::RetailControlCensus::archives_without_control_program`]
+//! [`crate::mission_control::RetailControlCensus::archives_without_control_program`]
 //! on every retail run.
 //!
 //! **An instant-action scenario is not a campaign mission.** A scenario row

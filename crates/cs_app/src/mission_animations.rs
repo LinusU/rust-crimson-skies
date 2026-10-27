@@ -677,7 +677,7 @@ pub const WAKE_ANIM_ROW_REFUSED_REASON: &str = "the WAKE_ANIM name resolved to e
 /// It applies each `WakeAnimation` emission the session's directive log carries
 /// **exactly once**, deduplicating by execution key the way the mission
 /// countdown deduplicates the timer directives
-/// ([`cs_sim::mission::MissionState`] keeps the log for the whole session, so
+/// ([`MissionState`] keeps the log for the whole session, so
 /// only the key says which entry is new), resolves the name the site spelled
 /// through the scope's [`AnimationNameIndex`], and starts the record through
 /// the record player at the tick being stepped.

@@ -43,13 +43,13 @@
 //!
 //! Three, and the world says which in [`AudioBackendLog`]:
 //!
-//! * [`Self::audible`] asks for the real
+//! * [`AudioPlugin::audible`] asks for the real
 //!   [`AudibleDevice`](super::device::AudibleDevice), which opens the machine's
 //!   default output stream **only** when `$CS_CAPABILITIES` declares `audio`
 //!   (task #635, F41-D). A machine that cannot play gets a
 //!   [`RefusingAudioDevice`] reporting the
 //!   gate's own named refusal on every command — never a silent mute.
-//! * [`Self::with_device`] takes a caller's device as-is.
+//! * [`AudioPlugin::with_device`] takes a caller's device as-is.
 //! * Neither asks for a backend, and the world is a headless or test one: the
 //!   output is a
 //!   [`RecordingAudioDevice`](cs_sim::audio_events::RecordingAudioDevice), which
@@ -103,7 +103,7 @@ pub struct AudioPlugin {
 
 impl AudioPlugin {
     /// The audio plugin for `catalog`, mixing against `spatial`, mixing to a
-    /// [`RecordingAudioDevice`].
+    /// [`RecordingAudioDevice`](cs_sim::audio_events::RecordingAudioDevice).
     #[must_use]
     pub fn new(catalog: AudioCatalog, spatial: AudioSpatial) -> Self {
         Self {
@@ -132,7 +132,8 @@ impl AudioPlugin {
 
     /// Mixes to the real audible backend, playing `library`'s samples.
     ///
-    /// This is the production device: the world gets an [`AudibleDevice`] over
+    /// This is the production device: the world gets an
+    /// [`AudibleDevice`](super::device::AudibleDevice) over
     /// the machine's default output stream when — and only when — that machine
     /// declares the `audio` capability. It needs the `audio` capability, which
     /// is exactly F41-D's gate.

@@ -38,7 +38,8 @@
 //!   [`Resolved::Unknown`], so a routed hit blocks visibly in the
 //!   `SessionDamageResolver` rather than being absorbed by an invented
 //!   pool — no M01 damage table has been measured (#668).
-//! * **Zeppelins** already exist as launched [`WorldActorSession`] actors
+//! * **Zeppelins** already exist as launched
+//!   [`WorldActorSession`](crate::world_actors::WorldActorSession) actors
 //!   (#772); this module binds each one an ECS entity carrying
 //!   [`WorldActorBinding`] and [`DamageActorBinding`] so the actor is a
 //!   world-side identity the damage consumers and teardown can name. No
@@ -505,7 +506,8 @@ pub struct ScriptedAircraftActor {
 }
 
 /// Component: one `zeppelins.zrd` world actor's ECS face — the entity the
-/// damage consumers and teardown name for a launched [`WorldActorSession`]
+/// damage consumers and teardown name for a launched
+/// [`WorldActorSession`](crate::world_actors::WorldActorSession)
 /// actor. The zeppelin's drawn world object is the residency's own; this
 /// entity binds the actor identity to it by subject, never by a guessed
 /// pose. The world observation reads [`Self::damage_actor`] beside the

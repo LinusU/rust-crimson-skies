@@ -74,8 +74,9 @@
 //! still carries what was declared (so a test can inspect the partial
 //! accounting), but the mission host's stage only carries a **complete**
 //! read to the seed and keeps the empty fail-closed table — plus the named
-//! [`MissionHostRefusal::BlockLifecycles`] quoting these refusals — when the
-//! read is incomplete. Nothing half-read ever answers a condition.
+//! [`MissionHostRefusal::BlockLifecycles`](crate::mission_session::MissionHostRefusal::BlockLifecycles)
+//! quoting these refusals — when the read is incomplete. Nothing half-read
+//! ever answers a condition.
 //!
 //! [`read_mission_block_lifecycles`] is the installation-level entry: it
 //! reads the mission's control member through

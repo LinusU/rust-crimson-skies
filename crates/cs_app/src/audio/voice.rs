@@ -13,7 +13,7 @@
 //! [`install_file_key`]
 //! spelling of `"<container>/<member>"` and names that id on its `RadioLine`.
 //! The device only plays what its library holds, and the loader's population
-//! pass ([`super::samples::populate`]) decodes a member only when the declared
+//! pass (`super::samples::populate`) decodes a member only when the declared
 //! catalog carries its id **and** the derived id is the [`ContentKind::Sound`]
 //! one. No container family states a cue class (F14-D.7), so the declared
 //! catalog holds no dialogue row and a `Dialogue` id over the same key is

@@ -249,7 +249,7 @@ pub enum Screen {
     MainMenu,
     /// Create or choose the profile.
     ProfileSelect,
-    /// The legacy-import dialog (F64-C's report; see [`import_dialog`]).
+    /// The legacy-import dialog (F64-C's report; see `import_dialog`).
     ImportDialog,
     /// Settings opened from the menu.
     Settings,

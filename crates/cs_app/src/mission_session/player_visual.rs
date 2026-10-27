@@ -117,7 +117,7 @@ pub const MISSION_PLAYER_LOD_DISTANCE_M: f64 =
 /// materials resolve against, read through [`read_aircraft_sources`], plus
 /// the airframe the mission's start resolution names for its player —
 /// the identity the drawn visual and the canonical scene
-/// ([`super::airframe_scene`], F11-F) both serve. An airframe the start
+/// (`super::airframe_scene`, F11-F) both serve. An airframe the start
 /// resolution leaves [`Resolved::Unknown`] stays recorded as unknown on the
 /// source itself; nothing is substituted for it.
 ///
@@ -186,7 +186,7 @@ impl PlayerAirframeSource {
 /// binding of the measured intact selection, the nose mapping that lands the
 /// stored −Z nose on the body's forward, and the selection's own report.
 ///
-/// Built once per composition in [`super::compose::add_composition`] and held
+/// Built once per composition in `add_composition` and held
 /// as a resource so the `AircraftSpawner` re-spawns the same parts on every
 /// `R` restart; [`super::compose::teardown`] removes it.
 #[derive(Resource)]
