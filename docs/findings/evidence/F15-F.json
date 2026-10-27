@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "task_id": "F15-F",
+  "candidate_tree": "9e13cf3951f1289c7d84731d8e8f79232a918494",
+  "engine": {
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "bevy": "0.20.0",
+    "avian": "0.8.0"
+  },
+  "created_at": "2026-10-27T15:30:42Z",
+  "command": {
+    "argv": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "/Users/linus/coding/rust-crimson-skies/deepseek-1/tools/tests",
+      "-p",
+      "test_engine_file_io_probe.py",
+      "-v"
+    ],
+    "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1",
+    "exit_code": 0
+  },
+  "source": {
+    "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+    "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
+  },
+  "seed": 0,
+  "ticks": {
+    "start": 0,
+    "end": 0
+  },
+  "overrides": [],
+  "capabilities": [
+    "retail"
+  ],
+  "tests": {
+    "discovered": 10,
+    "executed": 10,
+    "passed": 10,
+    "failed": 0,
+    "ignored": 0
+  },
+  "assertions": [
+    {
+      "id": "test_accept_f15_f_every_file_creating_entry_point_reference",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_retail_reader_container_holds_compiled_string_nodes",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_the_cited_output_paths_and_source_labels",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_the_measured_image_and_its_sections",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_the_naming_sites_are_the_measured_ones",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_the_only_cache_strings_are_sound_residency_names",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_synthetic_pe_both_reference_shapes_are_found",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_synthetic_pe_is_not_accepted_as_the_measured_image",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_synthetic_pe_push_naming_and_strings",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    },
+    {
+      "id": "test_accept_f15_f_synthetic_pe_sections_and_imports_resolve",
+      "status": "pass",
+      "evidence": [
+        "tests.log",
+        "probe.json"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "tests.log",
+      "sha256": "e78217fa67dd47214dd46da6ca1ea7f6ce2a8ba278d02cbd3987c2565055f25a",
+      "kind": "log"
+    },
+    {
+      "path": "probe.json",
+      "sha256": "7c61993c52a4169fa3f8b96d32e1e375c0fbc6a1e56dec98c9dedfdb7d3243ae",
+      "kind": "json"
+    }
+  ],
+  "unknowns": [
+    "Whether the original engine wrote any persistent derived artefact during a normal mission load, and what it keyed it on, is unmeasured. The static audit found no such writer, path, import or vocabulary, but a negative over static spans cannot exclude a run-time-assembled path, a DLL writing on the engine's behalf, a script-invoked GameZ write that is later read back, or an unenumerated code path. What would settle it is an owner-run file-system trace of the original executable during one mission load (Process Monitor file events, with the executable digest and the written-path list). See docs/findings/2026-10-27-f15-f-original-cache-and-keys.md, 'The unknown, and what would settle it'."
+  ],
+  "review": {
+    "identity": "deepseek-1 (implementer); no reviewer has run yet",
+    "method": "Every field is derived from the recorded run: candidate_tree from HEAD^{tree} on a clean checkout, the counts and assertion statuses from tests.log (the same selection the finding documents), the probe artifacts from the read-only probe over $CS_ENGINE_IMAGE, and install_sha256/content_sha256 from a production cs-inspect inventory of the same $CS_GAME_DIR in the same session. Nothing is typed in. SCOPE: this is static analysis of the original image plus retail data; no original executable ran, so the claim is 'implemented', never 'verified_original', and the artifact-level result is an explicit unknown about original run-time behaviour, not a negative claim about it. tools/validate_evidence.py is run without --require-pass on purpose: the deliverable is itself an explicit unknown, so the structural check (every artifact hash, every count) is the applicable one, and dropping the unknown from machine-readable evidence to make --require-pass green is exactly what the owner directive forbids."
+  },
+  "claim": "implemented"
+}
