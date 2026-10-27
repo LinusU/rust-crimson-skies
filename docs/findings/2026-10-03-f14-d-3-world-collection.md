@@ -46,8 +46,7 @@ now 346 rows: 228 inventoried files, 24 campaign missions, 53 program rows,
 still 0. `coverage.unreachable_by_kind` now also carries `world: 8`.
 
 > **Totals since this note.** The 346-row total above is the figure at this stage.
-> The current per-collection counts (88 496 rows in twenty collections, with the
-> stage that added each) are in `2026-10-03-f14-d-6-airframe-collection.md`.
+> The current collection list and row totals are in `2026-10-27-f14-d-baseline-totals.md`.
 
 The retail acceptance test measures the expected groups by walking `ZBD/`
 directly rather than trusting the classifier, and asserts that the eight rows,
@@ -126,7 +125,7 @@ No wiring edit was needed: `catalog::baseline` was already public.
    the denominator.** The eight rows are counted and reachable-by-nothing, not
    added to the 53. Resolving task: none; this is the intended contract
    (`ContentKind::is_launchable`).
-5. **Only six of the required collections are populated.** Not yet populated
+5. **Required collections this stage leaves unpopulated.** Not yet populated
    here: world variants, scene nodes/meshes/materials (#487, blocked on #392),
    factions and paint masks (#488), airframes and flight equipment (#489),
    sounds/music/dialogue/video (#490), stunts, scrapbook items and legacy custom

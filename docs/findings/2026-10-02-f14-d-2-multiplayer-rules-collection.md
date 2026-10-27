@@ -134,7 +134,7 @@ No wiring edit was needed: `catalog::baseline` was already public.
    this installation carries). Another localization could hold a different run;
    `discover_modes` takes the language as input, so this is a decision, not a
    search.
-4. **Only five of the required collections are populated.** Not yet populated
+4. **Required collections this stage leaves unpopulated.** Not yet populated
    here: worlds (F14-D.3, #486), scene nodes/meshes/materials (#487, blocked on
    #392), factions and paint masks (#488), airframes and flight equipment
    (#489), sounds/music/dialogue/video (#490), stunts, scrapbook items and

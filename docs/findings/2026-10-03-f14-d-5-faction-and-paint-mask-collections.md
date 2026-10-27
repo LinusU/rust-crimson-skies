@@ -43,8 +43,7 @@ members, all verified) and **11** `faction` rows, ids `faction/blackhat`,
 `gaps.pattern_without_colors: 2` and no diagnostic.
 
 > **Totals since this note.** The 195 rows above are this stage's two collections only; the baseline report's other collections are not repeated here.
-> The current per-collection counts (88 496 rows in twenty collections, with the
-> stage that added each) are in `2026-10-03-f14-d-6-airframe-collection.md`.
+> The current collection list and row totals are in `2026-10-27-f14-d-baseline-totals.md`.
 
 ## Why no mask-to-faction edge, and where the factions come from
 
@@ -140,7 +139,7 @@ No wiring edit was needed: `catalog::baseline` was already public.
    content: `player_fortune`'s starting swatches and shades, which the
    F09-PAINTSHOP finding records as engine-internal. Resolving task: the
    paint-shop value stage, if a capture or a later reader finds the palette.
-5. **Only eight of the required collections are populated.** Not yet populated:
+5. **Required collections this stage leaves unpopulated.** Not yet populated:
    world variants and scene nodes/meshes/materials (#487), airframes and flight
    equipment (#489), sounds/music/dialogue/video (#490), and stunts, scrapbook
    items and legacy custom-plane resources (#491). The report's `collections`
