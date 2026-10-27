@@ -127,6 +127,26 @@ their refusal in `unresolved_critical`, they stay in the denominator, and they
 keep the campaign unready. Which retail mission each of them names is still
 open (see `docs/findings/2026-10-01-m05-a-source-binding.md`).
 
+> **Installation note (#798, 2026-10-08).** The `install_sha256` and
+> `content_sha256` quoted above were recorded while the owner's decrypted
+> engine image (`crimson.decrypted.exe`) still sat inside `$CS_GAME_DIR`,
+> where it was an inventoried file and therefore part of both fingerprints
+> (`c14a876f…` / `148a24b7…`). The owner moved it out for good, so the
+> read-only tree now fingerprints to
+> `install_sha256 = b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978`
+> with
+> `content_sha256 = a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d`
+> — the values the committed report `docs/findings/evidence/F50-B.json` now
+> carries, and the same values the pre-image evidence recorded
+> (`docs/findings/missions/2026-10-08-f50-c-probe-routes.md`, its
+> "Installation note", and
+> `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`).
+> Every asset digest and span the M01-A … M24-A records cite is unchanged —
+> the #779 section below records that measurement. The values above are
+> recorded at the time of the run; they are a measurement record, not a claim
+> about the tree as it stands today. The image is read from
+> `$CS_ENGINE_IMAGE`, never from the installation.
+
 ## Test inventory (9 tests, prefix `accept_f50_b_`)
 
 Five synthetic (unignored, so CI runs them) — these are `assemble_campaign`'s
