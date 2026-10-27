@@ -97,7 +97,8 @@
 //! 30 containers end exactly at their last record, the other 31 carry 29 690 ..
 //! 1 361 762 bytes after it ([`AnimationRecords::trailing`]), which are **not
 //! walked**. What is *inside* a record beyond its names, counts and tables is
-//! not decoded — see [`RECORDS_NOT_DECODED_REASON`] and
+//! left undecoded by this reader (the event bytes are decoded downstream, in
+//! `cs_app::animation::events`) — see [`RECORDS_NOT_DECODED_REASON`] and
 //! `docs/findings/2026-10-05-m01-lc-anim-records.md`.
 //!
 //! The record-local pointer words are **not** used: all are values between
@@ -187,13 +188,16 @@ pub const ANIM_RECORD_AREA_OFFSET: u64 = ANIM_FIRST_RECORD_NAME_OFFSET;
 /// Bytes of a sequence, reset or damage info block that precedes its events.
 pub const ANIM_SEQUENCE_INFO_BYTES: u64 = 64;
 
-/// What is still not decoded after the record walk.
+/// What this reader still leaves undecoded after the record walk.
 ///
 /// The walk itself is derived and checked (see [`AnimationPayload::records`]);
-/// what stays open is the content *inside* it.
+/// what stays open here is the content *inside* it. The event grammar is
+/// measured and decoded downstream of this reader, in
+/// `cs_app::animation::events` (task #690).
 pub const RECORDS_NOT_DECODED_REASON: &str = "the record walk is measured, but what lies inside a \
      record is not decoded: the event streams of the reset, damage and ordinary sequences are \
-     kept as raw bytes (no event layout is measured for this family), the record-local pointer \
+     kept as raw bytes by this reader (the event layout is measured and decoded downstream by \
+     cs_app::animation::events, task #690), the record-local pointer \
      words are 0x03/0x04-prefixed values far outside every container's length and no rule maps \
      one back to a record or a member row, the meaning of the small id words inside table \
      entries is unmeasured, the table entries of the unknowns, lights, puffers, sounds and \

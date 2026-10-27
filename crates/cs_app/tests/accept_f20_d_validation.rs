@@ -1601,6 +1601,11 @@ fn accept_m01_lc_anim_carriers_the_index_lists_every_row_and_the_payload_header(
         RECORDS_NOT_DECODED_REASON,
         "the records this stage does not decode say so in the value itself"
     );
+    assert!(
+        RECORDS_NOT_DECODED_REASON.contains("cs_app::animation::events")
+            && !RECORDS_NOT_DECODED_REASON.contains("no event layout is measured"),
+        "the reason points at the downstream event decoder and does not claim no layout is measured"
+    );
 }
 
 /// A byte after a row's terminating NUL is reported, not decoded: it is the
