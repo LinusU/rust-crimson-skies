@@ -157,6 +157,8 @@ fn accept_t440_a_live_foreign_checkout_is_refused_and_named() {
         "CARGO_HOME".to_string(),
         "cargo clean --target-dir".to_string(),
         "#440".to_string(),
+        "CACHEDIR.TAG".to_string(),
+        "8a477f597d28d172789f06886806bc55".to_string(),
     ] {
         assert!(
             message.contains(&expected),

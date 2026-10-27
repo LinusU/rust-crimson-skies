@@ -193,7 +193,10 @@ nor cargo's own cache under CARGO_HOME, so `cargo test` can run another \
 worktree's binary with its source paths and fingerprints (task #440). The \
 directory name cannot express this, so give each checkout its own target \
 directory: delete {} and let the next build recreate it, e.g. cargo clean \
---target-dir {}.",
+--target-dir {}. If cargo refuses with `missing or invalid CACHEDIR.TAG \
+file` (a target directory copied from another checkout can lack the tag), \
+write the standard tag into the directory first: the line \
+`Signature: 8a477f597d28d172789f06886806bc55` in CACHEDIR.TAG.",
                 target_dir.display(),
                 workspace_root.display(),
                 paths(foreign),
