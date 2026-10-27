@@ -64,6 +64,7 @@
 
 pub mod ambient_voices;
 pub mod audit;
+pub mod bus_levels;
 pub mod device;
 pub mod engine;
 pub mod handoff;

@@ -240,6 +240,7 @@ pub fn mix_session(
     group_law: Option<Res<super::measured_voice::EngineGroupLaw>>,
     listener_pose: Option<Res<super::measured_voice::VoiceListenerPose>>,
     mut report: ResMut<AudioMixReport>,
+    presentation: Option<Res<crate::render::presentation::LivePresentation>>,
 ) {
     let (Some(mixing), Some(output), Some(session), Some(spatial)) = (
         mixing.as_mut(),
@@ -284,7 +285,17 @@ pub fn mix_session(
             continue;
         };
         let position_m = transform.translation().as_dvec3().to_array();
-        let level = voices.level(&binding.emitter);
+        // The live accessibility session's bus level, read this pass (F52-W2).
+        let level = presentation.as_deref().map_or_else(
+            || voices.level(&binding.emitter),
+            |live| {
+                super::bus_levels::apply_bus_level(
+                    live.presentation(),
+                    binding.bus,
+                    voices.level(&binding.emitter),
+                )
+            },
+        );
         match measured_terms.filter(|_| is_measured) {
             Some((law, pose)) => {
                 let mix = super::measured_voice::measured_mix(
