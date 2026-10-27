@@ -44,9 +44,12 @@
 //! under-reticule cone and the spyglass distance gate all measure where
 //! actors spawned rather than where they are.
 
-use std::collections::BTreeSet;
-
-use bevy::prelude::{ButtonInput, Camera3d, GlobalTransform, KeyCode, Vec3, With, Without, World};
+use avian3d::prelude::{RigidBody, SpatialQuery, SpatialQueryFilter};
+use bevy::ecs::system::SystemState;
+use bevy::prelude::{
+    ButtonInput, Camera3d, Dir3, Entity, GlobalTransform, KeyCode, Query, Vec3, With, Without,
+    World,
+};
 
 use cs_sim::damage::ActorId;
 use cs_sim::targeting::{
@@ -57,6 +60,7 @@ use cs_types::input::{
 };
 use cs_types::space::{Radians, UnitVec3, WorldPosition};
 
+use super::world_draw::WorldSceneryCollider;
 use crate::input::platform::key_from_bevy;
 use crate::mission_actors::{MissionGroundTarget, MissionZeppelinActor, ScriptedAircraftActor};
 use crate::playtest::command::{KEY_DEFLECTION, playtest_action_map};
@@ -358,16 +362,20 @@ pub fn sync_mission_target_poses(world: &mut World) {
 }
 
 /// The crosshair ray the reticle-select action resolves against: the scene
-/// camera's forward axis through the viewport centre.
+/// camera's forward axis through the viewport centre, with the occlusion the
+/// physics world reports for `observer`'s roster.
 ///
 /// The cone is the mission's designed crosshair cone — the same
 /// `π/18` radians [`super::weapons::designed_target_rules`] declares; the
 /// original's acceptance angle is unmeasured and nothing here pretends to
-/// have it. The occluded set is empty: no occlusion producer exists yet, so
-/// an under-reticule select is cone-and-distance only, disclosed rather than
-/// invented.
+/// have it. The occluded set is the producer's
+/// ([`crate::targeting::produce_crosshair_occlusion`]) over
+/// [`mission_sight_blocked`]; with no physics world there is no producer and
+/// the set stays empty, so the select is cone-and-distance only. A session
+/// the observer does not belong to yields no ray rather than another store's
+/// occlusion.
 #[must_use]
-pub fn mission_crosshair(world: &mut World) -> Option<CrosshairQuery> {
+pub fn mission_crosshair(world: &mut World, observer: ActorId) -> Option<CrosshairQuery> {
     let mut cameras = world.query_filtered::<
         &GlobalTransform,
         (With<Camera3d>, Without<crate::render::OverlayCamera>),
@@ -383,11 +391,50 @@ pub fn mission_crosshair(world: &mut World) -> Option<CrosshairQuery> {
         f64::from(forward.z),
     ])
     .ok()?;
-    CrosshairQuery::try_new(
-        origin,
-        direction,
-        Radians(std::f64::consts::PI / 18.0),
-        BTreeSet::new(),
-    )
-    .ok()
+    let cone = Some(Radians(std::f64::consts::PI / 18.0));
+    let mut state = SystemState::<(
+        Option<SpatialQuery>,
+        Query<&RigidBody, Without<WorldSceneryCollider>>,
+    )>::new(world);
+    let report = {
+        let (spatial, bodies) = state.get(world).ok()?;
+        crate::targeting::produce_crosshair_occlusion(world, observer, origin, |from, to| {
+            spatial
+                .as_ref()
+                .is_some_and(|spatial| mission_sight_blocked(spatial, &bodies, from, to))
+        })
+    };
+    report.ok()?.crosshair_query(world, direction, cone).ok()
+}
+
+/// Whether a static body other than the scenery nodes lies on the segment
+/// `from`..`to`. Colliders enclosing either end are ignored: an actor sits on
+/// or inside its own mount, which must not hide it from the reticle. Whether
+/// the original's sight test counts scenery is unmeasured; this is the same
+/// answer the turret sight ray gives.
+fn mission_sight_blocked(
+    spatial: &SpatialQuery,
+    bodies: &Query<&RigidBody, Without<WorldSceneryCollider>>,
+    from: WorldPosition,
+    to: WorldPosition,
+) -> bool {
+    let point = |p: WorldPosition| Vec3::new(p.x() as f32, p.y() as f32, p.z() as f32);
+    let (origin, target) = (point(from), point(to));
+    let Ok(direction) = Dir3::new(target - origin) else {
+        return false;
+    };
+    let mut excluded = spatial.point_intersections(origin, &SpatialQueryFilter::default());
+    excluded.extend(spatial.point_intersections(target, &SpatialQueryFilter::default()));
+    let filter = SpatialQueryFilter::default().with_excluded_entities(excluded);
+    let is_static = |entity: Entity| bodies.get(entity).is_ok_and(|body| body.is_static());
+    spatial
+        .cast_ray_predicate(
+            origin,
+            direction,
+            (target - origin).length(),
+            true,
+            &filter,
+            &is_static,
+        )
+        .is_some()
 }

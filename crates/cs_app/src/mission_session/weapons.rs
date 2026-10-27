@@ -1086,7 +1086,7 @@ pub fn publish_mission_weapon_input(world: &mut World) {
         // roster passes stamp them at their bind poses, so the tick's live
         // poses are written first (PARITY2-M01-TARGET-INDICATORS, #1727).
         super::targeting_input::sync_mission_target_poses(world);
-        let crosshair = super::targeting_input::mission_crosshair(world);
+        let crosshair = super::targeting_input::mission_crosshair(world, mission.player);
         if let Err(error) = crate::targeting::apply_selection_edges(
             world,
             mission.player,

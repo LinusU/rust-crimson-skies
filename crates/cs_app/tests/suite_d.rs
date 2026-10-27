@@ -16,6 +16,7 @@ mod accept_f30_a_targeting_boundary;
 mod accept_f30_b_targeting_session;
 mod accept_f30_c_target_consumers;
 mod accept_f30_c_targeting_schedule;
+mod accept_f30_f_occlusion_producer;
 mod accept_f32_e_combat_lowering;
 mod accept_f33_a_roster_boundary;
 mod accept_f33_b_briefing_and_wingmates;
