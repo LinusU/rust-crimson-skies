@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cs_app::json::json_string;
 use cs_app::playtest::retail::{RetailRequest, read_flight};
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 
@@ -125,8 +126,8 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
         .expect("the playtest's production flight import reads the installation");
     let flight_trace = format!(
         "{{\n \"task_id\": {},\n \"installation\": {},\n \"flight\": {}\n}}\n",
-        jstr(TASK_ID),
-        jstr(&game_dir.display().to_string()),
+        json_string(TASK_ID),
+        json_string(&game_dir.display().to_string()),
         flight.json()
     );
     let flight_path = evidence_dir.join("playtest-flight.json");
@@ -193,15 +194,15 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
          \x20\"review\": {{\"identity\": {identity}, \"method\": {method}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
-        task_id = jstr(TASK_ID),
-        candidate_tree = jstr(&candidate_tree),
+        task_id = json_string(TASK_ID),
+        candidate_tree = json_string(&candidate_tree),
         engine = engine_json(&engine),
-        created_at = jstr(&iso_utc_now()),
+        created_at = json_string(&iso_utc_now()),
         argv = str_array(&argv),
-        cwd = jstr(&git(&["rev-parse", "--show-toplevel"])),
+        cwd = json_string(&git(&["rev-parse", "--show-toplevel"])),
         exit_code = exit_code,
-        install = jstr(&install_sha256),
-        content = jstr(&content_sha256),
+        install = json_string(&install_sha256),
+        content = json_string(&content_sha256),
         discovered = suite.discovered,
         executed = suite.executed,
         passed = suite.passed,
@@ -211,16 +212,16 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
         artifacts = artifact_array(&artifacts),
         unknowns = unknowns
             .iter()
-            .map(|entry| jstr(entry))
+            .map(|entry| json_string(entry))
             .collect::<Vec<_>>()
             .join(", "),
-        identity = jstr(
+        identity = json_string(
             "implementer: bunny-2 (Rally #797 implement claim of 2026-10-09); reviewer: \
              recorded by the Rally review claim that follows — per AGENTS.md an agent review is \
              `checked` at best, is never independent original-reference evidence and never \
              replaces the owner's human approval. The activity log records both claims.",
         ),
-        method = jstr(
+        method = json_string(
             "acceptance suite run locally with the retail capability and recorded verbatim in \
              cargo-test.log (its PLAYTEST-ORIGINAL-* lines carry the measured values); this \
              harness derives every field from that log, from production discovery of \
@@ -456,9 +457,9 @@ struct Engine {
 fn engine_json(engine: &Engine) -> String {
     format!(
         "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
-        jstr(&engine.rust),
-        jstr(&engine.bevy),
-        jstr(&engine.avian)
+        json_string(&engine.rust),
+        json_string(&engine.bevy),
+        json_string(&engine.avian)
     )
 }
 
@@ -468,7 +469,7 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
         .map(|(name, status)| {
             format!(
                 "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\"]}}",
-                jstr(name)
+                json_string(name)
             )
         })
         .collect();
@@ -481,7 +482,7 @@ fn artifact_array(artifacts: &[(String, String, String)]) -> String {
         .map(|(name, digest, kind)| {
             format!(
                 "{{\"path\": {}, \"sha256\": {digest:?}, \"kind\": {kind:?}}}",
-                jstr(name)
+                json_string(name)
             )
         })
         .collect();
@@ -489,30 +490,8 @@ fn artifact_array(artifacts: &[(String, String, String)]) -> String {
 }
 
 fn str_array(items: &[String]) -> String {
-    let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
+    let quoted: Vec<String> = items.iter().map(|item| json_string(item)).collect();
     format!("[{}]", quoted.join(", "))
-}
-
-/// A JSON string literal: quoted and escaped, so no report field can break
-/// out of its string.
-fn jstr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            control if (control as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", control as u32));
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// RFC 3339 with whole seconds and `Z`, which `datetime.fromisoformat`

@@ -561,7 +561,7 @@ impl PlaytestTextureReport {
 }
 
 fn esc(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
+    crate::json::json_escape(text)
 }
 
 /// One drawn part of a mesh: the triangles of one stored material group, with

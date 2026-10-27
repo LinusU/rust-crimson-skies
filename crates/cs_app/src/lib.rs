@@ -735,6 +735,7 @@ pub mod force_feedback;
 pub mod hd_textures;
 pub mod input;
 pub mod interaction;
+pub mod json;
 pub mod livery;
 pub mod loading;
 pub mod mission_actors;

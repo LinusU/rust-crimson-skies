@@ -2696,6 +2696,7 @@ dependencies = [
  "hidapi",
  "image",
  "rodio",
+ "serde_json",
  "slopmpeg",
  "zip",
 ]

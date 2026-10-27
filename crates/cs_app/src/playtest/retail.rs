@@ -37,6 +37,7 @@ use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_types::content::Resolved;
 
 use super::PlaytestError;
+use crate::json::json_string;
 use crate::playtest::propeller::propeller_spin_json;
 use crate::playtest_retail::{
     self as scene_source, AircraftPartAsset, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP,
@@ -150,20 +151,33 @@ impl RetailContent {
     /// The source manifest as one JSON object: which installation and which
     /// containers (by digest) the flown content came from, what the area and
     /// the aircraft read, and the propeller spin rule with its claims.
+    ///
+    /// The installation path, the container keys and digests and the area's
+    /// stored node name are **host-path and original-data strings**: each is
+    /// interpolated as a JSON string *literal* ([`crate::json::json_string`])
+    /// rather than between hand-typed quotes, so a `"` or a control byte in
+    /// one of them cannot end the line's JSON early (Rally #1141). The
+    /// sub-objects composed here escape their own strings the same way.
     #[must_use]
     pub fn manifest_json(&self) -> String {
         let containers = self
             .containers
             .iter()
-            .map(|(key, sha)| format!("{{\"container\":\"{key}\",\"sha256\":\"{sha}\"}}"))
+            .map(|(key, sha)| {
+                format!(
+                    "{{\"container\":{},\"sha256\":{}}}",
+                    json_string(key),
+                    json_string(sha)
+                )
+            })
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{{\"label\":\"{RETAIL_LABEL}\",\"installation\":\"{}\",\"containers\":[{containers}],\
-\"area_node\":\"{}\",\"area_mesh_records\":{},\"area_triangles\":{},\"area_colliders\":{},\
+            "{{\"label\":\"{RETAIL_LABEL}\",\"installation\":{},\"containers\":[{containers}],\
+\"area_node\":{},\"area_mesh_records\":{},\"area_triangles\":{},\"area_colliders\":{},\
 {},{},{},\"textures\":{}}}",
-            self.installation,
-            self.area.node_name,
+            json_string(&self.installation),
+            json_string(&self.area.node_name),
             self.area.mesh_records,
             self.area.triangles,
             self.area.colliders(),
@@ -262,29 +276,36 @@ impl RetailFlight {
     }
 
     /// The flight-law statement the `playtest flight` line carries, verbatim.
+    ///
+    /// The record id, the inheritance chain's names, the engine's name and the
+    /// provenance label are all **original-data strings** (they are read from
+    /// `vehicle.zrd`, `engines.zrd` and the recovered law's own label), so
+    /// each is interpolated as a JSON string literal
+    /// ([`crate::json::json_string`]) and cannot break the line's JSON with a
+    /// `"` or a control byte (Rally #1141).
     #[must_use]
     pub fn json(&self) -> String {
         let fields = &self.model.airframe;
         format!(
-            "{{\"record\":\"{}\",\"chain\":[{}],\"engine\":{{\"id\":{},\"name\":\"{}\",\"factor\":{}}},\
+            "{{\"record\":{},\"chain\":[{}],\"engine\":{{\"id\":{},\"name\":{},\"factor\":{}}},\
 \"fd_speed_m_s\":{},\"veh_weight\":{},\"ref_area\":{},\"gravity\":{},\"start_speed_m_s\":{},\
-\"provenance\":\"{}\",\"verified_original\":false,\"calibrated_against_an_original_run\":false,\
+\"provenance\":{},\"verified_original\":false,\"calibrated_against_an_original_run\":false,\
 \"level_off_toggle_wired\":true,\"level_off_binding\":\"key.l\"}}",
-            self.record,
+            json_string(&self.record),
             self.inheritance_chain
                 .iter()
-                .map(|name| format!("\"{name}\""))
+                .map(|name| json_string(name))
                 .collect::<Vec<_>>()
                 .join(","),
             self.engine.0,
-            self.engine.1,
+            json_string(&self.engine.1),
             self.engine.2,
             fields.fd_speed,
             fields.veh_weight,
             fields.ref_area,
             fields.gravity,
             self.start_speed_m_s(),
-            self.provenance,
+            json_string(self.provenance),
         )
     }
 }

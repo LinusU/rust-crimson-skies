@@ -85,6 +85,12 @@ slopmpeg = { git = "https://github.com/LinusU/slopmpeg" }
 # `accept_test_bin_cs_app_` asks the one-test-binary guard (`cs_xtask
 # test-layout`, task #1542) about this very crate, through its library function.
 cs_xtask = { path = "../../tools/cs_xtask" }
+# A real JSON parser, for the `accept_playtest_json_escape_*` acceptance
+# (Rally #1141): the playtest's hand-built `playtest sources:` /
+# `playtest flight:` lines and the smoke's `report.json` are only accepted
+# when an actual parser reads them back and gets the original-data strings
+# out unchanged. Test-only: nothing in `src/` parses JSON.
+serde_json = "1"
 
 [package.metadata.cs_test_layout]
 test_targets = 5

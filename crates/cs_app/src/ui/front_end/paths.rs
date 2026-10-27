@@ -327,7 +327,7 @@ fn request_name(request: RequestKind) -> &'static str {
 
 /// A JSON string literal for a fixed vocabulary value.
 fn json_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    crate::json::json_string(value)
 }
 
 /// Walks every navigation path from `start`, applying every row of every

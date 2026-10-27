@@ -2744,9 +2744,13 @@ fn undrawn_json(undrawn: &[UndrawnBinding]) -> String {
         .join(",")
 }
 
-/// Escapes the two characters a quoted JSON string cannot hold raw.
+/// Escapes the characters a quoted JSON string cannot hold raw.
+///
+/// The escaping itself is [`crate::json::json_escape`]'s — one implementation
+/// for every JSON writer in this crate (Rally #1141) — and this name stays as
+/// the short verb the report builders here already read as.
 pub(crate) fn json_escape(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
+    crate::json::json_escape(text)
 }
 
 /// One camera view, in canonical metres.
