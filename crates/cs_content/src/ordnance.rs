@@ -2528,6 +2528,87 @@ impl OriginalRocketBlast {
     }
 }
 
+/// The original's nitro booster, as measured in the engine image.
+///
+/// **Static** measurement (task #2129,
+/// `docs/findings/2026-10-25-t452-03-nitro-activation-capacity-and-tradeoffs.md`):
+/// nothing here is `verified_original`. The charge is one pool shared by every
+/// airframe whose plane record sets `nitro`: the constants are stored once, at
+/// actor construction (`0x4b02c4`), and no later store was found. Times are
+/// the engine's frame delta (`0x9ad744`); that it counts seconds is assumed
+/// from the status timers that subtract it, not proven.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OriginalNitro {
+    /// The pool size (`0x41f00000`).
+    pub capacity: f64,
+    /// Charge consumed per delta while the booster runs (`0x40800000`).
+    pub consumption_per_dt: f64,
+    /// Charge recovered per delta on **every** step, running or not
+    /// (`0x3f800000`).
+    pub recovery_per_dt: f64,
+    /// A start needs at least this fraction of the capacity (`0x3f7d70a4`).
+    pub start_min_fraction: f64,
+    /// The booster is cut when the charge falls below this fraction of the
+    /// capacity (`0x3d4ccccd`).
+    pub stop_below_fraction: f64,
+    /// While running, the engine-record value `actor+0x128` is replaced by this
+    /// (`0x3fe66666`) in the speed/thrust step `0x48fc40`.
+    pub running_engine_value: f64,
+    /// While running, the thrust step's result is multiplied by this
+    /// (`0x3f4ccccd`); otherwise by `1.0`.
+    pub running_result_factor: f64,
+}
+
+/// The measured nitro booster. See [`OriginalNitro`].
+pub const ORIGINAL_NITRO: OriginalNitro = OriginalNitro {
+    capacity: 30.0,
+    consumption_per_dt: 4.0,
+    recovery_per_dt: 1.0,
+    start_min_fraction: 0.99,
+    stop_below_fraction: 0.05,
+    running_engine_value: 1.8,
+    running_result_factor: 0.8,
+};
+
+impl OriginalNitro {
+    /// One step of the charge (`0x49f810..0x49f882`): minus consumption when
+    /// running, plus recovery always, clamped into `[0, capacity]`.
+    #[must_use]
+    pub fn step_charge(&self, charge: f64, running: bool, dt: f64) -> f64 {
+        let mut charge = charge;
+        if running {
+            charge -= dt * self.consumption_per_dt;
+        }
+        charge += dt * self.recovery_per_dt;
+        charge.clamp(0.0, self.capacity)
+    }
+
+    /// The player's start/stop decision (`0x487e91..0x487efc`), as the argument
+    /// the original passes to its set-running routine (`0x4b2110`): `Some(false)`
+    /// cuts the booster, `Some(true)` runs it, `None` leaves it alone.
+    ///
+    /// Releasing the control does not appear: a running booster is cut only by
+    /// the charge falling below [`Self::stop_below_fraction`] (or by the
+    /// callers listed in the finding), never by the control.
+    #[must_use]
+    pub fn player_command(
+        &self,
+        charge: f64,
+        running: bool,
+        control_pressed: bool,
+    ) -> Option<bool> {
+        if self.capacity * self.stop_below_fraction > charge {
+            Some(false)
+        } else if self.capacity * self.start_min_fraction > charge {
+            running.then_some(true)
+        } else if control_pressed {
+            Some(true)
+        } else {
+            None
+        }
+    }
+}
+
 /// Reads every `ROCKET` record of the installation's `weapons.zrd`.
 ///
 /// # Errors
