@@ -1834,6 +1834,15 @@ impl PendingTargetDamage {
         Self { hits, events }
     }
 
+    /// Appends another resolution's batch to this frame's record. A tick can
+    /// resolve more than once — the mission's gun step and its ordnance
+    /// driver each publish their own — and every one of them is damage the
+    /// damage pass must record before the views publish.
+    pub fn push(&mut self, hits: Vec<HitEvent>, events: Vec<DamageEvent>) {
+        self.hits.extend(hits);
+        self.events.extend(events);
+    }
+
     /// The batch as the damage entry reads it.
     pub fn tick(&self) -> TargetDamageTick<'_> {
         TargetDamageTick {
