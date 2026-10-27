@@ -25,6 +25,7 @@ mod accept_f14_d_8_stunt_scrapbook_collections;
 mod accept_f14_d_9_material_collection;
 mod accept_f14_d_9_mission_only_airframes;
 mod accept_f14_d_baseline;
+mod accept_f14_d_notes;
 mod accept_f14_d_video_chapter;
 mod accept_f14_d_video_collection;
 mod accept_f14_d_video_layout;
