@@ -12,8 +12,10 @@
 //! `Satisfied` (#1155 settled its three team-less zeppelins) — so the detail
 //! is built through the production builder `world_actor_gap_detail`, the
 //! exact text `measure_actor_readers` reports. The retail closure that
-//! *guards* the branch (M01 stays satisfied, `world_geometry` stays the only
-//! gap) is `accept_vs_m01_runtime_` in `tests/campaign/vs_m01_runtime.rs`.
+//! *guards* the branch (M01's plan reports no gap at all and `world_geometry`
+//! is `Satisfied`) is `accept_vs_m01_runtime_` in
+//! `tests/campaign/vs_m01_runtime.rs` and `accept_vs_m01_geometry_verdict_` in
+//! `tests/campaign/vs_m01_geometry_verdict.rs`.
 //!
 //! Findings: `docs/findings/2026-10-09-m01-lc-zeppelin-allegiance.md`.
 
