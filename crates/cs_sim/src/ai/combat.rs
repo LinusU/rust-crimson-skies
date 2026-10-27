@@ -2862,8 +2862,19 @@ impl FormationRuntime {
     }
 
     /// The point the stations are anchored on right now, or `None` when the
-    /// formation has nothing to anchor on (no leader and no computed regroup
-    /// point yet).
+    /// formation has nothing to anchor on (the anchor names a leader whose
+    /// slot no living member still holds, or no regroup point was computed
+    /// yet).
+    ///
+    /// The liveness read on [`AnchorMode::Leader`] is a safety net: through
+    /// [`FormationCoordinator::apply`] the state it guards is unreachable,
+    /// because the tick that retires the leader always unlatches
+    /// [`RecoveryTrigger::LeaderLost`] and applies the declared answer, which
+    /// either promotes a survivor or moves the anchor onto a regroup point.
+    /// Before `release_latches` released a latch when a *new* loss replaced
+    /// the answered one the state was reachable, and this read was what kept
+    /// a wreck from anchoring a station. The `accept_t557_…` tests pin the
+    /// guard directly so it keeps working if the precedence ever weakens.
     fn resolve_anchor(&self) -> Option<(StationAnchor, WorldPosition)> {
         match self.anchor {
             AnchorMode::RegroupPoint(point) => Some((StationAnchor::RegroupPoint, point)),
@@ -6089,4 +6100,162 @@ pub fn synthetic_difficulty_probe_spec() -> DifficultyProbeSpec {
         ProbeProvenance::DesignedFixture,
     )
     .expect("the synthetic probe spec is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    //! Task #557 (F32-C follow-up): the anchor liveness guard, tested
+    //! directly.
+    //!
+    //! Task test prefix: `accept_t557_`. The F32-C sensitivity probe "make the
+    //! station anchor follow the *registered* leader slot even when it is
+    //! destroyed" passed every public-path test, because
+    //! [`FormationCoordinator::apply`] can no longer produce the state the
+    //! guard reads: the tick that retires the leader always unlatches
+    //! [`RecoveryTrigger::LeaderLost`] and applies the declared answer, so a
+    //! post-tick [`AnchorMode::Leader`] always overlies a living member.
+    //! Before the review fix to `release_latches` the state *was* reachable
+    //! and the guard was load-bearing
+    //! (`docs/findings/2026-10-03-f32-c-formation-ace-and-difficulty-runtime.md`).
+    //! These tests present that state to [`FormationRuntime::resolve_anchor`]
+    //! and [`FormationRuntime::stations`] directly, so the net keeps failing
+    //! loudly if the guard is ever removed — a safety net no test can fail on
+    //! is one nobody maintains. Every value is the synthetic fixture, never
+    //! original game data.
+
+    use super::*;
+
+    /// One member of the synthetic formation in one reported state.
+    fn member(serial: u64, position: [f64; 3], alive: bool) -> MemberRuntime {
+        MemberRuntime {
+            actor: synthetic_actor(serial),
+            position: WorldPosition::try_new(position).expect("the fixture position is finite"),
+            alive,
+        }
+    }
+
+    /// The synthetic formation frozen into the state the coordinator can no
+    /// longer reach: `anchor` naming the leading slot while that slot's
+    /// member is destroyed.
+    fn runtime(leader_alive: bool, anchor: AnchorMode) -> FormationRuntime {
+        let mut members = BTreeMap::new();
+        members.insert(
+            0,
+            member(
+                SYNTHETIC_FORMATION_LEADER,
+                [900.0, 500.0, 0.0],
+                leader_alive,
+            ),
+        );
+        members.insert(
+            1,
+            member(SYNTHETIC_FORMATION_WINGMEN[0], [800.0, 500.0, 0.0], true),
+        );
+        members.insert(
+            2,
+            member(SYNTHETIC_FORMATION_WINGMEN[1], [700.0, 500.0, 0.0], true),
+        );
+        FormationRuntime {
+            formation: FormationId(1),
+            members,
+            leader_slot: 0,
+            anchor,
+            last_tick: None,
+            assigned_target: None,
+            assigned_target_alive: true,
+            route_available: true,
+            latched: BTreeSet::new(),
+        }
+    }
+
+    /// The safety net itself: `AnchorMode::Leader` over a destroyed leading
+    /// slot resolves to *no anchor*, so no follower is ever handed a station
+    /// anchored on a wreck. Reading the *registered* leader instead — the
+    /// probe this task exists to catch — turns every assertion red.
+    #[test]
+    fn accept_t557_a_destroyed_leading_slot_resolves_to_no_anchor() {
+        let state = runtime(false, AnchorMode::Leader);
+
+        assert_eq!(
+            state.resolve_anchor(),
+            None,
+            "AnchorMode::Leader never names a destroyed member"
+        );
+        assert_eq!(
+            state
+                .stations(FormationId(1))
+                .expect("the stations compute"),
+            Vec::new(),
+            "with nothing to anchor on there is no station to hand out"
+        );
+    }
+
+    /// The other half of the same read: a *living* leading slot is the
+    /// anchor, and while the anchor is a leader the leader itself holds no
+    /// station — it leads.
+    #[test]
+    fn accept_t557_a_living_leading_slot_is_the_anchor() {
+        let state = runtime(true, AnchorMode::Leader);
+        let leader = synthetic_actor(SYNTHETIC_FORMATION_LEADER);
+        let at = WorldPosition::try_new([900.0, 500.0, 0.0]).expect("finite");
+
+        assert_eq!(
+            state.resolve_anchor(),
+            Some((StationAnchor::Leader(leader), at))
+        );
+        let stations = state
+            .stations(FormationId(1))
+            .expect("the stations compute");
+        assert_eq!(
+            stations
+                .iter()
+                .map(|station| (station.actor, station.position.to_array()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
+                    [780.0, 500.0, 0.0],
+                ),
+                (
+                    synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1]),
+                    [660.0, 500.0, 0.0],
+                ),
+            ],
+            "each follower trails the living leader by its slot's offset"
+        );
+        assert!(
+            stations
+                .iter()
+                .all(|station| station.anchor == StationAnchor::Leader(leader)),
+            "every station shares the leader anchor"
+        );
+    }
+
+    /// The regroup arm takes no liveness read: the point the recovery fixed
+    /// is the anchor however the leading slot fares, and the whole formation —
+    /// a living leader included — is stationed on it.
+    #[test]
+    fn accept_t557_a_regroup_point_is_the_anchor_regardless_of_leadership() {
+        let regroup = WorldPosition::try_new([800.0, 500.0, 0.0]).expect("finite");
+        let state = runtime(true, AnchorMode::RegroupPoint(regroup));
+
+        assert_eq!(
+            state.resolve_anchor(),
+            Some((StationAnchor::RegroupPoint, regroup))
+        );
+        let stations = state
+            .stations(FormationId(1))
+            .expect("the stations compute");
+        assert_eq!(
+            stations.len(),
+            3,
+            "under a regroup the whole formation is stationed, leader included"
+        );
+        assert!(
+            stations
+                .iter()
+                .all(|station| station.anchor == StationAnchor::RegroupPoint),
+            "no station follows the leader slot once the anchor is the point"
+        );
+    }
 }
