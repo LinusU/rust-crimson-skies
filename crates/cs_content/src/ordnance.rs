@@ -2609,16 +2609,20 @@ impl OriginalNitro {
     }
 }
 
-/// Reads every `ROCKET` record of the installation's `weapons.zrd`.
+/// Decodes the `ZBD/zrdr.zbd` member `member` of the installation at
+/// `install_root` into a [`SpannedDocument`], install and member digests
+/// attached.
 ///
 /// # Errors
 ///
 /// [`crate::original_airframe::OriginalImportError`] for an undiscoverable
 /// installation, an unreadable archive, a missing or undecodable member or a
 /// member whose shape is not the record list.
-pub fn read_original_rocket_blasts(
+fn read_member_document(
     install_root: &std::path::Path,
-) -> Result<Vec<OriginalRocketBlast>, crate::original_airframe::OriginalImportError> {
+    member: &str,
+) -> Result<crate::original_airframe::SpannedDocument, crate::original_airframe::OriginalImportError>
+{
     use crate::original_airframe::{OriginalImportError, READER_ARCHIVE, SpannedDocument};
     use cs_formats::io::ParseContext;
     use cs_formats::zbd::{ZbdProbe, dispatch, read_reader_archive, read_version_one_index};
@@ -2640,41 +2644,56 @@ pub fn read_original_rocket_blasts(
         .map_err(|error| OriginalImportError::Archive(error.to_string()))?;
     let entry = archive
         .entries()
-        .find(|entry| {
-            String::from_utf8_lossy(entry.name()).eq_ignore_ascii_case(ORIGINAL_WEAPONS_MEMBER)
-        })
+        .find(|entry| String::from_utf8_lossy(entry.name()).eq_ignore_ascii_case(member))
         .ok_or_else(|| OriginalImportError::MemberMissing {
-            member: ORIGINAL_WEAPONS_MEMBER.to_owned(),
+            member: member.to_owned(),
         })?;
     let content = entry.content().to_vec();
     let member_sha256 = cs_assets::install::sha256(&content);
-    let document = SpannedDocument::decode(
+    SpannedDocument::decode(
         install_sha256,
-        ORIGINAL_WEAPONS_MEMBER,
+        member,
         &content,
         entry.span().offset,
         member_sha256,
-    )?;
+    )
+}
 
+/// Reads every `ROCKET` record of the installation's `weapons.zrd`.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] for an undiscoverable
+/// installation, an unreadable archive, a missing or undecodable member or a
+/// member whose shape is not the record list.
+pub fn read_original_rocket_blasts(
+    install_root: &std::path::Path,
+) -> Result<Vec<OriginalRocketBlast>, crate::original_airframe::OriginalImportError> {
+    let document = read_member_document(install_root, ORIGINAL_WEAPONS_MEMBER)?;
+    let mut records = Vec::new();
+    collect_wep_records(document.root(), &mut records);
     let mut blasts = Vec::new();
-    collect_weapon_records(document.root(), &mut blasts);
+    for (name, body) in records {
+        if let Some(blast) = rocket_blast(name, body) {
+            blasts.push(blast);
+        }
+    }
     if blasts.is_empty() {
-        return Err(OriginalImportError::Shape {
+        return Err(crate::original_airframe::OriginalImportError::Shape {
             detail: "no `wep_` record with a ROCKET key was found".to_owned(),
         });
     }
     Ok(blasts)
 }
 
-/// Walks the decoded member for `(name, body)` pairs whose name begins `wep_`
-/// and whose body declares [`ORIGINAL_ROCKET_FLAG`].
+/// Walks the decoded member for `(name, body)` pairs whose name begins `wep_`.
 ///
 /// The member's root also carries a table of integers and a header of global
 /// keys (`VERSION`, `BALLISTICS`, ...), so the records are found by their own
 /// shape rather than by a position the member does not promise.
-fn collect_weapon_records(
-    node: &crate::original_airframe::SpannedValue,
-    out: &mut Vec<OriginalRocketBlast>,
+fn collect_wep_records<'a>(
+    node: &'a crate::original_airframe::SpannedValue,
+    out: &mut Vec<(&'a str, &'a [crate::original_airframe::SpannedValue])>,
 ) {
     let Some(children) = node.as_list() else {
         return;
@@ -2686,12 +2705,10 @@ fn collect_weapon_records(
             .filter(|name| name.starts_with("wep_"))
             .zip(children.get(index + 1).and_then(|body| body.as_list()));
         if let Some((name, body)) = record {
-            if let Some(blast) = rocket_blast(name, body) {
-                out.push(blast);
-            }
+            out.push((name, body));
             index += 2;
         } else {
-            collect_weapon_records(&children[index], out);
+            collect_wep_records(&children[index], out);
             index += 1;
         }
     }
@@ -2742,4 +2759,367 @@ fn rocket_blast(
         range_minimum_blast_scale: second.get("RANGE_MINIMUM").copied(),
         keys,
     })
+}
+
+// ------------------------------------------------ the full weapon census (T452.01) ----
+
+/// One retail `wep_` record of `weapons.zrd`, enumerated whole (task T452.01).
+///
+/// [`read_original_rocket_blasts`] returns only the `ROCKET` records and only
+/// the blast fields; this record is the same member walked without the
+/// filter: every gun, rocket, torpedo, flare and effect record, its complete
+/// top-level key set, and the first (and second) declared value of every key
+/// — the values the family rules read (`ROCKET`, `LOCK_ON`, `TORPEDO`,
+/// `CLUSTER_SIZE`, `EXPIRES`, `DETONATE_AT_RANGE`, `IMPACT_PROXIMITY`,
+/// `DETONATION_*`, `RANGE*`, `TANGLER`, `FLASH`, `SONIC`, `BEEPER*`,
+/// `SMOKE_SCREEN` and the damage channels) plus everything else, so a key no
+/// rule knows is visible rather than silently dropped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalWeaponRecord {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// Every top-level key the record declares, sorted.
+    pub keys: BTreeSet<String>,
+    /// The first scalar of each key whose declared list opens with one.
+    pub first_values: BTreeMap<String, f64>,
+    /// The second scalar of each key whose declared list holds one (the
+    /// `RANGE_MINIMUM` blast scale is the known second value).
+    pub second_values: BTreeMap<String, f64>,
+    /// The first text of each key whose declared list opens with text
+    /// (`NAME`, `DESC`, ...).
+    pub first_texts: BTreeMap<String, String>,
+}
+
+impl OriginalWeaponRecord {
+    /// The record's first declared value of `key`, when it is a scalar.
+    #[must_use]
+    pub fn first(&self, key: &str) -> Option<f64> {
+        self.first_values.get(key).copied()
+    }
+
+    /// Whether the record declares `key` at its top level.
+    #[must_use]
+    pub fn declares(&self, key: &str) -> bool {
+        self.keys.contains(key)
+    }
+}
+
+/// What a record's own keys state about its behavior family (T452.01).
+///
+/// `Classified` names the [`DeclaredOrdnanceFamily`] the stated rule assigns
+/// and the rule id that assigned it (citable in findings).
+/// `cs_sim::weapons::ordnance::OrdnanceFamily` carries the same six variants
+/// in the same order — `cs_content` may not link `cs_sim`, so the
+/// classification lands on the declared counterpart and the
+/// `accept_t452_01_` tests pin the two enums variant-for-variant on the
+/// test-only edge where both crates are visible.
+///
+/// `Limitation` is the recorded unknown for a record no stated rule
+/// classifies: the claim id `t452_01.limit.<record>` and the reason, so an
+/// unclassified record can never silently pass as classified (F28 non-
+/// negotiable 1 — nothing is substituted, nothing is defaulted).
+#[derive(Clone, Debug, PartialEq)]
+pub enum OriginalWeaponClass {
+    /// The record's keys state this family, by the named rule.
+    Classified {
+        /// The family the keys state.
+        family: DeclaredOrdnanceFamily,
+        /// The stated rule that assigned it (`t452_01.rule.*`).
+        rule: &'static str,
+    },
+    /// No stated rule classifies the record; recorded as a limitation.
+    Limitation {
+        /// `t452_01.limit.<record>`.
+        claim: String,
+        /// Why no stated rule applies.
+        reason: String,
+    },
+}
+
+impl OriginalWeaponClass {
+    /// The family, when the record classified.
+    #[must_use]
+    pub fn family(&self) -> Option<DeclaredOrdnanceFamily> {
+        match self {
+            Self::Classified { family, .. } => Some(*family),
+            Self::Limitation { .. } => None,
+        }
+    }
+}
+
+/// One census finding that is not a per-record classification
+/// (T452.01): the comparison the task asks for — the `ROCKET`-flagged
+/// record count against the measured selectable type count
+/// [`ORIGINAL_ROCKET_ORDNANCE_TYPES`] (eleven, from the two selection
+/// screens; the record count is what `weapons.zrd` actually carries).
+#[derive(Clone, Debug, PartialEq)]
+pub enum OriginalWeaponFinding {
+    /// The `ROCKET`-flagged record count differs from the selectable type
+    /// count the screens declare. Recorded, not reconciled: the screens
+    /// enumerate the *selectable* types and the member carries every record
+    /// the engine loads, so a difference is a fact about the two sources,
+    /// not an error in either.
+    RocketTypeCountMismatch {
+        /// `ROCKET`-flagged records in the member.
+        rocket_records: usize,
+        /// The measured selectable type count.
+        screen_types: u32,
+    },
+}
+
+impl fmt::Display for OriginalWeaponFinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RocketTypeCountMismatch {
+                rocket_records,
+                screen_types,
+            } => write!(
+                f,
+                "rocket_type_count_mismatch: {rocket_records} ROCKET records vs \
+                 {screen_types} selectable types"
+            ),
+        }
+    }
+}
+
+/// One census row: a record and what its own keys say about its family.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalWeaponRow {
+    /// The enumerated record.
+    pub record: OriginalWeaponRecord,
+    /// Its classification.
+    pub class: OriginalWeaponClass,
+}
+
+/// The full `weapons.zrd` census: every `wep_` record, its classification
+/// and the census-level findings (T452.01).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalWeaponCensus {
+    /// Every `wep_` record of the member, in member order.
+    pub records: Vec<OriginalWeaponRecord>,
+    /// One row per record: the family its keys state or the limitation.
+    pub rows: Vec<OriginalWeaponRow>,
+    /// `ROCKET`-flagged record count.
+    pub rocket_records: usize,
+    /// Census-level findings (`rocket_type_count_mismatch` when the counts
+    /// disagree).
+    pub findings: Vec<OriginalWeaponFinding>,
+}
+
+impl OriginalWeaponCensus {
+    /// The records that classified to `family`.
+    #[must_use]
+    pub fn records_of(&self, family: DeclaredOrdnanceFamily) -> Vec<&OriginalWeaponRecord> {
+        self.rows
+            .iter()
+            .filter(|row| row.class.family() == Some(family))
+            .map(|row| &row.record)
+            .collect()
+    }
+
+    /// The rows recorded as limitations (a record no stated rule
+    /// classifies).
+    #[must_use]
+    pub fn limitations(&self) -> Vec<&OriginalWeaponRow> {
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.class, OriginalWeaponClass::Limitation { .. }))
+            .collect()
+    }
+
+    /// One record by name.
+    #[must_use]
+    pub fn record(&self, name: &str) -> Option<&OriginalWeaponRecord> {
+        self.records.iter().find(|record| record.record == name)
+    }
+}
+
+/// The flag keys that mark an effect record rather than a damaging hit —
+/// the "declared and are not damage" shapes of the F28-C.2 audit
+/// (`docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`).
+const ORIGINAL_EFFECT_KEYS: [&str; 6] = [
+    "TANGLER",
+    "SMOKE_SCREEN",
+    "FLASH",
+    "SONIC",
+    "BEEPER",
+    "BEEPER_SEEKER",
+];
+
+/// The damage channels a record can declare (`ARMOR_DAMAGE`/`HEALTH_DAMAGE`
+/// pair, or the single `DAMAGE` of the flash records — the same census the
+/// F28-C.2 audit made).
+pub const ORIGINAL_DAMAGE_KEYS: [&str; 3] = ["ARMOR_DAMAGE", "HEALTH_DAMAGE", "DAMAGE"];
+
+/// The stated rules of T452.01, applied in order — the first rule whose
+/// conditions the record's keys satisfy assigns the family. A record no
+/// rule reaches is a limitation; nothing is guessed.
+///
+/// | rule | conditions (keys state) | family |
+/// | --- | --- | --- |
+/// | `torpedo` | `TORPEDO` | `aerial_torpedo` |
+/// | `guided` | `LOCK_ON` | `guided_rocket` |
+/// | `effect` | an [`ORIGINAL_EFFECT_KEYS`] flag | `area_denial_engine` |
+/// | `airburst` | `IMPACT_PROXIMITY` or `DETONATION_DISTANCE`, unguided | `proximity_flak` |
+/// | `direct` | `ROCKET` | `direct_explosive` |
+/// | — | anything else | `t452_01.limit.<record>` |
+fn classify_weapon_record(record: &OriginalWeaponRecord) -> OriginalWeaponClass {
+    let classified = |family, rule| OriginalWeaponClass::Classified { family, rule };
+    if record.declares("TORPEDO") {
+        return classified(
+            DeclaredOrdnanceFamily::AerialTorpedo,
+            "t452_01.rule.torpedo",
+        );
+    }
+    if record.declares("LOCK_ON") {
+        return classified(DeclaredOrdnanceFamily::GuidedRocket, "t452_01.rule.guided");
+    }
+    if ORIGINAL_EFFECT_KEYS
+        .iter()
+        .any(|flag| record.declares(flag))
+    {
+        return classified(
+            DeclaredOrdnanceFamily::AreaDenialEngine,
+            "t452_01.rule.effect",
+        );
+    }
+    if record.declares("IMPACT_PROXIMITY") || record.declares("DETONATION_DISTANCE") {
+        return classified(
+            DeclaredOrdnanceFamily::ProximityFlak,
+            "t452_01.rule.airburst",
+        );
+    }
+    if record.declares(ORIGINAL_ROCKET_FLAG) {
+        return classified(
+            DeclaredOrdnanceFamily::DirectExplosive,
+            "t452_01.rule.direct",
+        );
+    }
+    OriginalWeaponClass::Limitation {
+        claim: format!("t452_01.limit.{}", record.record),
+        reason: if record.declares("CANNON") {
+            "a machine-gun record (CANNON): the gun vocabulary is F27's \
+             domain, not one of the ordnance families; the record is \
+             enumerated whole but is not lowered as ordnance here"
+                .to_owned()
+        } else {
+            "not an ordnance record shape: no ROCKET, TORPEDO, LOCK_ON, \
+             effect flag or proximity key, so no stated rule applies"
+                .to_owned()
+        },
+    }
+}
+
+/// Classifies already-read records by the stated rules — the pure half of
+/// the census, callable on records that need no installation.
+#[must_use]
+pub fn classify_original_weapons(records: Vec<OriginalWeaponRecord>) -> OriginalWeaponCensus {
+    let rocket_records = records
+        .iter()
+        .filter(|record| record.declares(ORIGINAL_ROCKET_FLAG))
+        .count();
+    let rows = records
+        .iter()
+        .map(|record| OriginalWeaponRow {
+            record: record.clone(),
+            class: classify_weapon_record(record),
+        })
+        .collect();
+    let mut findings = Vec::new();
+    if rocket_records as u32 != ORIGINAL_ROCKET_ORDNANCE_TYPES {
+        findings.push(OriginalWeaponFinding::RocketTypeCountMismatch {
+            rocket_records,
+            screen_types: ORIGINAL_ROCKET_ORDNANCE_TYPES,
+        });
+    }
+    OriginalWeaponCensus {
+        records,
+        rows,
+        rocket_records,
+        findings,
+    }
+}
+
+/// One record's declarations, whole.
+fn weapon_record(
+    name: &str,
+    body: &[crate::original_airframe::SpannedValue],
+) -> OriginalWeaponRecord {
+    let mut keys = BTreeSet::new();
+    let mut first_values = BTreeMap::new();
+    let mut second_values = BTreeMap::new();
+    let mut first_texts = BTreeMap::new();
+    for field in body.chunks(2) {
+        let [key, value] = field else { continue };
+        let Some(key) = key.as_text() else { continue };
+        keys.insert(key.to_owned());
+        let Some(list) = value.as_list() else {
+            continue;
+        };
+        if let Some(number) = list
+            .first()
+            .and_then(crate::original_airframe::SpannedValue::as_scalar_f64)
+        {
+            first_values.insert(key.to_owned(), number);
+        }
+        if let Some(text) = list
+            .first()
+            .and_then(crate::original_airframe::SpannedValue::as_scalar_text)
+        {
+            first_texts.insert(key.to_owned(), text.to_owned());
+        }
+        if let Some(number) = list
+            .get(1)
+            .and_then(crate::original_airframe::SpannedValue::as_scalar_f64)
+        {
+            second_values.insert(key.to_owned(), number);
+        }
+    }
+    OriginalWeaponRecord {
+        record: name.to_owned(),
+        keys,
+        first_values,
+        second_values,
+        first_texts,
+    }
+}
+
+/// Reads every `wep_` record of the installation's `weapons.zrd` — guns,
+/// rockets, torpedo, flare and effect records alike (T452.01).
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] for an undiscoverable
+/// installation, an unreadable archive, a missing or undecodable member or a
+/// member carrying no `wep_` record.
+pub fn read_original_weapon_records(
+    install_root: &std::path::Path,
+) -> Result<Vec<OriginalWeaponRecord>, crate::original_airframe::OriginalImportError> {
+    let document = read_member_document(install_root, ORIGINAL_WEAPONS_MEMBER)?;
+    let mut found = Vec::new();
+    collect_wep_records(document.root(), &mut found);
+    if found.is_empty() {
+        return Err(crate::original_airframe::OriginalImportError::Shape {
+            detail: "no `wep_` record was found".to_owned(),
+        });
+    }
+    Ok(found
+        .into_iter()
+        .map(|(name, body)| weapon_record(name, body))
+        .collect())
+}
+
+/// The full census: every `wep_` record of `weapons.zrd`, read and
+/// classified (T452.01).
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] as
+/// [`read_original_weapon_records`].
+pub fn read_original_weapon_census(
+    install_root: &std::path::Path,
+) -> Result<OriginalWeaponCensus, crate::original_airframe::OriginalImportError> {
+    Ok(classify_original_weapons(read_original_weapon_records(
+        install_root,
+    )?))
 }
