@@ -9,7 +9,7 @@
 //! for the unmeasured role set, `accept_f32_pg_` for the probe scenario's
 //! designed-fixture provenance marker, and `accept_f32_fd_` for the
 //! session-owned per-actor fire discipline the reported cadence needs
-//! (#571). Spec:
+//! (#571), and `accept_f32_cadence_` for its tick monotonicity (#555). Spec:
 //! `specs/F32-ai-combat-formations-aces-and-difficulty.md`, stages
 //! `### F32-A`, `### F32-B`, `### F32-C` and `### F32-D`.
 //!
@@ -31,6 +31,7 @@ mod accept_f32_a_combat_failures;
 mod accept_f32_b_combat;
 mod accept_f32_c_combat;
 mod accept_f32_c_combat_failures;
+mod accept_f32_cadence_combat;
 mod accept_f32_d_combat;
 mod accept_f32_d_combat_failures;
 mod accept_f32_fd_combat;

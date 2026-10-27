@@ -3444,6 +3444,10 @@ pub struct FireDiscipline {
     /// Actor → the earliest tick its next shot may go out on. A missing
     /// entry means the actor has never fired in this generation.
     ready_at: BTreeMap<ActorId, Tick>,
+    /// Actor → the latest tick the actor was successfully stepped on. The
+    /// schedule counts forward on simulation ticks, so a step on an earlier
+    /// tick is refused rather than read against a wait it never paid.
+    last_step: BTreeMap<ActorId, Tick>,
 }
 
 impl FireDiscipline {
@@ -3469,6 +3473,12 @@ impl FireDiscipline {
         now >= self.ready_at(actor)
     }
 
+    /// The latest tick `actor` was successfully stepped on, if any.
+    #[must_use]
+    pub fn last_step(&self, actor: ActorId) -> Option<Tick> {
+        self.last_step.get(&actor).copied()
+    }
+
     /// How many actors the cadence has been written for.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -3479,6 +3489,14 @@ impl FireDiscipline {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ready_at.is_empty()
+    }
+
+    /// Refuses a step on a tick earlier than the actor's last one.
+    fn check_monotonic(&self, actor: ActorId, now: Tick) -> Result<(), CombatError> {
+        match self.last_step.get(&actor) {
+            Some(&last) if now < last => Err(CombatError::TickWentBackwards { actor, last, now }),
+            _ => Ok(()),
+        }
     }
 
     /// Records that `actor` fired at `now`: the next shot may go out no
@@ -3736,7 +3754,9 @@ impl CombatRuntime {
     /// [`CombatError::FormationFactsOmitted`] when the request and its own role
     /// assignment disagree about which formation the observer is in,
     /// [`CombatError::UnknownFormationMember`] when the request names a
-    /// formation the observer is not a living member of, and every error
+    /// formation the observer is not a living member of,
+    /// [`CombatError::TickWentBackwards`] when the request's tick is earlier
+    /// than the observer's last successful step, and every error
     /// [`CombatPlanner::decide`] reports. A refused step records no shot, so
     /// it can be retried unchanged.
     pub fn step(&mut self, request: &CombatantRequest<'_>) -> Result<CombatStep, CombatError> {
@@ -3761,6 +3781,7 @@ impl CombatRuntime {
             }
             _ => {}
         }
+        self.fire.check_monotonic(request.observer, request.now)?;
         let facts = match request.formation {
             None => None,
             Some(formation) => Some(self.formations.facts(formation, request.observer).ok_or(
@@ -3789,6 +3810,7 @@ impl CombatRuntime {
         // still standing. A shot that survives the gate pays the cadence
         // it was solved with — the profile's `fire_discipline_ticks` — so a
         // mount that fires twice in one window is never the session's bug.
+        self.fire.last_step.insert(request.observer, request.now);
         if let Some(firing) = decision.trace.firing.as_mut() {
             firing.hold_until(self.fire.ready_at(request.observer));
             if firing.is_firing() {
@@ -3922,6 +3944,17 @@ pub enum CombatError {
         /// The evidence's tick.
         at: Tick,
         /// The decision's tick.
+        now: Tick,
+    },
+    /// A step was requested on a tick earlier than the actor's last
+    /// successful step: the fire-discipline schedule only counts forward, so
+    /// the request is refused rather than un-gating a mount early.
+    TickWentBackwards {
+        /// The actor stepped.
+        actor: ActorId,
+        /// The latest tick it was stepped on.
+        last: Tick,
+        /// The earlier tick the request named.
         now: Tick,
     },
     /// An assignment declares the assigned actor as its own protected
@@ -4202,6 +4235,11 @@ impl fmt::Display for CombatError {
                 f,
                 "{attacker}'s attack is stamped on tick {} but the decision is tick {}",
                 at.0, now.0
+            ),
+            Self::TickWentBackwards { actor, last, now } => write!(
+                f,
+                "{actor} was last stepped on tick {} and cannot be stepped back to tick {}",
+                last.0, now.0
             ),
             Self::ProtectedIsSelf { actor } => {
                 write!(f, "{actor} cannot be its own protected actor")
