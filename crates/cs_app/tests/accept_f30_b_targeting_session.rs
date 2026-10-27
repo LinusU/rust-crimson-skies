@@ -541,6 +541,78 @@ fn accept_f30_b_roster_sync_ignores_stale_and_incomplete_bindings() {
     );
 }
 
+/// Two entities presenting one actor in one pass is a producer error, not a
+/// choice for the ECS to make: the sync names the actor and writes nothing
+/// for it, so the outcome is the same whichever entity was spawned first.
+#[test]
+fn accept_f30_b_roster_sync_reports_a_duplicated_actor_binding() {
+    let generation = SceneGeneration::default();
+    let rules = declared_synthetic_target_rules().subject().clone();
+    let raider = cs_sim::targeting::synthetic_raider_faction();
+    let spawn_at = |world: &mut World, serial: u64, x: f64| {
+        world.spawn((
+            TargetableBinding {
+                actor: actor(serial),
+                rules: rules.clone(),
+                generation,
+            },
+            TargetableState::aircraft(raider.clone(), pos([x, 0.0, 0.0])),
+        ));
+    };
+
+    for flipped in [false, true] {
+        let mut world = bound_world(generation);
+        assert_eq!(sync_targetable_roster(&mut world).registered, 6);
+        let xs = if flipped { [2.0, 1.0] } else { [1.0, 2.0] };
+        // A new actor bound twice, and a registered actor bound a second time.
+        spawn_at(&mut world, 8, xs[0]);
+        spawn_at(&mut world, 8, xs[1]);
+        spawn_at(&mut world, 2, xs[0] + 700.0);
+
+        let report = sync_targetable_roster(&mut world);
+        assert_eq!(report.duplicated, vec![actor(2), actor(8)]);
+        assert_eq!(
+            report.registered, 0,
+            "the duplicated new actor is not registered"
+        );
+        assert_eq!(
+            report.removed, 0,
+            "a duplicate never unregisters a held actor"
+        );
+        let store = world.resource::<TargetingSession>().store();
+        assert!(!store.is_registered(&actor(8)));
+        assert_eq!(
+            store
+                .record(&actor(2))
+                .expect("still registered")
+                .position
+                .to_array(),
+            [0.0, 100.0, 0.0],
+            "the held record was left untouched"
+        );
+
+        // Fixing the producer clears the report and the actor is written.
+        let mut query = world.query::<(bevy::ecs::entity::Entity, &TargetableBinding)>();
+        let extras: Vec<_> = query
+            .iter(&world)
+            .filter(|(_, binding)| binding.actor == actor(8) || binding.actor == actor(2))
+            .map(|(entity, binding)| (entity, binding.actor))
+            .collect();
+        let mut dropped = std::collections::BTreeSet::new();
+        for (entity, who) in extras {
+            if who == actor(8) && dropped.insert(who) {
+                world.entity_mut(entity).despawn();
+            }
+        }
+        let report = sync_targetable_roster(&mut world);
+        assert_eq!(report.duplicated, vec![actor(2)]);
+        assert_eq!(
+            report.registered, 1,
+            "the single remaining binding registers"
+        );
+    }
+}
+
 /// The threat state's real producer edge: the damage system's own tick. A
 /// landed, attributable hit becomes an attack; a hit the resolver *refused*
 /// (it named a node the graph does not have) mints nothing, and the

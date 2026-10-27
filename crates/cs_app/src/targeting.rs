@@ -666,6 +666,13 @@ pub struct RosterReport {
     /// record could not be built. Reported rather than registered with a
     /// guessed position.
     pub incomplete: Vec<Entity>,
+    /// Actors presented by more than one complete binding in this pass, in
+    /// actor order, each once. Nothing is written for them: which entity's
+    /// record is right is not decided by ECS iteration order, so the store
+    /// keeps whatever it already held (or stays without the actor) and the
+    /// producer's double spawn is visible here. They still count as present,
+    /// so a duplicate never unregisters a held actor.
+    pub duplicated: Vec<ActorId>,
 }
 
 /// Keeps the session's roster in step with the entities that present a
@@ -682,7 +689,10 @@ pub struct RosterReport {
 ///   destruction and does not touch attack evidence elsewhere;
 /// * a binding from another scene generation or another session generation
 ///   is reported and ignored, so a reload can never splice a stale entity
-///   into a live roster.
+///   into a live roster;
+/// * an actor bound by two entities in one pass is reported in
+///   [`RosterReport::duplicated`] and not written, so no record field
+///   depends on the order the ECS iterates its entities.
 pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
     let Some(targeting) = world.get_resource::<TargetingSession>() else {
         return RosterReport::default();
@@ -711,7 +721,17 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
         return report;
     };
     let store = targeting.store_mut();
+    let mut seen: BTreeSet<ActorId> = BTreeSet::new();
+    let mut duplicated: BTreeSet<ActorId> = BTreeSet::new();
+    for (actor, _) in &candidates {
+        if !seen.insert(*actor) {
+            duplicated.insert(*actor);
+        }
+    }
     for (actor, state) in candidates {
+        if duplicated.contains(&actor) {
+            continue;
+        }
         let record = TargetRecord {
             actor,
             faction: state.faction,
@@ -779,6 +799,7 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
             report.removed += 1;
         }
     }
+    report.duplicated = duplicated.into_iter().collect();
     report
 }
 
