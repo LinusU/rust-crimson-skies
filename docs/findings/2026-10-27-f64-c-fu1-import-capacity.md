@@ -75,10 +75,13 @@ identities**, and keep the existing on-disk spelling of each identity:
    revision of the same format.
 3. `cs_content::save::codec` raises the document bounds derived from that list,
    documented at the constant: `MAX_SAVE_LINES` 4,096 → 8,192 and
-   `MAX_SAVE_BYTES` 256 KiB → 2 MiB. At the chosen cap the worst-case document
-   is 4,096 identity lines (~1.14 MiB with maximal 256-byte values) plus 512
-   blueprint lines and the fixed fields; 8,192 lines and 2 MiB hold it with
-   room for the other lists.
+   `MAX_SAVE_BYTES` 256 KiB → 2 MiB. The narrowest bound that holds the
+   schema's largest legal document is measured, not guessed: with every list at
+   its own bound and every value maximal — 4,096 identity lines of 256-byte
+   `class:id` values (about 1.1 MiB), 512 lines for each of the six other
+   bounded lists, and the fixed fields — a document is about 1.61 MiB and 7,174
+   lines. 2 MiB and 8,192 lines hold it with about 0.4 MiB and 1,000 lines to
+   spare. The at-cap import itself is about 272 KB.
 4. `cs_app::profile::import_document` writes the typed list, and
    `ProfileSession::persist_confirmed_import` refuses an import whose
    `importable_records()` exceed `MAX_IMPORTED_RECORDS` = 512 with the named
@@ -128,6 +131,13 @@ Nothing is stripped or silently dropped in either direction.
   4,097-entry identity list and a repeated `(record, slot)` — the list bound and
   the one-identity-per-slot rule are enforced where a hand-written save would
   hit them, not only on the import path.
+* `..._a_maximal_document_fits_the_raised_bounds`: a document with every list
+  at its own bound and every value maximal (4,096 maximal identity values, 512
+  maximal blueprints, and the six other bounded lists full) validates, encodes
+  to about 1.61 MiB over 7,174 lines, and decodes back unchanged — so the
+  raised document bounds admit every document the schema itself accepts, not
+  only the at-cap import. The encoded size is asserted against the new byte and
+  line bounds, so a revert to the previous 256 KiB / 4,096 lines cannot pass it.
 
 The existing `accept_f64_c_persist_` suite keeps its coverage; its assertions
 read the identities from the typed list rather than `extra`, and every case it

@@ -24,10 +24,12 @@ use cs_content::legacy_import::{TargetProfile, legacy_save_import_rule};
 use cs_content::save::library::slot_name;
 use cs_content::save::settings::SettingCatalog;
 use cs_formats::legacy_profile::LegacyArtifactClass;
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::{ContentId, ContentKind, MAX_CONTENT_KEY_LEN};
 use cs_types::profile::{
-    ImportedIdentity, MAX_IMPORTED_IDENTITIES, MAX_IMPORTED_RECORDS, ProfileDocument,
-    ProfileFieldError, ProfileId, ProfileKind, Revision,
+    CampaignState, ExtraField, FingerprintEntry, ImportedIdentity, MAX_DISPLAY_NAME_BYTES,
+    MAX_IMPORTED_IDENTITIES, MAX_IMPORTED_IDENTITIES_PER_RECORD, MAX_IMPORTED_RECORDS,
+    MAX_KEY_BYTES, MAX_VALUE_BYTES, ProfileDocument, ProfileFieldError, ProfileId, ProfileKind,
+    RecordEntry, Revision, SettingApply, SettingEntry,
 };
 
 use crate::f64_c_support as support;
@@ -111,6 +113,31 @@ fn extra<'d>(document: &'d ProfileDocument, key: &str) -> Option<&'d str> {
         .iter()
         .find(|field| field.key == key)
         .map(|field| field.value.as_str())
+}
+
+/// A unique key of exactly [`MAX_KEY_BYTES`] bytes: the prefix and the index
+/// make it distinct, the padding makes it as long as the schema admits.
+fn long_key(prefix: &str, index: usize) -> String {
+    let mut key = format!("{prefix}{index}");
+    while key.len() < MAX_KEY_BYTES {
+        key.push('k');
+    }
+    key
+}
+
+/// A distinct content key of the largest length a [`ContentId`] admits.
+fn long_content_key(index: usize) -> String {
+    let head = format!("{index:0>4}");
+    format!("{head}{}", "a".repeat(MAX_CONTENT_KEY_LEN - head.len()))
+}
+
+/// A [`MAX_VALUE_BYTES`]-long legal identity value: a long class label, a
+/// colon, and a `ContentId` whose key is at its own bound.
+fn maximal_identity_value() -> String {
+    let id = ContentId::from_source(ContentKind::MultiplayerScenario, &long_content_key(0))
+        .expect("a bounded content key is valid");
+    let class = "c".repeat(MAX_VALUE_BYTES - 1 - id.as_str().len());
+    format!("{class}:{id}")
 }
 
 /// The schema-wide bounds the import path is written against, checked on a
@@ -344,5 +371,105 @@ fn accept_f64_c_fu1_one_record_over_the_maximum_is_refused() {
             .join(slot_name(target.id()))
             .exists(),
         "no slot was allocated for the refused import"
+    );
+}
+
+/// Every document the save schema validates fits the codec's document bounds:
+/// with every list at its own maximum and every value at its own bound — 4,096
+/// identities carrying maximal `class:id` values, 512 blueprints with maximal
+/// content keys, and the other six bounded lists filled — the document still
+/// encodes and decodes.
+///
+/// The at-cap import above is about 272 KB; this is the ~1.6 MiB true worst case
+/// the raised document bounds are derived from, so the derivation is measured
+/// rather than asserted. It fails if either bound is left at the previous
+/// 256 KiB / 4,096 lines, which no list bound alone would catch.
+#[test]
+fn accept_f64_c_fu1_a_maximal_document_fits_the_raised_bounds() {
+    use cs_content::save::codec::{MAX_SAVE_BYTES, MAX_SAVE_LINES, decode, encode};
+
+    let identity_value = maximal_identity_value();
+    assert_eq!(
+        identity_value.len(),
+        MAX_VALUE_BYTES,
+        "the worst case uses an identity value at the value bound"
+    );
+
+    let mut document = ProfileDocument::synthetic(ProfileId::new(1).expect("nonzero"), Revision(1));
+    document.display_name = "d".repeat(MAX_DISPLAY_NAME_BYTES);
+    document.campaign = CampaignState {
+        run_id: Some(long_key("run", 0)),
+        money_minor: u64::MAX,
+        applied_outcomes: (0..MAX_IMPORTED_RECORDS)
+            .map(|index| long_key("outcome", index))
+            .collect(),
+    };
+    document.blueprints = (0..MAX_IMPORTED_RECORDS)
+        .map(|index| {
+            ContentId::from_source(ContentKind::Blueprint, &long_content_key(index))
+                .expect("a bounded content key is valid")
+        })
+        .collect();
+    document.records = (0..MAX_IMPORTED_RECORDS)
+        .map(|index| RecordEntry {
+            key: long_key("record", index),
+            value: u64::MAX,
+        })
+        .collect();
+    document.settings = (0..MAX_IMPORTED_RECORDS)
+        .map(|index| SettingEntry {
+            key: long_key("setting", index),
+            apply: SettingApply::RestartRequired,
+            value: "v".repeat(MAX_VALUE_BYTES),
+        })
+        .collect();
+    document.fingerprints = (0..MAX_IMPORTED_RECORDS)
+        .map(|index| FingerprintEntry {
+            name: long_key("fingerprint", index),
+            hash: u64::MAX,
+        })
+        .collect();
+    document.extra = (0..MAX_IMPORTED_RECORDS)
+        .map(|index| ExtraField {
+            key: long_key("extra", index),
+            value: "x".repeat(MAX_VALUE_BYTES),
+        })
+        .collect();
+    let template = identity_value.clone();
+    document.import_identities = (0..MAX_IMPORTED_RECORDS)
+        .flat_map(|record| {
+            let value = template.clone();
+            (0..MAX_IMPORTED_IDENTITIES_PER_RECORD).map(move |slot| ImportedIdentity {
+                record_index: u32::try_from(record).expect("a record index fits"),
+                slot: u32::try_from(slot).expect("a slot fits"),
+                value: value.clone(),
+            })
+        })
+        .collect();
+
+    document
+        .validate()
+        .expect("every list at its own bound validates");
+
+    let encoded = encode(&document).expect("the maximal document encodes");
+    let lines = encoded.iter().filter(|byte| **byte == b'\n').count();
+    assert!(
+        encoded.len() > MAX_SAVE_BYTES / 2,
+        "the worst case is {} bytes, so it exercises the bound well past the previous 256 KiB",
+        encoded.len()
+    );
+    assert!(
+        encoded.len() <= MAX_SAVE_BYTES,
+        "the maximal document is {} bytes, over the {MAX_SAVE_BYTES} a save may be",
+        encoded.len()
+    );
+    assert!(
+        lines <= MAX_SAVE_LINES,
+        "the maximal document has {lines} lines, over the {MAX_SAVE_LINES} a save may have"
+    );
+    let decoded = decode(&encoded).expect("the maximal document decodes");
+    assert_eq!(
+        decoded, document,
+        "every list survives the codec at its own bound"
     );
 }

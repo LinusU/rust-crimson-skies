@@ -41,16 +41,17 @@ use cs_types::profile::{
 /// carry [`MAX_IMPORTED_IDENTITIES`](cs_types::profile::MAX_IMPORTED_IDENTITIES)
 /// identity lines, each value up to
 /// [`MAX_VALUE_BYTES`](cs_types::profile::MAX_VALUE_BYTES), plus
-/// [`MAX_LIST_ENTRIES`](cs_types::profile::MAX_LIST_ENTRIES) blueprint lines and
-/// the fixed fields. 4,096 identity lines with maximal values are about
-/// 1.14 MiB, so 2 MiB holds the worst case with room for the rest of the
-/// document.
+/// [`MAX_LIST_ENTRIES`](cs_types::profile::MAX_LIST_ENTRIES) entries in each of
+/// the six other bounded lists, each of those at its own value and key bound,
+/// and the fixed fields. Measured over that worst case (every list at its
+/// bound, every value maximal) the document is about 1.61 MiB, so 2 MiB holds
+/// it with about 0.4 MiB to spare; the at-cap import alone is about 272 KiB.
 pub const MAX_SAVE_BYTES: usize = 2 * 1024 * 1024;
 /// Largest accepted number of lines.
 ///
-/// Derived from the same worst case: 4,096 identity lines, 512 blueprint
-/// lines, the bounded lists a document may also carry and the fixed fields stay
-/// under 8,192.
+/// Derived from the same worst case: 4,096 identity lines, 512 lines for each
+/// of the six other bounded lists and the fixed fields come to 7,174 lines, so
+/// 8,192 holds the schema's largest document.
 pub const MAX_SAVE_LINES: usize = 8192;
 
 const MAGIC: &str = "CSSAVE";
