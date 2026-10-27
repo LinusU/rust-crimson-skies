@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "task_id": "F15-F",
-  "candidate_tree": "9e13cf3951f1289c7d84731d8e8f79232a918494",
+  "candidate_tree": "ca0750c9a33f8782ae10348805ca7b32d8ff4dfb",
   "engine": {
     "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "bevy": "0.20.0",
     "avian": "0.8.0"
   },
-  "created_at": "2026-10-27T15:30:42Z",
+  "created_at": "2026-10-27T16:37:27Z",
   "command": {
     "argv": [
       "/opt/homebrew/opt/python@3.14/bin/python3.14",
@@ -15,12 +15,12 @@
       "unittest",
       "discover",
       "-s",
-      "/Users/linus/coding/rust-crimson-skies/deepseek-1/tools/tests",
+      "/Users/linus/coding/rust-crimson-skies/swe2-max-1/tools/tests",
       "-p",
       "test_engine_file_io_probe.py",
       "-v"
     ],
-    "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1",
+    "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1",
     "exit_code": 0
   },
   "source": {
@@ -128,12 +128,12 @@
   "artifacts": [
     {
       "path": "tests.log",
-      "sha256": "e78217fa67dd47214dd46da6ca1ea7f6ce2a8ba278d02cbd3987c2565055f25a",
+      "sha256": "a0fe821a22bb77b9cc11406a8793550d0f4bd195cc995a9a8b8562626305c7f3",
       "kind": "log"
     },
     {
       "path": "probe.json",
-      "sha256": "7c61993c52a4169fa3f8b96d32e1e375c0fbc6a1e56dec98c9dedfdb7d3243ae",
+      "sha256": "9ae06b0bce41e4709e8193bef2e69b0d1cd5215e6b02444efb10ea56ce782a68",
       "kind": "json"
     }
   ],
@@ -141,7 +141,7 @@
     "Whether the original engine wrote any persistent derived artefact during a normal mission load, and what it keyed it on, is unmeasured. The static audit found no such writer, path, import or vocabulary, but a negative over static spans cannot exclude a run-time-assembled path, a DLL writing on the engine's behalf, a script-invoked GameZ write that is later read back, or an unenumerated code path. What would settle it is an owner-run file-system trace of the original executable during one mission load (Process Monitor file events, with the executable digest and the written-path list). See docs/findings/2026-10-27-f15-f-original-cache-and-keys.md, 'The unknown, and what would settle it'."
   ],
   "review": {
-    "identity": "deepseek-1 (implementer); no reviewer has run yet",
+    "identity": "implementer: deepseek-1/deepseek-1; reviewer: swe2-max-1/Devin SWE-2 (Rally #403 review claim clm_x3f65pomhib2c4rm), a fresh session and context, a different agent instance and model than the implementer (SWE-2 Max vs deepseek-1), so this review is independent in the sense the owner ruling asks for; the reviewer re-ran the acceptance selection with CS_ENGINE_IMAGE and CS_GAME_DIR, independently re-measured the image's import table, resolved every unlabelled write-open mode by hand, closed the fprintf enumeration gap and the labeler boundary bug it found, and regenerated this report on the rebased tree; no agent review replaces the owner's human approval",
     "method": "Every field is derived from the recorded run: candidate_tree from HEAD^{tree} on a clean checkout, the counts and assertion statuses from tests.log (the same selection the finding documents), the probe artifacts from the read-only probe over $CS_ENGINE_IMAGE, and install_sha256/content_sha256 from a production cs-inspect inventory of the same $CS_GAME_DIR in the same session. Nothing is typed in. SCOPE: this is static analysis of the original image plus retail data; no original executable ran, so the claim is 'implemented', never 'verified_original', and the artifact-level result is an explicit unknown about original run-time behaviour, not a negative claim about it. tools/validate_evidence.py is run without --require-pass on purpose: the deliverable is itself an explicit unknown, so the structural check (every artifact hash, every count) is the applicable one, and dropping the unknown from machine-readable evidence to make --require-pass green is exactly what the owner directive forbids."
   },
   "claim": "implemented"
