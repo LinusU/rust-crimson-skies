@@ -675,6 +675,27 @@ pub struct RosterReport {
     pub duplicated: Vec<ActorId>,
 }
 
+/// Which actors the [`sync_targetable_roster`] pass itself holds: the
+/// session generation it last synced under and the actors its own `register`
+/// calls added and still observes bound.
+///
+/// The pass's removal authority reaches only what it registered — a record's
+/// owner is the pass that wrote it. A mission's roster passes (the zeppelin
+/// and ground-target passes, the AI arming pass) register their actors
+/// directly with no [`TargetableBinding`] entity, and a removal rule that
+/// reached every record with no live binding would unregister the whole
+/// mission roster on the first frame the schedule ran.
+#[derive(Resource, Clone, Debug, Default)]
+struct SyncedRosterActors {
+    /// The `(session, scene generation)` `bound` was minted under. A session
+    /// replacement — the store itself swapped — resets it: the old store's
+    /// records died with it, and nothing is unregistered from a store that
+    /// no longer exists.
+    session: Option<(u64, SceneGeneration)>,
+    /// The actors this pass registered and still observes bound.
+    bound: BTreeSet<ActorId>,
+}
+
 /// Keeps the session's roster in step with the entities that present a
 /// [`TargetableBinding`] for this session's scene generation.
 ///
@@ -686,7 +707,10 @@ pub struct RosterReport {
 /// * a registered actor whose entity is gone (despawned, or only bound
 ///   under an older generation) is unregistered — the *entity left the
 ///   world* transaction, which is not the same statement as a recorded
-///   destruction and does not touch attack evidence elsewhere;
+///   destruction and does not touch attack evidence elsewhere. The authority
+///   reaches only the pass's own registrations: a record a different
+///   producer wrote — the mission's roster passes register actors with no
+///   binding entity at all — is that producer's to unregister;
 /// * a binding from another scene generation or another session generation
 ///   is reported and ignored, so a reload can never splice a stale entity
 ///   into a live roster;
@@ -699,6 +723,16 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
     };
     let scene_generation = targeting.generation();
     let session = targeting.store().session();
+
+    let mut synced = world
+        .remove_resource::<SyncedRosterActors>()
+        .unwrap_or_default();
+    if synced.session != Some((session, scene_generation)) {
+        synced = SyncedRosterActors {
+            session: Some((session, scene_generation)),
+            bound: BTreeSet::new(),
+        };
+    }
 
     let mut present: BTreeSet<ActorId> = BTreeSet::new();
     let mut report = RosterReport::default();
@@ -718,6 +752,7 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
     }
 
     let Some(mut targeting) = world.get_resource_mut::<TargetingSession>() else {
+        world.insert_resource(synced);
         return report;
     };
     let store = targeting.store_mut();
@@ -748,6 +783,7 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
             // inventing a second roster entry.
             if store.register(record.clone()).is_ok() {
                 report.registered += 1;
+                synced.bound.insert(actor);
             } else {
                 report.ignored.push(actor);
             }
@@ -793,13 +829,24 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
         report.updated += 1;
     }
 
-    for actor in store.registered() {
-        if !present.contains(&actor) {
+    // The removal half reaches only the actors this pass's own bindings
+    // registered. A record a different producer wrote — the mission's roster
+    // passes register their actors directly, with no `TargetableBinding` —
+    // is that producer's record to keep or drop, and a binding-registered
+    // actor whose binding the roster shares is still tracked to its own
+    // despawn.
+    let mut still_bound = BTreeSet::new();
+    for actor in std::mem::take(&mut synced.bound) {
+        if present.contains(&actor) {
+            still_bound.insert(actor);
+        } else if store.is_registered(&actor) {
             store.unregister(actor);
             report.removed += 1;
         }
     }
     report.duplicated = duplicated.into_iter().collect();
+    synced.bound = still_bound;
+    world.insert_resource(synced);
     report
 }
 
