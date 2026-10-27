@@ -3865,6 +3865,11 @@ pub enum TriggerTickVerdict {
         travel_m_per_tick: f64,
         /// The thinnest measured zone, in canonical metres.
         thinnest_m: f64,
+        /// The same zone in stored units — the extent `thinnest_m` is the
+        /// survey's factor applied to. [`Self::break_even_meters_per_unit`]
+        /// divides one tick's travel by this, not by `thinnest_m`, because the
+        /// break-even is a metres-per-**stored-unit** factor.
+        thinnest_stored_extent: f64,
         /// The zone that measurement came from.
         thinnest_zone: String,
     },
@@ -3879,6 +3884,11 @@ pub enum TriggerTickVerdict {
         travel_m_per_tick: f64,
         /// The thinnest measured zone, in canonical metres.
         thinnest_m: f64,
+        /// The same zone in stored units — the extent `thinnest_m` is the
+        /// survey's factor applied to. [`Self::break_even_meters_per_unit`]
+        /// divides one tick's travel by this, not by `thinnest_m`, because the
+        /// break-even is a metres-per-**stored-unit** factor.
+        thinnest_stored_extent: f64,
         /// The zone that measurement came from.
         thinnest_zone: String,
     },
@@ -3886,6 +3896,13 @@ pub enum TriggerTickVerdict {
 
 impl TriggerTickVerdict {
     /// The factor at which the verdict would flip, whatever the verdict is.
+    ///
+    /// The factor is an **absolute** metres-per-stored-unit number — one tick's
+    /// travel divided by the thinnest zone's **stored** extent — so a decided
+    /// verdict states the same factor a survey carrying no factor reports. It
+    /// is never `travel / thinnest_m`: `thinnest_m` is already scaled, and
+    /// dividing by it would return the true break-even only at a factor of
+    /// exactly one metre per stored unit.
     ///
     /// `None` when there is no thinnest zone to flip on, which is the
     /// [`Self::NoZones`] state and nothing else.
@@ -3907,14 +3924,14 @@ impl TriggerTickVerdict {
             } => Some(*break_even_meters_per_unit),
             Self::EveryZoneSpansATick {
                 travel_m_per_tick,
-                thinnest_m,
+                thinnest_stored_extent,
                 ..
-            } => Some(*travel_m_per_tick / *thinnest_m),
-            Self::ThinnestZoneOutrun {
+            }
+            | Self::ThinnestZoneOutrun {
                 travel_m_per_tick,
-                thinnest_m,
+                thinnest_stored_extent,
                 ..
-            } => Some(*travel_m_per_tick / *thinnest_m),
+            } => Some(*travel_m_per_tick / *thinnest_stored_extent),
         }
     }
 
@@ -4372,6 +4389,7 @@ impl RetailTriggerVolumeSurvey {
                 tick_hz,
                 travel_m_per_tick,
                 thinnest_m,
+                thinnest_stored_extent,
                 thinnest_zone,
             }
         } else {
@@ -4380,6 +4398,7 @@ impl RetailTriggerVolumeSurvey {
                 tick_hz,
                 travel_m_per_tick,
                 thinnest_m,
+                thinnest_stored_extent,
                 thinnest_zone,
             }
         })
