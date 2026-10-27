@@ -1093,7 +1093,10 @@ fn accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record() {
                 directive("WAKE_OBJECTIVE_WHEN_I_COMPLETE", vec![zrd_int(0)]),
             ],
         ),
-        block(3, vec![directive("SET_AI_", vec![zrd_text("unknown")])]),
+        block(
+            3,
+            vec![directive("UNRECORDED_DIRECTIVE", vec![zrd_text("unknown")])],
+        ),
     ]);
     let record = measure_control_record(&document);
 
@@ -1120,7 +1123,7 @@ fn accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record() {
         .collect();
     assert_eq!(
         unmeasured,
-        ["SET_AI_"],
+        ["UNRECORDED_DIRECTIVE"],
         "a key no finding covers stays unmeasured"
     );
     assert_eq!(

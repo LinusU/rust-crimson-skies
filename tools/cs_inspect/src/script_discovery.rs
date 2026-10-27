@@ -2227,7 +2227,7 @@ mod tests {
         );
         let unknown = |reason: &str| {
             DirectiveKeyRow::new(
-                "SET_AI_",
+                "NO_SUCH_DIRECTIVE",
                 1,
                 1,
                 vec![],
