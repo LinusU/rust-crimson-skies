@@ -4,8 +4,8 @@
 //! Spec: `specs/F21-cameras-cockpit-views-and-spyglass.md`, stages
 //! `### F21-A`, `### F21-B` and `### F21-C`; shared contract
 //! `docs/contracts/UI-NETWORK.md`. Task test prefixes: `accept_f21_a_`,
-//! `accept_f21_b_`, `accept_f21_c_`, `accept_f21_d_`, `accept_t540_`,
-//! `accept_t541_` and `accept_t542_`.
+//! `accept_f21_b_`, `accept_f21_c_`, `accept_f21_d_`, `accept_f21_e_`,
+//! `accept_t540_`, `accept_t541_` and `accept_t542_`.
 //!
 //! These tests drive production code only: `cs_content::cameras` owns the
 //! declared records and their validation, and `cs_app::camera` owns the
@@ -85,6 +85,15 @@
 //!   aircraft during a scripted capture and verify the camera binds to the new
 //!   player body* (AC03), together with teardown, retry and error propagation.
 //!
+//! Task #536 — F21-E, the deterministic capture flags:
+//!
+//! * `capture_cli` owns the flag grammar and the run mode: `cli::parse`
+//!   builds the typed `camera::CaptureRequest` from `--mission <id> --tick
+//!   <n> --pose <x,y,z> [--aspect <w:h>] [--view cockpit|chase|spyglass]
+//!   [--settings fixed]` inside `--synthetic --headless`, every malformed
+//!   value is refused naming its flag, and `run::run_capture` produces the
+//!   applied `CaptureReport` the real `cs` binary prints.
+//!
 //! Most of this file reads no original data: every value is authored
 //! development content (`Origin::SyntheticFixture`), so those tests prove the
 //! interface and the camera contract, never the original game. The F21-D half
@@ -93,6 +102,7 @@
 //! too) and assert against measured installation bytes and a measured frame.
 
 mod capture;
+mod capture_cli;
 mod chase_preset;
 mod common;
 mod content;

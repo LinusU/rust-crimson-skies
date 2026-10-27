@@ -7,20 +7,37 @@
 //! behavior 3, acceptance case AC02 in
 //! `specs/F00-workspace-toolchain-and-first-executable.md`).
 //!
-//! F00-C adds the one run mode this workspace can honestly serve: the
+//! F00-C adds the first run mode this workspace can honestly serve: the
 //! fixed-tick headless synthetic smoke named in
 //! `docs/contracts/CLI-EVIDENCE.md` (`--synthetic --headless --ticks <n>`
 //! with an optional `--trace <file>`). A successful parse produces the typed
 //! [`SyntheticRequest`] that [`crate::run::run_synthetic`] consumes; every
 //! other argument vector stays a failure reported on stderr with exit code
 //! [`EXIT_INVALID_INPUT`], never as success.
+//!
+//! F21-E adds the second synthetic run mode: the deterministic capture of F21
+//! non-negotiable behavior 5 ("Screenshot CLI accepts a reproducible world
+//! pose, mission id, tick and deterministic settings; report all overrides").
+//! `--synthetic --headless --mission <id> --tick <n> --pose <x,y,z>` parses
+//! into the [`CaptureRequest`](crate::camera::CaptureRequest) a
+//! [`CameraSession`](crate::camera::CameraSession) consumes, and
+//! [`crate::run::run_capture`] applies it to the frame at that tick and prints
+//! the applied report. Nothing is drawn: this stage has no renderer, so the
+//! command reports the capture, it does not produce an image file.
 
 use std::path::PathBuf;
 
+use cs_content::cameras::AspectRatio;
+use cs_types::Tick;
+use cs_types::content::{ContentId, ContentKind};
+use cs_types::space::{Quaternion, WorldPosition};
+
+use crate::camera::{CameraPose, CaptureError, CaptureRequest, ViewRig};
 use crate::mission_session::{DEFAULT_MISSION_CAPTURE_DIR, MIN_MISSION_SMOKE_SECONDS};
 use crate::playtest::smoke::MIN_SMOKE_SECONDS;
 use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, RetailRequest, SmokeRequest};
-use crate::run::SyntheticRequest;
+use crate::render::capture::ComparisonSettings;
+use crate::run::{CaptureRunRequest, SyntheticRequest};
 use crate::ui::front_end::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndRequest, MIN_SHELL_SMOKE_SECONDS, MissionEnd,
     StartFlowRequest,
@@ -123,7 +140,10 @@ pub struct JoystickProbeRequest {
 }
 
 /// What the caller asked the binary to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The enum stays `PartialEq` rather than `Eq`: [`Capture`](Self::Capture)
+/// carries a [`CaptureRequest`], which holds `f64`/`f32` fields.
+#[derive(Clone, Debug, PartialEq)]
 pub enum CliRequest {
     /// `-h`/`--help`: print [`HELP_TEXT`] on stdout and exit 0.
     Help,
@@ -134,6 +154,12 @@ pub enum CliRequest {
     /// ticks, optionally recording a trace and optionally starting from a
     /// root seed.
     Synthetic(SyntheticRequest),
+    /// `--synthetic --headless --mission <id> --tick <n> --pose <x,y,z>
+    /// [--aspect <w:h>] [--view cockpit|chase|spyglass] [--settings fixed]
+    /// [--trace <file>] [--seed <u64>]`: the deterministic capture of F21
+    /// non-negotiable behavior 5 — run the `SYNTHETIC` scene to the capture
+    /// tick and report every override the applied request made.
+    Capture(CaptureRunRequest),
     /// `--playtest [--cs-path <dir> [--world <id>] [--aircraft <id>]]
     /// [--smoke-seconds <n> [--capture-dir <dir>]]`: open the windowed
     /// development playtest (task #647) over the synthetic scene or, with
@@ -171,13 +197,18 @@ pub enum CliRequest {
 /// Classifies the argument vector left after the program name.
 ///
 /// `--help`/`--version` win in the order they appear, so they work whatever
-/// else was typed. Everything else must form a complete
-/// `--synthetic --headless --ticks <n> [--trace <file>] [--seed <u64>]`
-/// request; a vector that is unknown or structurally incomplete becomes
-/// [`CliRequest::Unsupported`], and one that is complete but unusable (a
-/// non-numeric tick count, a non-`u64` seed, `--synthetic` without
-/// `--headless`, `--seed` without `--synthetic`) becomes
-/// [`CliRequest::Invalid`] with a reason naming the offending flag.
+/// else was typed. Everything else must form one of the requests the binary
+/// can run: the windowed modes over a `--cs-path <dir>` installation, the
+/// `--joystick-probe` device check, or one of the two headless
+/// `--synthetic` runs — `--ticks <n>` for the fixed-tick smoke, or the F21-E
+/// deterministic capture `--mission <id> --tick <n> --pose <x,y,z>` with its
+/// optional `--aspect <w:h>`, `--view cockpit|chase|spyglass` and
+/// `--settings fixed`. A vector that is unknown or structurally incomplete
+/// becomes [`CliRequest::Unsupported`], and one that is complete but
+/// unusable (a non-numeric tick count, a non-finite pose component, a
+/// `--mission` that names no mission, a `--settings` that is not `fixed`,
+/// `--synthetic` without `--headless`, a capture flag without `--synthetic`)
+/// becomes [`CliRequest::Invalid`] with a reason naming the offending flag.
 ///
 /// Parsing never touches the environment or the file system.
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
@@ -198,6 +229,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut ticks: Option<u64> = None;
     let mut trace: Option<PathBuf> = None;
     let mut seed: Option<u64> = None;
+    let mut capture_tick: Option<u64> = None;
+    let mut pose: Option<CameraPose> = None;
+    let mut aspect: Option<AspectRatio> = None;
+    let mut view: Option<ViewRig> = None;
+    let mut settings: Option<ComparisonSettings> = None;
     let mut playtest = false;
     let mut smoke_seconds: Option<u32> = None;
     let mut capture_dir: Option<PathBuf> = None;
@@ -374,6 +410,121 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 trace = Some(PathBuf::from(value));
                 values = 1;
             }
+            "--tick" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                match value.parse::<u64>() {
+                    Ok(parsed) => capture_tick = Some(parsed),
+                    Err(_) => {
+                        return CliRequest::Invalid {
+                            reason: format!(
+                                "--tick expects a non-negative integer tick, found {value:?}"
+                            ),
+                        };
+                    }
+                }
+                values = 1;
+            }
+            "--pose" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                let components: Vec<&str> = value.split(',').collect();
+                if components.len() != 3 {
+                    return CliRequest::Invalid {
+                        reason: format!(
+                            "--pose expects exactly three components <x,y,z> in canonical \
+                             world metres, found {value:?}"
+                        ),
+                    };
+                }
+                let mut metres = [0.0_f64; 3];
+                for (axis, component) in components.iter().enumerate() {
+                    match component.parse::<f64>() {
+                        Ok(parsed) if parsed.is_finite() => metres[axis] = parsed,
+                        _ => {
+                            return CliRequest::Invalid {
+                                reason: format!(
+                                    "--pose expects a finite number per component, found \
+                                     {component:?} in {value:?}"
+                                ),
+                            };
+                        }
+                    }
+                }
+                // The flags carry no orientation, so the pinned pose's
+                // rotation is the canonical identity (forward -Z, up +Y);
+                // what `--pose` pins is the position.
+                let position = WorldPosition::try_new(metres)
+                    .expect("each component was checked finite above");
+                pose = Some(CameraPose::new(position, Quaternion::IDENTITY));
+                values = 1;
+            }
+            "--aspect" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                let Some((width, height)) = value.split_once(':') else {
+                    return CliRequest::Invalid {
+                        reason: format!("--aspect expects a ratio written <w:h>, found {value:?}"),
+                    };
+                };
+                match (width.parse::<f64>(), height.parse::<f64>()) {
+                    (Ok(width), Ok(height)) if width.is_finite() && height.is_finite() => {
+                        match AspectRatio::new(width / height) {
+                            Ok(ratio) => aspect = Some(ratio),
+                            Err(error) => {
+                                return CliRequest::Invalid {
+                                    reason: format!("--aspect: {error}"),
+                                };
+                            }
+                        }
+                    }
+                    _ => {
+                        return CliRequest::Invalid {
+                            reason: format!(
+                                "--aspect expects two finite numbers <w:h>, found {value:?}"
+                            ),
+                        };
+                    }
+                }
+                values = 1;
+            }
+            "--view" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                view = Some(match value.as_str() {
+                    "cockpit" => ViewRig::Cockpit,
+                    "chase" => ViewRig::Chase,
+                    "spyglass" => ViewRig::Spyglass,
+                    _ => {
+                        return CliRequest::Invalid {
+                            reason: format!(
+                                "--view expects cockpit, chase or spyglass, found {value:?}"
+                            ),
+                        };
+                    }
+                });
+                values = 1;
+            }
+            "--settings" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                if value == "fixed" {
+                    settings = Some(ComparisonSettings::comparison());
+                } else {
+                    return CliRequest::Invalid {
+                        reason: format!(
+                            "--settings expects `fixed`, the one deterministic comparison \
+                             set an unpinned set cannot reproduce, found {value:?}"
+                        ),
+                    };
+                }
+                values = 1;
+            }
             _ => unknown = true,
         }
         index += 1 + values;
@@ -382,6 +533,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if unknown {
         return CliRequest::Unsupported { args };
     }
+    // F21-E: any of the capture's own flags selects the deterministic
+    // capture run — `--mission` joins it only under `--synthetic`, so it is
+    // not part of this test.
+    let capture_flag = capture_tick.is_some()
+        || pose.is_some()
+        || aspect.is_some()
+        || view.is_some()
+        || settings.is_some();
     if joystick_probe {
         if mission.is_some()
             || cs_path.is_some()
@@ -391,6 +550,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || no_joystick
             || no_force_feedback
             || smoke_seconds.is_some()
+            || capture_flag
         {
             return CliRequest::Invalid {
                 reason: "--joystick-probe checks a host joystick on its own; it takes only \
@@ -591,7 +751,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_trucks
             || smoke_convoy_kill
             || smoke_success
-            || smoke_start_flow)
+            || smoke_start_flow
+            || capture_flag)
     {
         return CliRequest::Invalid {
             reason: "--resume-start-flow re-opens the start flow (`cs --cs-path <dir>`) after a \
@@ -610,11 +771,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || ticks.is_some()
             || trace.is_some()
             || seed.is_some()
+            || capture_flag
         {
             return CliRequest::Invalid {
                 reason: "--front-end is the windowed original front end; it does not \
  combine with --playtest, --synthetic, --headless, --mission, --world, --aircraft, \
- --ticks, --trace or --seed"
+ --ticks, --trace, --seed or the capture flags"
                     .to_string(),
             };
         }
@@ -649,6 +811,137 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             None => None,
         };
         return CliRequest::FrontEnd(FrontEndRequest { cs_path, smoke });
+    }
+    // F21-E: the deterministic capture run. Any of the capture's own flags —
+    // or `--mission` under `--synthetic` — selects it, and every one of them
+    // needs `--synthetic`, the same rule `--seed`, `--ticks` and `--trace`
+    // already follow. `--mission` without `--synthetic` stays the original
+    // mission launch below.
+    if capture_flag && !synthetic {
+        return CliRequest::Invalid {
+            reason: "--tick, --pose, --aspect, --view and --settings are flags of the \
+ --synthetic --headless capture run; they need --synthetic"
+                .to_string(),
+        };
+    }
+    if synthetic && (capture_flag || mission.is_some()) {
+        if !headless {
+            return CliRequest::Invalid {
+                reason: "--synthetic requires --headless: this workspace stage \
+ has no window, renderer or GPU path, so a windowed run would have to fake a \
+ scene"
+                    .to_string(),
+            };
+        }
+        if playtest {
+            return CliRequest::Invalid {
+                reason: "--playtest does not combine with --synthetic; the capture \
+ run is the --synthetic --headless form of --mission"
+                    .to_string(),
+            };
+        }
+        if cs_path.is_some() || world.is_some() || aircraft.is_some() {
+            return CliRequest::Invalid {
+                reason: "--cs-path, --world and --aircraft select the original \
+ installation; the synthetic capture reads none of it"
+                    .to_string(),
+            };
+        }
+        if ticks.is_some() {
+            return CliRequest::Invalid {
+                reason: "--ticks does not combine with the capture flags: the \
+ capture run's length is the tick it captures, --tick <n>"
+                    .to_string(),
+            };
+        }
+        if smoke_seconds.is_some() || capture_dir.is_some() {
+            return CliRequest::Invalid {
+                reason: "--smoke-seconds and --capture-dir belong to the windowed \
+ mission and playtest smokes; the headless capture writes no framebuffer"
+                    .to_string(),
+            };
+        }
+        if dev_overlay
+            || dev_keys
+            || smoke_no_teleport
+            || smoke_engagement
+            || smoke_failure
+            || smoke_crash
+            || smoke_trucks
+            || smoke_convoy_kill
+            || smoke_success
+            || smoke_start_flow
+            || from_start_flow
+        {
+            return CliRequest::Invalid {
+                reason: "the mission run's --dev-*, --smoke-* and --from-start-flow \
+ flags belong to --cs-path <dir> --mission <id>, not to the synthetic capture"
+                    .to_string(),
+            };
+        }
+        if joystick_flags {
+            return CliRequest::Invalid {
+                reason: "the joystick flags belong to --cs-path <dir> --mission <id> \
+ and --joystick-probe; a headless capture reads no host device"
+                    .to_string(),
+            };
+        }
+        let Some(mission) = mission else {
+            return CliRequest::Invalid {
+                reason: "the capture names the mission it is of: --mission <id> is \
+ required"
+                    .to_string(),
+            };
+        };
+        let Some(capture_tick) = capture_tick else {
+            return CliRequest::Invalid {
+                reason: "the capture names the tick it is reproducible at: --tick \
+ <n> is required"
+                    .to_string(),
+            };
+        };
+        let Some(pose) = pose else {
+            return CliRequest::Invalid {
+                reason: "the capture pins a reproducible world pose: --pose <x,y,z> \
+ is required"
+                    .to_string(),
+            };
+        };
+        // A bare key is the mission's work-order label (`m01`); a namespaced
+        // value is the canonical content id (`mission/m01`). Either way the
+        // request itself refuses an id of another kind by name below.
+        let id = if mission.contains('/') {
+            ContentId::parse(&mission)
+        } else {
+            ContentId::from_source(ContentKind::Mission, &mission)
+        };
+        let id = match id {
+            Ok(id) => id,
+            Err(error) => {
+                return CliRequest::Invalid {
+                    reason: format!("--mission {mission:?}: {error}"),
+                };
+            }
+        };
+        let capture =
+            match CaptureRequest::build(id, Tick(capture_tick), view, Some(pose), aspect, settings)
+            {
+                Ok(capture) => capture,
+                Err(error) => {
+                    let flag = match error {
+                        CaptureError::NotAMission { .. } => "--mission",
+                        _ => "--settings",
+                    };
+                    return CliRequest::Invalid {
+                        reason: format!("{flag}: {error}"),
+                    };
+                }
+            };
+        return CliRequest::Capture(CaptureRunRequest {
+            capture,
+            seed,
+            trace,
+        });
     }
     if let Some(mission) = mission {
         if playtest || synthetic || headless || world.is_some() || aircraft.is_some() {
@@ -917,6 +1210,33 @@ SYNTHETIC SMOKE
         keeps the canonical fixture. The trace header records the seed, and
         --seed without --synthetic is rejected
 
+SYNTHETIC CAPTURE (deterministic; reports, draws nothing)
+    --synthetic --headless --mission <id> --tick <n> --pose <x,y,z>
+        [--view cockpit|chase|spyglass] [--aspect <w:h>] [--settings fixed]
+        [--trace <file>] [--seed <u64>]
+        Run the SYNTHETIC scene to tick <n>, apply the
+        cs_app::camera::CaptureRequest the flags build to the frame at that
+        tick through the production camera session over the declared
+        synthetic camera modes, and print the applied capture report (F21
+        non-negotiable behavior 5): every override the request pinned — the
+        view, the world pose, the aspect, the fixed comparison settings, the
+        bypassed smoothing, the folded magnification — plus the f64 -> f32
+        narrowing each pinned projection field took.
+        --mission takes a mission key (m01) or the canonical id
+        (mission/m01); an id of another kind is refused
+        --tick is the tick the capture is reproducible at, and the run's own
+        length; it does not combine with --ticks
+        --pose pins the camera's world position in canonical metres; the
+        pinned rotation is the canonical identity because the flags carry
+        no orientation
+        --view selects the rig the one capture frame draws through
+        --aspect frames at width/height instead of the modes' declared
+        reference aspect (4:3)
+        --settings accepts only `fixed`: an unpinned comparison set compares
+        nothing, so anything else is refused
+        Nothing is drawn: this stage has no renderer, so the command reports
+        the capture; it produces no image file
+
 WINDOWED PLAYTEST (development, not original)
     --playtest
         Open a real window with the DEVELOPMENT PLAYTEST / SYNTHETIC SCENE /
@@ -1074,8 +1394,9 @@ installation.
 
 This stage runs no window and no renderer, so --synthetic must be combined
 with --headless. The remaining run modes of docs/contracts/CLI-EVIDENCE.md
-(--input-replay, --cam, --screenshot) are not
-implemented here yet and exit 2.
+(--input-replay, --cam and the GPU screenshot --screenshot it drives) are not
+implemented here yet and exit 2: the SYNTHETIC CAPTURE above applies the same
+CaptureRequest record to a session frame and reports it, but draws nothing.
 
 --profile-dir <dir>
     With any run mode: use <dir> as a private profile base. The run holds the

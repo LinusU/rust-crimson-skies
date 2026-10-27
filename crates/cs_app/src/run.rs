@@ -1,4 +1,4 @@
-//! The fixed-tick headless synthetic smoke run (F00-C, acceptance case AC03).
+//! The fixed-tick headless synthetic runs (F00-C and F21-E).
 //!
 //! [`run_synthetic`] is the consumer of the asset-free
 //! [`SyntheticScene`](crate::synthetic::SyntheticScene): it builds a fresh
@@ -10,15 +10,32 @@
 //! explicit: the trace is flushed and synced before success is reported, and
 //! every IO or scene error propagates with the exit code the CLI evidence
 //! contract assigns to it (never a logged failure with exit 0).
+//!
+//! [`run_capture`] is the same scene driven by F21-E's deterministic capture
+//! flags: the world advances to the capture's tick, the installed
+//! [`CaptureRequest`](crate::camera::CaptureRequest) applies to the one
+//! [`CameraSession`](crate::camera::CameraSession) frame produced there, and
+//! the typed output is the [`CaptureReport`](crate::camera::CaptureReport)
+//! listing every override the request made — the report the CLI prints.
 
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use cs_content::cameras::AspectRatio;
+use cs_sim::damage::ActorId;
+use cs_types::net::SessionId;
+use cs_types::space::{Quaternion, WorldPosition};
 use cs_types::{BodyKind, BodySample, SceneProvenance, SyntheticBodySpec, Tick};
 
+use crate::camera::{
+    BodyPose, CameraLowerError, CameraPose, CameraRig, CameraSession, CaptureError, CaptureReport,
+    CaptureRequest, RigError, SessionError, SessionFrameInputs, SmoothingError, lower_camera_modes,
+};
 use crate::cli::{EXIT_INVALID_INPUT, EXIT_RUNTIME_FAILURE};
+use crate::origin::OriginChange;
 use crate::synthetic::{SyntheticScene, SyntheticSceneError, TICK_HZ};
 
 /// Typed input of one headless synthetic run.
@@ -53,6 +70,43 @@ pub struct SyntheticRunReport {
     pub trace: Option<PathBuf>,
 }
 
+/// Typed input of one headless deterministic capture run (F21-E).
+///
+/// `--synthetic --headless --mission <id> --tick <n> --pose <x,y,z>`: the
+/// scene is the same `SyntheticBodySpec` fixture as the plain run, stepped
+/// to the tick [`CaptureRequest::tick`] names; the capture applies to the
+/// one session frame produced there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptureRunRequest {
+    /// The capture the flags built: mission, tick and every pinned override.
+    pub capture: CaptureRequest,
+    /// Root seed of the run (`--seed`), the same rule as the plain
+    /// synthetic run: it varies only the body's lateral pose, never the
+    /// request's pinned pose.
+    pub seed: Option<u64>,
+    /// JSON Lines trace of the run up to the captured tick (`--trace`).
+    pub trace: Option<PathBuf>,
+}
+
+/// Typed output of a completed capture run: the applied report plus the run
+/// bookkeeping of the scene it was taken in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptureRunReport {
+    /// What the session reports for the applied request: the mission, the
+    /// tick, the frame's view, pose and aspect, every override and the
+    /// pinned projection with its `f64 -> f32` narrowings.
+    pub capture: CaptureReport,
+    /// Ticks actually advanced to reach the capture tick, counted while
+    /// stepping the world.
+    pub ticks_completed: u64,
+    /// Provenance read back out of the world's marker.
+    pub provenance: SceneProvenance,
+    /// The synthetic body's sample at the capture tick.
+    pub final_sample: BodySample,
+    /// The trace file written, when one was requested.
+    pub trace: Option<PathBuf>,
+}
+
 /// Why a run could not complete.
 #[derive(Debug)]
 pub enum RunError {
@@ -60,6 +114,25 @@ pub enum RunError {
     Scene(SyntheticSceneError),
     /// The trace file could not be created, written, flushed or synced.
     Trace { path: PathBuf, source: io::Error },
+    /// The declared synthetic camera modes could not be lowered. The
+    /// fixture is designed-valid, so this is a broken-invariant failure
+    /// rather than bad input.
+    CameraModes(CameraLowerError),
+    /// The camera rig over those modes could not be built.
+    CameraRig(RigError),
+    /// The camera session over that rig could not be built.
+    CameraSmoothing(SmoothingError),
+    /// The capture request was refused when it was installed into the
+    /// session: invalid input, naming the request's problem.
+    Capture(CaptureError),
+    /// The frame at the capture's tick could not be produced.
+    Frame(SessionError),
+    /// The installed capture produced no report at its own tick — the
+    /// session's own invariant, so a runtime failure and never bad input.
+    CaptureMissed {
+        /// The tick the request asked for.
+        requested: Tick,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -69,6 +142,26 @@ impl fmt::Display for RunError {
             Self::Trace { path, source } => {
                 write!(f, "cannot write trace {}: {source}", path.display())
             }
+            Self::CameraModes(error) => {
+                write!(f, "cannot lower the synthetic camera modes: {error}")
+            }
+            Self::CameraRig(error) => {
+                write!(f, "cannot build the capture camera rig: {error}")
+            }
+            Self::CameraSmoothing(error) => {
+                write!(f, "cannot build the capture camera session: {error}")
+            }
+            Self::Capture(error) => {
+                write!(f, "the capture request was refused: {error}")
+            }
+            Self::Frame(error) => {
+                write!(f, "the frame at the capture's tick was refused: {error}")
+            }
+            Self::CaptureMissed { requested } => write!(
+                f,
+                "the capture installed for tick {} produced no report at that tick",
+                requested.0
+            ),
         }
     }
 }
@@ -78,6 +171,12 @@ impl std::error::Error for RunError {
         match self {
             Self::Scene(error) => Some(error),
             Self::Trace { source, .. } => Some(source),
+            Self::CameraModes(error) => Some(error),
+            Self::CameraRig(error) => Some(error),
+            Self::CameraSmoothing(error) => Some(error),
+            Self::Capture(error) => Some(error),
+            Self::Frame(error) => Some(error),
+            Self::CaptureMissed { .. } => None,
         }
     }
 }
@@ -88,8 +187,13 @@ impl RunError {
     /// a runtime failure (1).
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Scene(_) => EXIT_INVALID_INPUT,
-            Self::Trace { .. } => EXIT_RUNTIME_FAILURE,
+            Self::Scene(_) | Self::Capture(_) => EXIT_INVALID_INPUT,
+            Self::Trace { .. }
+            | Self::CameraModes(_)
+            | Self::CameraRig(_)
+            | Self::CameraSmoothing(_)
+            | Self::Frame(_)
+            | Self::CaptureMissed { .. } => EXIT_RUNTIME_FAILURE,
         }
     }
 }
@@ -120,14 +224,7 @@ pub fn run_synthetic(request: &SyntheticRequest) -> Result<SyntheticRunReport, R
         writer.record(&scene.sample())?;
     }
 
-    let mut ticks_completed = 0u64;
-    while ticks_completed < request.ticks {
-        scene.step(1);
-        ticks_completed += 1;
-        if let Some(writer) = trace.as_mut() {
-            writer.record(&scene.sample())?;
-        }
-    }
+    let ticks_completed = step_and_trace(&mut scene, request.ticks, &mut trace)?;
 
     // Teardown: evidence must be on disk before the run may be called a
     // success, so a flush or sync failure propagates instead of exiting 0.
@@ -144,6 +241,113 @@ pub fn run_synthetic(request: &SyntheticRequest) -> Result<SyntheticRunReport, R
         final_sample,
         trace: request.trace.clone(),
     })
+}
+
+/// Runs the asset-free `SYNTHETIC` scene to a capture's tick and applies the
+/// request to the frame produced there (F21-E, non-negotiable behavior 5).
+///
+/// The scene, the seed and the trace are the plain synthetic run's own; what
+/// the flags add is the camera half: a [`CameraSession`] over the same
+/// declared synthetic camera modes the playtest's view runs, the request
+/// installed before the first frame, and exactly one frame produced at the
+/// capture's tick — a capture is one frame and then it is gone
+/// ([`CameraSession::apply_capture`]). The body's rotation is the identity:
+/// the fixture integrates a falling box with no angular velocity, and the
+/// pinned pose overrides whatever the rig derives anyway.
+///
+/// Nothing is drawn and no image is produced: the typed report is the whole
+/// output of the run.
+pub fn run_capture(request: &CaptureRunRequest) -> Result<CaptureRunReport, RunError> {
+    let spec = match request.seed {
+        Some(root_seed) => SyntheticBodySpec::falling_box(BodyKind::Dynamic).seeded(root_seed),
+        None => SyntheticBodySpec::falling_box(BodyKind::Dynamic),
+    };
+    let mut scene = SyntheticScene::new(spec).map_err(RunError::Scene)?;
+
+    // The camera session over the declared synthetic fixture — the mode set
+    // every --view value the parser accepts resolves against, so an
+    // install-time refusal is a defect in the fixture, not in the flags.
+    let modes = lower_camera_modes(&cs_content::cameras::declared_synthetic_camera_modes())
+        .map_err(RunError::CameraModes)?;
+    let rig = CameraRig::new(modes).map_err(RunError::CameraRig)?;
+    let mut session = CameraSession::new(rig).map_err(RunError::CameraSmoothing)?;
+    session
+        .apply_capture(request.capture.clone())
+        .map_err(RunError::Capture)?;
+
+    let mut trace = match &request.trace {
+        Some(path) => Some(TraceWriter::open(path)?),
+        None => None,
+    };
+    if let Some(writer) = trace.as_mut() {
+        writer.header(request.capture.tick().0, request.seed)?;
+        writer.record(&scene.sample())?;
+    }
+
+    let ticks_completed = step_and_trace(&mut scene, request.capture.tick().0, &mut trace)?;
+
+    // The one frame the capture is of. The headless viewport frames at the
+    // modes' declared reference aspect unless the request pinned one, the
+    // body appears with no continuous prior pose (Teleport), and the elapsed
+    // slice is one tick — a first frame reseats whatever it is given.
+    let player = ActorId {
+        session: SessionId::new(1).expect("session generation 1 is valid"),
+        serial: 1,
+    };
+    let sample = scene.sample();
+    let body = CameraPose::new(
+        WorldPosition::try_new(sample.position_m.map(f64::from))
+            .expect("an Avian position is finite"),
+        Quaternion::IDENTITY,
+    );
+    let bodies = [BodyPose::new(player, body)];
+    let frame = session
+        .frame(&SessionFrameInputs {
+            at: sample.tick,
+            player,
+            bodies: &bodies,
+            aspect: AspectRatio::FOUR_THREE,
+            elapsed: Duration::from_secs_f64(1.0 / TICK_HZ),
+            look: None,
+            spyglass: None,
+            origin_change: OriginChange::Teleport,
+        })
+        .map_err(RunError::Frame)?;
+
+    if let Some(writer) = trace {
+        writer.finish()?;
+    }
+
+    let Some(capture) = frame.capture else {
+        return Err(RunError::CaptureMissed {
+            requested: request.capture.tick(),
+        });
+    };
+    Ok(CaptureRunReport {
+        capture,
+        ticks_completed,
+        provenance: scene.provenance(),
+        final_sample: sample,
+        trace: request.trace.clone(),
+    })
+}
+
+/// Advances the scene to `ticks`, recording each tick's sample like the
+/// plain run's loop, and returns how many ticks it completed.
+fn step_and_trace(
+    scene: &mut SyntheticScene,
+    ticks: u64,
+    trace: &mut Option<TraceWriter>,
+) -> Result<u64, RunError> {
+    let mut ticks_completed = 0u64;
+    while ticks_completed < ticks {
+        scene.step(1);
+        ticks_completed += 1;
+        if let Some(writer) = trace.as_mut() {
+            writer.record(&scene.sample())?;
+        }
+    }
+    Ok(ticks_completed)
 }
 
 /// JSON Lines writer for one run: a header line plus one sample for every

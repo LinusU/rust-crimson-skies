@@ -2,11 +2,13 @@
 //!
 //! The request comes from [`cs_app::cli::parse`]: `--help`/`--version` exit 0
 //! on stdout without touching the environment or the retail installation
-//! (F00-B, acceptance case AC02), and `--synthetic --headless --ticks <n>`
-//! runs the fixed-tick synthetic smoke through [`cs_app::run`]
-//! (F00-C, acceptance case AC03). Whatever this binary cannot do, it reports
-//! on stderr with a nonzero exit code — per `docs/contracts/CLI-EVIDENCE.md`
-//! a failure is never returned as success.
+//! (F00-B, acceptance case AC02), `--synthetic --headless --ticks <n>` runs
+//! the fixed-tick synthetic smoke through [`cs_app::run`]
+//! (F00-C, acceptance case AC03), and `--synthetic --headless --mission <id>
+//! --tick <n> --pose <x,y,z>` runs the deterministic capture of F21-E and
+//! prints its applied report. Whatever this binary cannot do, it reports on
+//! stderr with a nonzero exit code — per `docs/contracts/CLI-EVIDENCE.md` a
+//! failure is never returned as success.
 
 use std::process::ExitCode;
 
@@ -88,6 +90,16 @@ fn dispatch(args: Vec<String>) -> ExitCode {
                 ExitCode::from(error.exit_code())
             }
         },
+        CliRequest::Capture(request) => match run::run_capture(&request) {
+            Ok(report) => {
+                print_capture_report(&report);
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("cs: {error}");
+                ExitCode::from(error.exit_code())
+            }
+        },
         CliRequest::Playtest(request) => match playtest::run_playtest(&request) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -149,6 +161,45 @@ fn print_run_report(report: &run::SyntheticRunReport) {
         cs_app::synthetic::TICK_HZ,
         report.final_sample.tick.0
     );
+    if let Some(path) = &report.trace {
+        println!("trace: {}", path.display());
+    }
+}
+
+/// Reports an applied capture on stdout: the mission and tick it is of, every
+/// override the request pinned (F21 non-negotiable behavior 5, "report all
+/// overrides"), then each field's `f64 -> f32` narrowing in the pinned
+/// projection, and where the trace went when one was requested.
+fn print_capture_report(report: &run::CaptureRunReport) {
+    let capture = &report.capture;
+    println!(
+        "synthetic capture: {} {} at tick {} ({} ticks at {} Hz)",
+        report.provenance.label(),
+        capture.mission(),
+        capture.tick().0,
+        report.ticks_completed,
+        cs_app::synthetic::TICK_HZ,
+    );
+    println!(
+        "frame: view {} aspect {} pose {:?}",
+        capture
+            .rig()
+            .map_or("session's".to_string(), |rig| rig.label().to_string()),
+        capture.aspect(),
+        capture.pose(),
+    );
+    for entry in capture.overrides() {
+        println!("override {}: {}", entry.field(), entry);
+    }
+    for narrowing in capture.pinned().narrowings() {
+        println!(
+            "narrowed {}: {} -> {} (drift {})",
+            narrowing.field,
+            narrowing.exact,
+            narrowing.pinned,
+            narrowing.drift()
+        );
+    }
     if let Some(path) = &report.trace {
         println!("trace: {}", path.display());
     }
