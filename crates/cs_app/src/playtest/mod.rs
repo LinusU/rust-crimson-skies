@@ -276,7 +276,7 @@ impl Default for PlaytestState {
 
 /// The chase camera: the F21 [`CameraSession`] and its latest frame.
 ///
-/// [`follow_camera`] is the render-frame loop that feeds the session and the
+/// `follow_camera` is the render-frame loop that feeds the session and the
 /// one consumer of what it produces (task #537, F21-F); the decision is
 /// recorded in `docs/findings/2026-10-27-f21-f-camera-session-producer.md`.
 #[derive(Resource)]
