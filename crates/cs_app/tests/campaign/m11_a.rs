@@ -366,6 +366,33 @@ fn accept_m11_a_the_declared_title_is_joined_by_the_ruling_and_by_nothing_else()
         "the withdrawn ruling must refuse the title as uncarried: {:?}",
         partial.dependency(CriticalDependency::TitleString)
     );
+    // The refusals reach the partial record's own `unknowns` with the reason
+    // each dependency gave. `to_json` writes no dependency states, so this is
+    // the only place the reason survives into the record, and the record must
+    // not read as an empty one rather than a refused one.
+    for id in [
+        CriticalDependency::TitleString,
+        CriticalDependency::MissionId,
+        CriticalDependency::WorldGroupVariant,
+        CriticalDependency::ProgramSourceMap,
+    ] {
+        let Some(DependencyState::Unresolved { reason, .. }) = partial.dependency(id) else {
+            panic!("{id} is resolved without the ruling");
+        };
+        let entry = format!("{}: unresolved — {reason}", id.label());
+        assert!(
+            partial.unknowns.contains(&entry),
+            "the refused record does not name {id} and its reason in its unknowns: {:?}",
+            partial.unknowns
+        );
+    }
+    assert!(
+        !binding()
+            .unknowns
+            .iter()
+            .any(|unknown| unknown.contains(": unresolved — ")),
+        "a record that resolves every critical dependency must name none of them as refused"
+    );
 
     // A near-miss spelling of the ruled row is not confirmed either: the join
     // is exact, so one character of one word is enough to lose it.
