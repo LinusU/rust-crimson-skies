@@ -73,10 +73,10 @@ impl SplitMix64 {
     /// The draw index of `self` relative to `start`: the count `k` such that
     /// `self` is the state the stream holds `k` draws after `start`.
     ///
-    /// [`Self::next_u64`] adds [`Self::INCREMENT`] to the state on every draw,
+    /// [`Self::next_u64`] adds `Self::INCREMENT` to the state on every draw,
     /// so the states a stream visits from `start` are exactly
     /// `start.state + k * INCREMENT` for `k = 0, 1, …`, and multiplying the
-    /// difference by [`Self::INCREMENT_INVERSE`] recovers `k` exactly. The map
+    /// difference by `Self::INCREMENT_INVERSE` recovers `k` exactly. The map
     /// is a bijection on `u64`, so *every* pair of states has a defined
     /// index — a state that is not actually `k` draws ahead of `start` still
     /// returns the `k` it would be at. A caller that needs "did this stream

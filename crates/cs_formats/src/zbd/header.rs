@@ -11,10 +11,10 @@
 //! - the INTERP loading-script container — a little-endian `u32` signature
 //!   `0x08971119` at offset 0 followed by a little-endian `u32` version `7`
 //!   at offset 4 (`docs/research/FORMAT-NOTES.md`, "INTERP observed subset"
-//!   [S07]; the 12-byte header is repeated in
+//!   S07; the 12-byte header is repeated in
 //!   `specs/F07-interp-loading-script-container.md`);
 //! - GameZ — signature `0x02971222`, Crimson Skies version `42`, read from the
-//!   pinned mech3ax v0.6.0 source [S02] and matched by every retail
+//!   pinned mech3ax v0.6.0 source S02 and matched by every retail
 //!   `gamez.zbd`/`planes.zbd` (task #340 findings);
 //! - animation — signature `0x08170616`, read from the same source (which
 //!   documents the MechWarrior 3/Recoil/Pirate's Moon versions only), with the
@@ -37,7 +37,7 @@ use cs_types::evidence::ClaimStatus;
 /// Offset of the documented INTERP signature word inside the header.
 pub const INTERP_SIGNATURE_OFFSET: usize = 0;
 
-/// The documented INTERP signature ([S07]).
+/// The documented INTERP signature (S07).
 ///
 /// `docs/research/FORMAT-NOTES.md` records it as `0x08971119`, read as a
 /// little-endian `u32`, so on disk the first four bytes are
@@ -47,21 +47,21 @@ pub const INTERP_SIGNATURE: u32 = 0x0897_1119;
 /// Offset of the documented INTERP version word (bytes `4..8`).
 pub const INTERP_VERSION_OFFSET: usize = 4;
 
-/// The documented INTERP version ([S07]).
+/// The documented INTERP version (S07).
 pub const INTERP_VERSION: u32 = 7;
 
 /// Offset of the GameZ signature word.
 pub const GAMEZ_SIGNATURE_OFFSET: usize = 0;
 
 /// The GameZ signature: `SIGNATURE` in `crates/mech3ax-gamez/src/gamez/common.rs`
-/// of the pinned mech3ax v0.6.0 source [S02], shared by every game that
+/// of the pinned mech3ax v0.6.0 source S02, shared by every game that
 /// source supports.
 pub const GAMEZ_SIGNATURE: u32 = 0x0297_1222;
 
 /// Offset of the GameZ version word (bytes `4..8`).
 pub const GAMEZ_VERSION_OFFSET: usize = 4;
 
-/// The Crimson Skies GameZ version: `VERSION_CS` in the same file [S02].
+/// The Crimson Skies GameZ version: `VERSION_CS` in the same file S02.
 pub const GAMEZ_VERSION: u32 = 42;
 
 /// Offset of the animation signature word.
@@ -69,7 +69,7 @@ pub const ANIMATION_SIGNATURE_OFFSET: usize = 0;
 
 /// The animation signature: `SIGNATURE` in
 /// `crates/mech3ax-anim/src/parse.rs` of the pinned mech3ax v0.6.0 source
-/// [S02].
+/// S02.
 pub const ANIMATION_SIGNATURE: u32 = 0x0817_0616;
 
 /// Offset of the animation version word (bytes `4..8`).

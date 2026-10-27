@@ -10,7 +10,7 @@
 //! What it deliberately does not do: decode anything. The committed research
 //! pack documents no encoding layout for the reader family — only the
 //! `INTERP.ZBD` header is documented (`docs/research/FORMAT-NOTES.md`, "INTERP
-//! observed subset" [S07]) — so every entry comes back as
+//! observed subset" S07) — so every entry comes back as
 //! [`EncodingEvidence::Undeclared`] carrying the family's own recorded reason.
 //! Task #340 read the archive layout from the pinned source (a member table at
 //! the end of the file, no leading header) but no entry encoding; task #343

@@ -199,7 +199,7 @@ struct ChapterSummary {
 /// shared walk rather than of this renderer. The chapter summary is
 /// accumulated per chapter number and emitted in ascending chapter order, so
 /// it counts every mission of a chapter exactly once whatever order the
-/// rows arrive in. Every string is escaped by [`json_string`], so a path can
+/// rows arrive in. Every string is escaped by `json_string`, so a path can
 /// never break out of its field.
 pub fn campaign_report(install_root: &Path, layout: &[CampaignLayoutEntry]) -> String {
     let mut grouped: BTreeMap<u32, ChapterSummary> = BTreeMap::new();

@@ -43,7 +43,7 @@
 //!   original's **registration order** rather than a designed precedence:
 //!   `crimptch.rof` (only when the registry names a path it exists under),
 //!   `crimson.rof`, the loose UI asset directory, the current directory
-//!   ([`gos::SessionBuilder::mount_gos_chain`], task #686).
+//!   (`gos::SessionBuilder::mount_gos_chain`, task #686).
 //!
 //! * [`binding`] records which archives one world/mission load opens and at
 //!   which level — `gamez.zbd` per world group, `planes.zbd` from the ZBD
@@ -61,7 +61,7 @@
 //!   holds the name serving it ([`ReaderMounts::resolve`]). That order comes
 //!   from the original executable's code, not from a runtime capture, and
 //!   [`reader::READER_LOOKUP_ORDER_STATUS`] says so; the designed
-//!   [`PRECEDENCE_ORDER_STATUS`] is untouched and a reader lookup never
+//!   `PRECEDENCE_ORDER_STATUS` is untouched and a reader lookup never
 //!   consults it. When no archive holds the name, the original's **loose
 //!   directory pass** serves a loose host file
 //!   ([`reader::original_loose_reader_directories`],

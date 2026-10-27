@@ -4,7 +4,7 @@
 //! `specs/F10-gamez-mesh-topology-and-material-records.md` AC04 asks for
 //! "exact missing/invalid face counts for every private world and airframe".
 //! [`FaceCensus`] is the production answer: it walks one parsed container
-//! through [`RawMesh::draw_topology`] — the same measured rule the upload
+//! through `RawMesh::draw_topology` — the same measured rule the upload
 //! path runs — and accounts for **every** face the records declare, with
 //! nothing dropped and nothing counted twice.
 //!
@@ -19,9 +19,9 @@
 //!   of faces the records declared and the section did not hold.
 //! * **invalid** — stored faces whose data fails validation: an index past
 //!   its array, fewer corners than the primitive needs, a non-finite value.
-//!   The stored face is broken ([`FaceIssue::is_unsupported`] is `false`).
+//!   The stored face is broken (`FaceIssue::is_unsupported` is `false`).
 //! * **unsupported** — stored faces that are valid data the **canonical**
-//!   view ([`RawMesh::topology`]) refuses to guess at: an n-gon outline it
+//!   view (`RawMesh::topology`) refuses to guess at: an n-gon outline it
 //!   cannot ear-clip. The original draws every one of them — it fans the
 //!   stored corners — so under the measured draw rule this count is zero and
 //!   the field exists to say so.
@@ -132,7 +132,7 @@ pub struct FaceCensus {
     /// Stored faces rejected because their data is invalid.
     pub invalid_faces: u64,
     /// Stored faces rejected because they are valid data this view refuses.
-    /// Under [`RawMesh::draw_topology`] — which is what this census walks —
+    /// Under `RawMesh::draw_topology` — which is what this census walks —
     /// the original's fan accepts every outline the canonical ear-clipper
     /// refused, so this counts only what both views refuse: nothing, unless
     /// a future face kind needs it.

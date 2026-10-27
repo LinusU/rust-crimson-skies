@@ -4,7 +4,7 @@
 //!
 //! The layout below is **established, not guessed**. It was read from the
 //! pinned legacy CS-capable reference, mech3ax **v0.6.0**, commit
-//! `d3521a9721be731d365504568ddcd78e3f9846bb` ([S02], [S17] in
+//! `d3521a9721be731d365504568ddcd78e3f9846bb` (S02, S17 in
 //! `docs/research/SOURCES.md`), and then **measured against every GameZ
 //! archive of the original installation** — nine archives, 56 620 stored node
 //! records — with the per-archive numbers in
@@ -228,7 +228,7 @@ pub const MATRIX_AGREEMENT_TOLERANCE: f32 = 1.0e-4;
 /// `unk040`, `unk044`, `environment_data`, `action_priority`,
 /// `action_callback`, `area_partition`, `unk112`, the three bounding boxes,
 /// `unk196` and the words the reference asserts are zero. F11-A's typed input
-/// ([`cs_content::scene::ParsedNode`]) deliberately drops them; keeping them
+/// (`cs_content::scene::ParsedNode`) deliberately drops them; keeping them
 /// here is what lets a later stage re-derive them from the record instead of
 /// from a guess (F11-A finding, "Unmeasured stored fields are not carried by
 /// the typed input").
@@ -253,7 +253,7 @@ pub struct RawNodeInfo {
     /// zone; the field's domain beyond that is unmeasured and it is carried
     /// raw.
     pub zone_id: u32,
-    /// `node_type`: the kind tag, one of the [`NODE_TYPE_*`] constants.
+    /// `node_type`: the kind tag, one of the `NODE_TYPE_*` constants.
     pub node_type: u32,
     /// `data_ptr`: this node's own record's absolute container offset. The
     /// reference asserts it is non-zero; this reader walks the data section

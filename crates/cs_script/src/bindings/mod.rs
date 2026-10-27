@@ -297,12 +297,12 @@ pub struct RawCall {
 ///
 /// | `cs_formats` | `cs_script::bindings::observed` |
 /// | --- | --- |
-/// | `HostCallSite::form` + `::native` (derived as `HostCallSite::host()`) | `SiteRow::host`, through `HostKind::code()` and [`MeasuredHost::from_code`] |
-/// | `HostKind::Native(::UiNative)` / `::Mail` / `::Unmeasured` | `MeasuredHost::Native(`[`MeasuredNative`]`)` / `::Mail` / `::Unmeasured` |
-/// | `UiNative` | `MeasuredNative`, through `UiNative::code()` and [`MeasuredNative::from_code`] |
-/// | `DispatchForm::Callback` / `::Mail` | `MeasuredForm::Callback` / `::Mail` (spellings only; the differential trace identifies a step by [`MeasuredHost`] + dispatch value, F38-D.2) |
-/// | `DeclaredStep::host` (differential trace) | [`MeasuredHost`], through `HostKind::code()` and [`MeasuredHost::from_code`] |
-/// | `ArgShape` | `MeasuredShape`, through `ArgShape::code()` and [`MeasuredShape::from_code`] |
+/// | `HostCallSite::form` + `::native` (derived as `HostCallSite::host()`) | `SiteRow::host`, through `HostKind::code()` and `MeasuredHost::from_code` |
+/// | `HostKind::Native(::UiNative)` / `::Mail` / `::Unmeasured` | `MeasuredHost::Native(``MeasuredNative``)` / `::Mail` / `::Unmeasured` |
+/// | `UiNative` | `MeasuredNative`, through `UiNative::code()` and `MeasuredNative::from_code` |
+/// | `DispatchForm::Callback` / `::Mail` | `MeasuredForm::Callback` / `::Mail` (spellings only; the differential trace identifies a step by `MeasuredHost` + dispatch value, F38-D.2) |
+/// | `DeclaredStep::host` (differential trace) | `MeasuredHost`, through `HostKind::code()` and `MeasuredHost::from_code` |
+/// | `ArgShape` | `MeasuredShape`, through `ArgShape::code()` and `MeasuredShape::from_code` |
 /// | `HostCallCorpus::calls[].host` | `MeasuredCallRow::host` |
 /// | `HostCallCorpus::calls[].native_id` (`Option<i64>`) | `MeasuredCallRow::native_id` |
 /// | `…sites` / `…scripts` | `MeasuredCallRow::sites` / `::scripts` |

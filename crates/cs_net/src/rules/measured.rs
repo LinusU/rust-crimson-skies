@@ -47,7 +47,7 @@ pub const EVIDENCE_IMAGE_SHA256: &str =
 /// Where each filled policy was measured, keyed by policy label: the
 /// owner-note addresses (`0x…`, string ids), against [`EVIDENCE_IMAGE_SHA256`].
 ///
-/// [`cs_content`]'s mode catalog mirrors these citations for the mode rows
+/// `cs_content`'s mode catalog mirrors these citations for the mode rows
 /// (dev-dependency test, `accept_f476_`), so a row and the rules crate cite
 /// the same measurement.
 pub const POLICY_ADDRESSES: [(&str, &str); 9] = [

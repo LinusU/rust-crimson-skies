@@ -73,7 +73,7 @@ pub const PATIENT: Policy = Policy {
 ///
 /// It retries without sleeping. The cost of an absent entry must stay at a
 /// few syscalls because the walks that use this policy are priced per
-/// *entry*, not per call: [`crate::target_dir::dep_info_files`] probes
+/// *entry*, not per call: `crate::target_dir::dep_info_files` probes
 /// `<entry>/deps` under every directory a target directory holds, so a
 /// sleeping budget turns one scan of a `target/` with thousands of
 /// directories into minutes of `nanosleep`. `attempts` therefore buys

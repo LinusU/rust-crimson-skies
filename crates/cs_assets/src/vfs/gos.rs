@@ -286,7 +286,7 @@ impl ExePathOrigin {
     /// The existence check is the one retail fact this module reads by
     /// itself, and it reads it from the read-only installation. It resolves
     /// each directory component case-insensitively (see
-    /// [`resolve_container`]): the installation spells them `GOSDATA` and
+    /// `resolve_container`): the installation spells them `GOSDATA` and
     /// `ASSETS` while the original asks for `GOSDATA` and `Assets`, so
     /// asking a case-sensitive host for the original's spelling alone would
     /// report "no patch container" for a container that is present — a wrong
@@ -304,7 +304,7 @@ impl ExePathOrigin {
     ///
     /// This is the path the original *asks for*, so it is what a report names
     /// as where the original looked. Whether that is the file on disk is a
-    /// host question, which is what [`resolve_container`] answers.
+    /// host question, which is what `resolve_container` answers.
     pub fn patch_container(exe_path: &Path) -> PathBuf {
         let mut path = exe_path.to_path_buf();
         path.push("GOSDATA");
@@ -535,10 +535,10 @@ pub struct GosStep {
 
 /// The registered sources of one GOS chain, in the original's order.
 ///
-/// A chain is the record of a registration: [`steps`] is in the order
+/// A chain is the record of a registration: `steps` is in the order
 /// `AddNewROFDirectory` pushed the sources, which is the order
-/// `MetaOpenFile` walks them. [`patch`] says which registry case this chain
-/// is and [`name_match`] the rule its lookups answer with, so
+/// `MetaOpenFile` walks them. `patch` says which registry case this chain
+/// is and `name_match` the rule its lookups answer with, so
 /// nothing about a chain has to be recalled from the code that built it.
 #[derive(Debug)]
 pub struct GosChain {

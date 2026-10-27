@@ -9,13 +9,13 @@
 //!   a separately labeled optional enhancement, the evidence state of its
 //!   layout, and the questions that must be measured before it can leave
 //!   `Unknown`. A candidate source is admitted as an
-//!   [`ArtifactProposal`](inventory::ArtifactProposal) that carries the
+//!   [`ArtifactProposal`] that carries the
 //!   caller's declared class — the class is never inferred from a file name —
 //!   and a source over [`MAX_LEGACY_SOURCE_BYTES`] is refused at the door.
 //! * [`document`] reads a legacy document **through a declared layout**:
-//!   [`LegacyLayout`](document::LegacyLayout) is data, every extent is declared
+//!   [`LegacyLayout`] is data, every extent is declared
 //!   rather than read from the input, the record count is checked against
-//!   [`LegacyLimits`](document::LegacyLimits) and an F03
+//!   [`LegacyLimits`] and an F03
 //!   [`AllocationBudget`](crate::io::AllocationBudget) before a `Vec` is
 //!   reserved, and every byte the layout does not name is retained instead of
 //!   dropped or guessed.

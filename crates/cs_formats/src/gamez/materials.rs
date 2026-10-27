@@ -7,7 +7,7 @@
 //!
 //! The layout below is **established**, not guessed. It was read from the pinned
 //! legacy CS-capable reference, mech3ax **v0.6.0**, commit
-//! `d3521a9721be731d365504568ddcd78e3f9846bb` ([S02], [S17] in
+//! `d3521a9721be731d365504568ddcd78e3f9846bb` (S02, S17 in
 //! `docs/research/SOURCES.md`), and checked byte-for-byte against every GameZ
 //! archive of the original installation. The field worksheet with source file
 //! and line references, the per-archive measurements and the remaining unknowns

@@ -1615,7 +1615,7 @@ fn item_sequence(ordinal: u32, action_index: usize) -> Option<u32> {
 
 /// The first item ordinal the sequence space cannot address: the largest action
 /// index an item may carry no longer fits beside it in a `u32`. It is where
-/// [`MissionState::alloc_ordinal`] stops — it refuses to hand this ordinal out
+/// `MissionState::alloc_ordinal` stops — it refuses to hand this ordinal out
 /// and never counts past it — so it is both the largest counter a live save
 /// record can carry and the smallest one that means "exhausted".
 pub const FIRST_EXHAUSTED_ITEM_ORDINAL: u32 = (u32::MAX - (SEQS_PER_ITEM - 1)) / SEQS_PER_ITEM;
@@ -2806,7 +2806,7 @@ impl MissionState {
     ///
     /// A [`Condition::TravelersCount`] carries a running total that is state,
     /// not a fact: here it is answered for one evaluation from a total of
-    /// zero. The tick pipeline runs [`Self::holds_in`] with the objective's
+    /// zero. The tick pipeline runs `Self::holds_in` with the objective's
     /// own total.
     pub fn holds(&self, condition: &Condition, facts: &MissionFacts) -> bool {
         self.holds_in(None, condition, facts, &mut BTreeMap::new())

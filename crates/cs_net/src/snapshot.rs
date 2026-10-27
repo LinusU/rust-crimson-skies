@@ -733,7 +733,7 @@ impl QuantizedVector {
     /// A record's fields are public and `QuantizedVector` is `Copy`, so a vector
     /// built under one budget can be assigned to a field declared with another.
     /// That has to be a named refusal at the schema boundary rather than a silent
-    /// narrowing by [`Self::write_to`], or a record could travel with numbers
+    /// narrowing by `Self::write_to`, or a record could travel with numbers
     /// that do not mean what its field declares.
     ///
     /// # Errors

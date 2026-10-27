@@ -179,7 +179,7 @@ impl BmPlane {
 ///
 /// This is deliberately not a palette: which colors a faction or a custom
 /// paint scheme uses comes from original data (spec non-negotiable #4), and
-/// the colors in the Blender helper [S10] are research leads, not the
+/// the colors in the Blender helper S10 are research leads, not the
 /// authoritative catalog. Composition takes them as input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PaintColor {
@@ -316,7 +316,7 @@ impl<'a> BmFile<'a> {
     }
 
     /// Composes the five planes into one RGB8 image with the observed helper
-    /// algorithm [S10]. See the module docs for the exact arithmetic and its
+    /// algorithm S10. See the module docs for the exact arithmetic and its
     /// claim class.
     ///
     /// `colors` are the paint colors for mask 1, mask 2 and mask 3, in that

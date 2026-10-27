@@ -18,7 +18,7 @@
 //! ```
 //!
 //! **What the mount records.** One member per file entry, spelled as its
-//! root-relative path joined with `/`. The [`SourceSpan`] a resolution
+//! root-relative path joined with `/`. The `SourceSpan` a resolution
 //! returns is the member's *stored* extent in the container — offset
 //! `start`, length `raw_length_on_disk`, digest of exactly those bytes —
 //! because a span is provenance inside a file (IDENTITY-CONTENT: "treat

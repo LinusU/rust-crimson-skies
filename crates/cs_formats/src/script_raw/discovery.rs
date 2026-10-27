@@ -7,7 +7,7 @@
 //!
 //! * [`discover_container`] takes one candidate container (provenance label,
 //!   installation-relative path, bytes), routes it through the F06 two-key
-//!   [`dispatch`], and hands back a [`ContainerDiscovery`]: the programs it
+//!   [`dispatch()`](dispatch()), and hands back a [`ContainerDiscovery`]: the programs it
 //!   could locate, each with the [`ProgramLocator`] that names its exact
 //!   bytes, the [`ProgramKind`] a name or a location supports and the
 //!   [`Confidence`] of that claim.

@@ -6,7 +6,7 @@
 //! names_length`, then `entry_count` records of six little-endian `u32`
 //! fields (`start`, `length`, `length_on_disk`, `flags`, `name_length`,
 //! `id`), then the name table (`docs/research/FORMAT-NOTES.md`, "ROF
-//! observed structure [S05]", which summarizes the reference extractor;
+//! observed structure S05", which summarizes the reference extractor;
 //! the header/record/name layout is additionally confirmed by the
 //! independently authored `fixtures/synthetic/flat-uncompressed.rof` and its
 //! generator `tools/make_synthetic_fixtures.py`).
@@ -23,7 +23,7 @@
 //!   `name_length` values (which count the name *plus* its terminator, as
 //!   authored in the synthetic fixture) sum to exactly `names_length`;
 //! * the two length fields stay separate and **verbatim**: the on-disk words
-//!   `length` and `length_on_disk` ([S05]) are exposed as
+//!   `length` and `length_on_disk` (S05) are exposed as
 //!   [`RofRawRecord::raw_length`] and
 //!   [`RofRawRecord::raw_length_on_disk`]. The `raw_` prefix says the words
 //!   are kept as authored; what they *mean* is F05-D's answer, below.
@@ -61,7 +61,7 @@
 //! probe asymmetric fixtures and real compressed members rather than
 //! reinterpret the words from their English names. A retail corpus does
 //! resolve them, and the answer is **not** what the reference extractor's
-//! source suggests ([S05] reads the first word and ignores the second):
+//! source suggests (S05 reads the first word and ignores the second):
 //!
 //! | word | offset | measured meaning |
 //! | --- | --- | --- |
@@ -210,11 +210,11 @@ pub const DIRECTORY_HEADER_BYTES: usize = 8;
 pub const RECORD_BYTES: usize = 24;
 
 /// Observed flag bit 1: the entry is a directory whose `start` is the
-/// absolute offset of a nested block ([S05]).
+/// absolute offset of a nested block (S05).
 pub const FLAG_DIRECTORY: u32 = 1;
 
 /// Observed flag bit 2: the entry is compressed; the reference extractor
-/// passes `length` bytes to zlib ([S05]).
+/// passes `length` bytes to zlib (S05).
 pub const FLAG_COMPRESSED: u32 = 2;
 
 /// Every flag bit with an observed meaning. Bits outside this mask are
@@ -286,7 +286,7 @@ pub struct RofRawHeader {
 /// reinterpretation — so the allocation budget charged for a decoded table
 /// matches the memory it occupies.
 ///
-/// The on-disk words are `length` and `length_on_disk` ([S05]); the F05
+/// The on-disk words are `length` and `length_on_disk` (S05); the F05
 /// deliverable asks the reader to preserve them as `raw_length` and
 /// `raw_length_on_disk`, and that `raw_` prefix is the reminder that the
 /// struct reports what the container holds rather than what the fields are
@@ -1265,7 +1265,7 @@ pub struct RofMemberRead {
 /// member it contains.
 ///
 /// The root block is read from offset zero — the way the reference
-/// extractor starts ([S05]) — and each directory record's `start` is
+/// extractor starts (S05) — and each directory record's `start` is
 /// followed with (spec F05, non-negotiable #3):
 ///
 /// * **cycle detection** — a `start` already open on the path from the
@@ -1763,7 +1763,7 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
 ///
 /// * **stored** = `raw_length_on_disk` bytes at `start`, the member's own
 ///   extent in the container. This is the word the reference extractor does
-///   *not* read ([S05] hands the other word to zlib and lets the stream end
+///   *not* read (S05 hands the other word to zlib and lets the stream end
 ///   bound the read); the measurement is why this reader does.
 /// * **decoded** = what the zlib decoder produces from those bytes, capped
 ///   by [`RofLimits::max_decoded_bytes`]; a stream that would exceed the

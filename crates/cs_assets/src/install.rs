@@ -1249,7 +1249,7 @@ impl FileRoleKind {
 }
 
 /// Whether `logical_key` sits under a gameplay content root
-/// ([`GAMEPLAY_SCOPE_ROOTS`]), case-folded like every logical key.
+/// (`GAMEPLAY_SCOPE_ROOTS`), case-folded like every logical key.
 ///
 /// The scope only discriminates *unclassified* files: an unknown file under
 /// `zbd/` or `gosdata/` is an unclassified gameplay dependency and fails

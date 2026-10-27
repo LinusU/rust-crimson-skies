@@ -51,7 +51,7 @@
 //! The designed precedence classes rank a mission- or world-specific source
 //! **above** a shared one, while the original's reader order is the other way
 //! round: the root archive shadows both, and the order is *mount order*, not
-//! rank. [`PRECEDENCE_ORDER_STATUS`] therefore stays `designed` and is not
+//! rank. `PRECEDENCE_ORDER_STATUS` therefore stays `designed` and is not
 //! consulted by a reader lookup at all; a reader trace reports its own
 //! [`READER_LOOKUP_ORDER_STATUS`] instead, so no consumer can read these
 //! answers as the designed order or as a measured runtime behaviour. The
@@ -133,7 +133,7 @@ pub const READER_NAMESPACE: &str = "reader";
 /// therefore `inferred`, and this module never presents it as
 /// [`ClaimStatus::VerifiedOriginal`].
 ///
-/// [`PRECEDENCE_ORDER_STATUS`] — the *designed* precedence order, which the
+/// `PRECEDENCE_ORDER_STATUS` — the *designed* precedence order, which the
 /// original lookup was compared against — is deliberately left at `designed`
 /// and is not consulted by a reader lookup.
 pub const READER_LOOKUP_ORDER_STATUS: ClaimStatus = ClaimStatus::Inferred;
@@ -1177,7 +1177,7 @@ impl ReaderMounts {
     /// [`ReaderReadError::UnknownArchive`] when the set no longer holds the
     /// archive the resolution names, [`ReaderReadError::AmbiguousArchive`] when
     /// it holds more than one under that id, plus everything
-    /// [`ReaderArchive::read`] and [`Self::read_loose`] report.
+    /// [`ReaderArchive::read`] and `Self::read_loose` report.
     pub fn read(&self, resolved: &ReaderResolution) -> Result<Vec<u8>, ReaderReadError> {
         match &resolved.origin {
             ReaderOrigin::Archive { mount, .. } => {
@@ -1737,7 +1737,7 @@ impl std::error::Error for LooseFileError {}
 ///
 /// The archive order is [`READER_LOOKUP_ORDER_STATUS`] and the loose-directory
 /// order is [`READER_LOOSE_ORDER_STATUS`], **not**
-/// [`PRECEDENCE_ORDER_STATUS`]: a reader lookup never consults the designed
+/// `PRECEDENCE_ORDER_STATUS`: a reader lookup never consults the designed
 /// precedence order, so reporting that status here would credit this trace
 /// with an order it did not use.
 #[derive(Clone, Debug, PartialEq, Eq)]

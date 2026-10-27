@@ -24,7 +24,7 @@
 //! `Default::default()` path that silently invents a critical value
 //! (non-negotiable behavior 3). The `IDENTITY-CONTENT` contract's
 //! `EvidenceClass` is the existing seven-state
-//! [`ClaimStatus`](crate::evidence::ClaimStatus) vocabulary from F01; this
+//! [`ClaimStatus`] vocabulary from F01; this
 //! module reuses it instead of defining a second copy that could drift.
 //!
 //! The catalog collection that consumes these records (insertion, duplicate

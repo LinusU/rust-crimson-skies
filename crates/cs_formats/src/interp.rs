@@ -2,7 +2,7 @@
 //! decoding.
 //!
 //! Spec `specs/F07-interp-loading-script-container.md` describes the
-//! container the inspected legacy parser expects ([S07],
+//! container the inspected legacy parser expects (S07,
 //! `docs/research/FORMAT-NOTES.md`, "INTERP observed subset"):
 //!
 //! * a 12-byte header: little-endian `u32` signature `0x08971119`, `u32`
@@ -1634,8 +1634,8 @@ impl KeySpelling {
 /// One command registered as a resource-loading command.
 ///
 /// A registration is a claim about the original format, so it carries how much
-/// is known about it ([`status`]) and where the claim came from
-/// ([`source`], a doc section, a finding or a probe run). Nothing in this
+/// is known about it (`status`) and where the claim came from
+/// (`source`, a doc section, a finding or a probe run). Nothing in this
 /// crate registers anything by itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadCommand {

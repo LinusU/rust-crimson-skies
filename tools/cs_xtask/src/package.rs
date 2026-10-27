@@ -1133,7 +1133,7 @@ impl std::error::Error for UserDataError {}
 /// checkout and without developer absolute paths") is a *structural* rule here:
 /// [`UserDataPolicy::resolve`] takes a platform and an environment and nothing
 /// else, so there is no argument through which a build path, a working
-/// directory or an executable location can enter the answer. [`check`] then
+/// directory or an executable location can enter the answer. `check` then
 /// refuses a base that lands inside the original installation or inside the
 /// application directory, so a misconfigured environment produces a refusal
 /// rather than a write into read-only original data.

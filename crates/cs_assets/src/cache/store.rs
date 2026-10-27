@@ -42,7 +42,7 @@
 //! contract refuses, a `writing` record carrying committed-only fields, or
 //! facets that do not hash to the recorded key are all
 //! [`StoreError::CorruptHeader`]. The store therefore trusts its own
-//! bookkeeping exactly as far as [`verify_entry`](super::verify_entry)
+//! bookkeeping exactly as far as [`verify_entry`]
 //! trusts it: not at all. The input list is also what makes spec F15 AC03
 //! answerable from the store's own records — see
 //! [`CacheStore::invalidate_source`].
@@ -70,7 +70,7 @@
 //! before each one and reports measured progress per chunk — the same
 //! shape as `vfs::PendingRead`, so a load's progress is measured work, not
 //! a guessed percent (behavior 5). The bytes only become a
-//! [`VerifiedEntry`] by passing [`verify_entry`](super::verify_entry):
+//! [`VerifiedEntry`] by passing [`verify_entry`]:
 //! the header is decoded again at read time, the payload is re-hashed, and
 //! both are checked against the key that was asked for.
 //!
@@ -420,7 +420,7 @@ pub enum CacheLookup {
 ///
 /// Issued by [`CacheStore::begin_read`], completed on a worker thread
 /// while the load keeps running. Its bytes become a [`VerifiedEntry`] only
-/// by passing [`verify_entry`](super::verify_entry), so a store that lies
+/// by passing [`verify_entry`], so a store that lies
 /// about its own entry cannot make a consumer serve it.
 #[derive(Debug)]
 pub struct PendingCacheRead {

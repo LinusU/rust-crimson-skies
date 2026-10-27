@@ -41,7 +41,7 @@
 //! [`SampleFormat::from_descriptor`] builds a decode plan out of a
 //! [`SoundDescriptor`], whose every value came from the member's own WAVE
 //! header. A field the header did not declare stays
-//! [`SoundField::Unknown`](crate::zbd::SoundField::Unknown) and the plan
+//! [`SoundField::Unknown`] and the plan
 //! refuses with the header's own recorded reason: this module never fills in
 //! a channel count, a rate or a format tag of its own. The PCM sample widths
 //! it decodes (8-bit unsigned, 16- and 32-bit signed little-endian) are the
@@ -894,7 +894,7 @@ impl SampleError {
     /// A [`Self::Parse`] failure is anchored inside the member, and so is
     /// [`Self::PartialFrame`]. A [`Self::Block`] failure carries the offset the
     /// block decoder found, which counts from the start of the `data` payload:
-    /// add the plan's [`crate::zbd::SourceSpan::offset`] to place it in the
+    /// add the plan's `crate::zbd::SourceSpan::offset` to place it in the
     /// member.
     pub fn offset(&self) -> u64 {
         match self {

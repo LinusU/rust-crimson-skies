@@ -58,7 +58,7 @@ pub enum CacheLabelError {
         /// Which label failed.
         label: &'static str,
     },
-    /// The label exceeded [`MAX_LABEL_LEN`] bytes.
+    /// The label exceeded `MAX_LABEL_LEN` bytes.
     TooLong {
         /// Which label failed.
         label: &'static str,

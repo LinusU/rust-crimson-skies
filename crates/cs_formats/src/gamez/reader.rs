@@ -4,7 +4,7 @@
 //!
 //! The layout below is **established**, not guessed. It was read from the
 //! pinned legacy CS-capable reference, mech3ax **v0.6.0**, commit
-//! `d3521a9721be731d365504568ddcd78e3f9846bb` ([S02], [S17] in
+//! `d3521a9721be731d365504568ddcd78e3f9846bb` (S02, S17 in
 //! `docs/research/SOURCES.md`), and checked byte-for-byte against every
 //! GameZ archive of the original installation. The field worksheet with
 //! source file and line references, the per-archive measurements and the
@@ -61,7 +61,7 @@
 //! the flag field's low bit is always zero. Three flag bits are given a meaning,
 //! each because the layout or the measured original establishes it:
 //! [`FLAG_TRIANGLE_STRIP`] selects the corner topology (a strip, decoded by
-//! [`decode_strip`]), [`FLAG_NORMALS`] says the polygon stores a per-corner
+//! `decode_strip`), [`FLAG_NORMALS`] says the polygon stores a per-corner
 //! normal index, and [`FLAG_TWO_SIDED`] (the reference's `UNK2`) is the measured
 //! two-sided flag (`OWNER-STATIC-2026-10-05`; reported on a strip rather than
 //! trusted, [`ParseFinding::StripTwoSidedFlag`]). Every other bit is carried in
@@ -670,7 +670,7 @@ pub struct RawMeshMaterialInfo {
 /// than reading only `extra_count` and skipping the rest. `extra_count` is the
 /// number of `Vec3`s stored for this light, and the reference reads all the
 /// light headers of a mesh before any light's extras, which is the order
-/// [`read_mesh_lights`] follows.
+/// `read_mesh_lights` follows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawMeshLightHeader {
     /// `unk00`: the reference asserts it is in `[0, 1]`.

@@ -3,7 +3,7 @@
 //! [`mount_directory`] turns a host directory tree into one immutable
 //! [`Mount`]: every regular file below the root becomes a member whose
 //! spelling is its path relative to that root, hashed while it is indexed.
-//! [`read_member_range`] is the random-read path a resolution's bytes come
+//! `read_member_range` is the random-read path a resolution's bytes come
 //! from.
 //!
 //! Path validation is spec F04 non-negotiable behavior 1, applied to host

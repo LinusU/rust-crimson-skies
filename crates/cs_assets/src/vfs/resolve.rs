@@ -12,7 +12,7 @@
 //!    namespaces partition key spaces, so a sound mount never shadows a
 //!    texture mount by accident. Mounts elsewhere are not attempts of this
 //!    lookup at all.
-//! 2. A mount is eligible when its [`MountScope`] admits the
+//! 2. A mount is eligible when its `MountScope` admits the
 //!    [`ResolveContext`]; otherwise the attempt records *why* it was
 //!    skipped (`scope_mismatch`, `mod_not_opted_in`).
 //! 3. Eligible mounts that hold the key are ranked, and the rank decides:
@@ -25,7 +25,7 @@
 //!      order**, which is the only rule `MetaOpenFile` has (task #686, see
 //!      [`crate::vfs::gos`]): the sources are consulted in the order they
 //!      were registered and the **first that holds the name wins**.
-//!      [`crate::vfs::gos::SessionBuilder::mount_gos_chain`] registers them
+//!      `crate::vfs::gos::SessionBuilder::mount_gos_chain` registers them
 //!      in that order; nothing else may reorder them.
 //! 4. No candidate at all returns [`ResolveError::NotFound`] carrying the
 //!    attempts.
@@ -547,7 +547,7 @@ impl Vfs {
     /// How a GOS request's name is matched against the sources' names.
     ///
     /// [`GosNameMatch::AsciiInsensitive`] until a
-    /// [`crate::vfs::gos::SessionBuilder::mount_gos_chain`] states the rule
+    /// `crate::vfs::gos::SessionBuilder::mount_gos_chain` states the rule
     /// for its chain, which is what makes the matching rule (#693 settled
     /// what the original does with a request) an explicit input instead of
     /// an assumption.

@@ -98,7 +98,7 @@ impl EntryHeader {
     /// The header a *streaming* write commits with, from a length and a
     /// digest the writer already computed.
     ///
-    /// A bounded writer (F15-B's [`PendingStoreWrite`]) appends the payload
+    /// A bounded writer (F15-B's `PendingStoreWrite`) appends the payload
     /// in chunks and never holds it whole, so it cannot call
     /// [`EntryHeader::committed`]; it hashes the same bytes incrementally
     /// instead and declares what it wrote. That makes the invariant the

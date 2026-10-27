@@ -8,7 +8,7 @@
 //! original call name had been measured. F38-B closes that gap for the one
 //! program family the installation exposes readably: the `ASSETS/SCRIPTS`
 //! members of `crimson.rof`, whose text `cs_formats::script_raw::ui_host_calls`
-//! measures into a [`HostCallCorpus`](corpus docs). This module turns those
+//! measures into a `HostCallCorpus`. This module turns those
 //! measurements into **families** and gives every family an explicit
 //! disposition:
 //!
@@ -896,7 +896,7 @@ impl std::error::Error for CoverageError {}
 ///
 /// A family is bound only by a **declared** rule that maps its measured host to
 /// a [`MeasuredMeaning`] the owner's static analysis established (F38-D.1:
-/// goslocalize, gospageinit and `mail`; see [`classify`]). Every other family
+/// goslocalize, gospageinit and `mail`; see `classify`). Every other family
 /// is refused with its reason and counted, so the coverage denominator stays
 /// the corpus's and the gate stays closed while one family is unmeasured. The
 /// registry this table hands out ships nothing: a measured UI-script host call

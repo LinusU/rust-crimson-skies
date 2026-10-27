@@ -12,7 +12,7 @@
 //! here flattens them into a first-wins map (non-negotiable behavior 3).
 //!
 //! Nothing in this module opens files. A member added here already carries
-//! its container offset and size so the immutable [`SourceSpan`] a
+//! its container offset and size so the immutable `SourceSpan` a
 //! resolution returns can be built without IO; mounting a host directory
 //! and reading its bytes is [`crate::vfs::source`] (F04-B).
 
@@ -381,7 +381,7 @@ pub(crate) enum Backing {
 ///
 /// Built through [`MountBuilder`]; the member index can no longer change
 /// once the mount exists, which is what lets a resolution hand back an
-/// immutable [`SourceSpan`] (spec F04, "The VFS returns immutable
+/// immutable `SourceSpan` (spec F04, "The VFS returns immutable
 /// `SourceSpan` plus a resolution trace").
 #[derive(Clone, Debug)]
 pub struct Mount {

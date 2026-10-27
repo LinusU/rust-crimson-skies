@@ -6,7 +6,7 @@
 //! label, installation-relative path, bytes) and returns a
 //! [`ScriptInventory`]:
 //!
-//! * each container is routed through the F06 two-key [`dispatch`]; a
+//! * each container is routed through the F06 two-key [`dispatch()`](dispatch()); a
 //!   refusal is kept as [`DispatchOutcome::Refused`] with its code and the
 //!   container stays a candidate of [`ScriptRole::Unknown`] — an unroutable
 //!   container is not evidence that it holds no script;

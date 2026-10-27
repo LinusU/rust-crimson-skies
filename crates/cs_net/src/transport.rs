@@ -25,7 +25,7 @@
 //!   session packet a confused client might send) and loss is forbidden.
 //! * [`CHANNEL_SEQUENCED`] — `Unreliable`. Droppable traffic: input batches,
 //!   snapshots and input acks. Their order and dedup is the application-level
-//!   [`MessageHeader::sequence`] the [`SessionGate`] enforces, not the
+//!   `MessageHeader::sequence` the [`SessionGate`] enforces, not the
 //!   channel's — the contract's "Reliable delivery does not replace
 //!   application idempotency."
 //!

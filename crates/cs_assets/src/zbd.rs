@@ -722,7 +722,7 @@ impl SoundReadiness {
 /// Carries the catalog fields this stage can state honestly from the member
 /// itself — `id` (the member's numeric id, which the version-one index does
 /// not declare, so `None` today), `kind` (always
-/// [`cs_types::install::FileFamily::zbd_sound`], since the sound family is
+/// `cs_types::install::FileFamily::zbd_sound`, since the sound family is
 /// what this route is for), `origin` (the member's
 /// [`cs_types::evidence::SourceSpan`]) and `parse_state` — plus the WAVE
 /// header its own bytes declare and its [`SoundReadiness`].

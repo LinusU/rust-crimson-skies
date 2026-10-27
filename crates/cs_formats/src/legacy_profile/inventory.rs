@@ -24,7 +24,7 @@
 //!    non-negotiable 1, applied to imports).
 //! 2. **A source is bounded before it is read.** [`ArtifactProposal::new`]
 //!    refuses a declared size above [`MAX_LEGACY_SOURCE_BYTES`] and
-//!    [`validate_against`] re-checks it, so a hostile or simply broken
+//!    `validate_against` re-checks it, so a hostile or simply broken
 //!    profile is turned away at the door rather than after an allocation.
 //!
 //! F64-A wrote the rows without the `retail` capability, so every

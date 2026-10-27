@@ -27,7 +27,7 @@
 //! `GOSDATA/ASSETS/BINARIES/langui.dll` is such a rule: its file name alone
 //! (`langui.dll`) is not the spelling the rule speaks, so a `--file` under
 //! the installation would be unrouted by name. The routing therefore tries,
-//! most specific first ([`routing_candidates`]):
+//! most specific first (`routing_candidates`):
 //!
 //! 1. the explicit `--container` spelling, when one was given, and nothing
 //!    else — an override names the member, so no inference may contradict it;
@@ -120,7 +120,7 @@
 //! accounted and no gameplay-critical entry is unconsumed, `3` when one is or
 //! a member/image could not be read, `2` invalid input, `4` no installation
 //! selected, `1` a runtime failure. A gameplay-critical entry is one whose
-//! member the command declares gameplay-critical ([`GAMEPLAY_CRITICAL_MEMBERS`])
+//! member the command declares gameplay-critical (`GAMEPLAY_CRITICAL_MEMBERS`)
 //! **or** one it has not classified, which fails closed; and `parity.holds` is
 //! false while any routed member produced no account row at all, so a run that
 //! accounted for nothing cannot report a parity it never measured.

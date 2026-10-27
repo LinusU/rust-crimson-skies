@@ -110,7 +110,7 @@ pub enum SessionError {
     ///
     /// The directory is carried in the installation's own spelling, because
     /// that is the name the walk found. A mission directory called e.g. `_wip`
-    /// cannot be a label ([`MissionScope`] allows only ASCII lower-case
+    /// cannot be a label (`MissionScope` allows only ASCII lower-case
     /// alphanumerics and `.`, `_`, `-` after the first character, so a leading
     /// separator, a space or a non-ASCII character is refused), and no retail
     /// mission directory has such a name — this is the defensive path, not a
@@ -278,7 +278,7 @@ impl SessionBuilder {
     /// mission, then world — implemented by [`crate::vfs::reader`], whose
     /// [`READER_LOOKUP_ORDER_STATUS`](crate::vfs::reader::READER_LOOKUP_ORDER_STATUS)
     /// reports that order as code-derived while the designed
-    /// [`PRECEDENCE_ORDER_STATUS`] stays `designed`.
+    /// `PRECEDENCE_ORDER_STATUS` stays `designed`.
     ///
     /// # Errors
     ///

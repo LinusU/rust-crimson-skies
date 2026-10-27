@@ -49,7 +49,7 @@
 //! original executable's code, which is real evidence but not a runtime
 //! capture, so nothing here is ever presented as
 //! [`ClaimStatus::VerifiedOriginal`]. The designed precedence order
-//! ([`PRECEDENCE_ORDER_STATUS`]) is **not** consulted — a binding is a name the
+//! (`PRECEDENCE_ORDER_STATUS`) is **not** consulted — a binding is a name the
 //! original opens at one path, not a competition between sources — and stays
 //! `designed`.
 //!
@@ -90,7 +90,7 @@ pub const MISSION_ANIM_FILE: &str = "mis_anim.zbd";
 /// is code-derived evidence, therefore `inferred`, and never
 /// [`ClaimStatus::VerifiedOriginal`].
 ///
-/// [`PRECEDENCE_ORDER_STATUS`] — the *designed* precedence order these bindings
+/// `PRECEDENCE_ORDER_STATUS` — the *designed* precedence order these bindings
 /// are not — is deliberately untouched and not consulted here.
 pub const BINDING_ORDER_STATUS: ClaimStatus = ClaimStatus::Inferred;
 

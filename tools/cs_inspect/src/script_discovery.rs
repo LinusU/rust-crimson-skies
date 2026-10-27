@@ -18,7 +18,7 @@
 //!   the validated header, named by its basename.
 //!
 //! The report never copies a container's program bytes: a program is a
-//! [`ProgramLocator`] (container, member, byte range) plus the role a name or
+//! `ProgramLocator` (container, member, byte range) plus the role a name or
 //! a path supports. Nothing here decodes an instruction; the walk that does
 //! belong to `cs_formats::script_raw::ledger`, and this command does not run
 //! it. `readiness` is always `not_assessed`.

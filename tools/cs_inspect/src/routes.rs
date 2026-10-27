@@ -27,7 +27,7 @@
 //! the runtime graph, which re-arms the marker sequence instead of ending.
 //!
 //! Every value the record carries is newly authored project design
-//! ([`Origin::SyntheticFixture`]); the report names its synthetic source and
+//! (`Origin::SyntheticFixture`); the report names its synthetic source and
 //! is never retail-ready, so a synthetic route can never be mistaken for an
 //! original mission route. Unknown positions, trigger volumes and clearances
 //! are reported as explicit unknowns with their claim id and reason, never as
@@ -1002,7 +1002,7 @@ fn build_follow_report() -> Result<BuiltFollowReport, String> {
 ///
 /// The node and edge rows keep the record's authored order; the report does
 /// not reorder them, so the canonical order stays a property of the record
-/// rather than of this renderer. Every string is escaped by [`json_string`],
+/// rather than of this renderer. Every string is escaped by `json_string`,
 /// so an authored key can never break out of its field.
 pub fn routes_report(route: &RouteDefinition) -> String {
     let nodes = route

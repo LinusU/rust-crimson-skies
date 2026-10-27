@@ -8,7 +8,7 @@
 //! original's binding code applies, both **static** evidence
 //! (`OWNER-STATIC-2026-10-05`, never `verified_original`):
 //!
-//! * **Modifier exactness** ([`ORIGINAL_MODIFIER_MATCH_SPAN`]): when the plain
+//! * **Modifier exactness** (`ORIGINAL_MODIFIER_MATCH_SPAN`): when the plain
 //!   key is bound and some modifier combination of the same scancode is also
 //!   bound, the held modifiers must match a bound code exactly; when no
 //!   combination is bound the held modifiers are ignored

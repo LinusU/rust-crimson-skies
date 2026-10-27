@@ -14,7 +14,7 @@
 //!   every family whose layout is unknown.
 //! * [`role`] resolves the installation role of a path from the observed
 //!   naming conventions under the `zbd/` content root.
-//! * [`dispatch`] combines the two keys into a [`dispatch::ZbdDispatch`]
+//! * [`dispatch()`](dispatch()) combines the two keys into a [`dispatch::ZbdDispatch`]
 //!   or a machine-matchable [`dispatch::ZbdDispatchError`], never a silent
 //!   fallback to another parser.
 //! * [`archive`] is the bounded container layer the family readers share:

@@ -27,7 +27,7 @@
 //!   the members the index walk recorded, so a file that grew between the
 //!   two walks cannot slip past the bound.
 //! * The mount is [`PrecedenceClass::Mod`] and carries its [`ModId`] in its
-//!   [`MountScope`], so it can only ever serve a
+//!   `MountScope`, so it can only ever serve a
 //!   [`ResolveContext`](cs_types::asset_id::ResolveContext) that has opted
 //!   into exactly that mod (spec F04 non-negotiable behavior 2).
 //! * [`ModRoot::resolve`] re-validates the spelling it is asked for before
@@ -360,7 +360,7 @@ impl ModRoot {
     /// time, so a file swapped after mounting is refused — as
     /// [`ReadError::DigestMismatch`] — rather than read. The re-hash is
     /// the whole-member read every other digest-checked read in this
-    /// crate goes through ([`crate::vfs::resolve::read_whole_member`]),
+    /// crate goes through (`crate::vfs::resolve::read_whole_member`),
     /// so a payload the compatibility signature attests to is the payload
     /// a reader actually gets.
     ///
