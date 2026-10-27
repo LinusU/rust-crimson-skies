@@ -3,7 +3,7 @@
 Retail tests (`#[ignore = "requires CS_GAME_DIR"]`) do not run in CI. On clean
 `origin/main` (f0a10463d), `cargo test -p cs_app -- m01 --include-ignored`
 plus the `campaign::m01_*` and `campaign::vs_m01*` modules, run in chunks with
-`--no-fail-fast`, left seven real failures. All seven were stale pins; none was
+`--no-fail-fast`, left six real failures. All six were stale pins; none was
 a code regression. The `evidence_report_*` and `regenerate_*` harness tests
 fail without `CS_EVIDENCE_DIR` / `CS_REGENERATE_M01_BINDING` by design and are
 not counted.
