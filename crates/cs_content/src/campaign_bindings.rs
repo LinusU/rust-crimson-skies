@@ -2134,6 +2134,70 @@ pub struct CampaignMission {
     pub program_present: bool,
 }
 
+/// One retail mission stored in a world group, with the identities that
+/// single it out from the other missions of that group.
+///
+/// A world group (`ZBD/C1`, `ZBD/C2`, ...) is *not* a mission identity: the
+/// installation stores several campaign missions under one group, so
+/// `world/c1` is shared by three of them. The `mission_id` and the
+/// `program_id` are what differ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldGroupMission {
+    /// The mission as the directory layout declares it.
+    pub mission: CampaignMission,
+    /// The mission's catalog identity (`mission/ch<chapter>-m<number>`).
+    pub mission_id: ContentId,
+    /// The identity of the mission's reader archive (`script/<group>-m<nn>-zrdr`).
+    pub program_id: ContentId,
+}
+
+/// The retail missions stored in the world group `world_id` names, in
+/// campaign order.
+///
+/// A consumer handed only a world id (`world/c1`) calls this to learn whether
+/// that id selects one mission or several; more than one entry means the world
+/// id alone must never be used to choose mission content. An empty answer
+/// means no mission of `campaign` is stored in that group (or `world_id` is not
+/// a world id).
+///
+/// # Errors
+///
+/// [`SourceBindingError::Inconsistent`] when a mission's identity cannot be
+/// turned into an id.
+pub fn missions_in_world_group(
+    campaign: &[CampaignMission],
+    world_id: &ContentId,
+) -> Result<Vec<WorldGroupMission>, SourceBindingError> {
+    let mut members = Vec::new();
+    for entry in campaign {
+        let world =
+            ContentId::from_source(ContentKind::World, &entry.world_group).map_err(|error| {
+                SourceBindingError::Inconsistent {
+                    reason: format!("the world id is not valid: {error}"),
+                }
+            })?;
+        if &world != world_id {
+            continue;
+        }
+        let mission_id = ContentId::from_source(ContentKind::Mission, &mission_key(entry))
+            .map_err(|error| SourceBindingError::Inconsistent {
+                reason: format!("the mission id is not valid: {error}"),
+            })?;
+        let program_id =
+            ContentId::from_source(ContentKind::Script, &program_key(entry)).map_err(|error| {
+                SourceBindingError::Inconsistent {
+                    reason: format!("the program id is not valid: {error}"),
+                }
+            })?;
+        members.push(WorldGroupMission {
+            mission: entry.clone(),
+            mission_id,
+            program_id,
+        });
+    }
+    Ok(members)
+}
+
 /// One campaign mission directory with the digest of its program archive
 /// (F14-E).
 ///
@@ -2596,6 +2660,20 @@ impl SourceContext {
     /// archive's own data declares.
     pub fn campaign(&self) -> &[CampaignMission] {
         &self.campaign
+    }
+
+    /// The retail missions stored in the world group `world_id` names; see
+    /// [`missions_in_world_group`]. More than one entry means the world id does
+    /// not identify a mission.
+    ///
+    /// # Errors
+    ///
+    /// As [`missions_in_world_group`].
+    pub fn missions_in_world_group(
+        &self,
+        world_id: &ContentId,
+    ) -> Result<Vec<WorldGroupMission>, SourceBindingError> {
+        missions_in_world_group(&self.campaign, world_id)
     }
 
     /// The localized UI string rows, for callers that need the table itself.

@@ -88,6 +88,7 @@ mod accept_f64_b_blueprint_import;
 mod accept_f64_b_retail_import_surface;
 mod accept_flight_ai_parameter_randomisation;
 mod accept_flight_original_retail;
+mod accept_m02_t2_world_group_missions;
 mod accept_parity4_m01_contact_crash_record;
 mod accept_parity5_briefing_script;
 mod accept_t1318_retail_blast_unknowns;
