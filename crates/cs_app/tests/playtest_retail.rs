@@ -63,6 +63,10 @@ mod prop_spin;
 #[path = "playtest_retail/area_flicker.rs"]
 mod area_flicker;
 
+// #769 (`accept_playtest_doc_drawn_counts_`): same binary, same reason.
+#[path = "playtest_retail/doc_drawn_counts.rs"]
+mod doc_drawn_counts;
+
 // #795 (`accept_playtest_area_flat_shape_`): folded into this binary for the
 // same reason.
 #[path = "playtest_retail/flat_shape.rs"]
