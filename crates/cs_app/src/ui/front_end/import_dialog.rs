@@ -55,7 +55,7 @@
 //!   therefore structurally incapable of touching the source or a save, which
 //!   is spec F64 non-negotiable 1's "never overwrite original save/blueprint
 //!   files" as a fact about the type rather than a rule this file obeys.
-//! * **No line's meaning is re-derived.** [`Self::lines`] hands back the
+//! * **No line's meaning is re-derived.** [`ImportDialog::lines`] hands back the
 //!   flow's own [`ReportLine`]s, in the producer's order, so the screen cannot
 //!   rename a code, reorder a record, reformat a breach pair or soften a
 //!   verdict: what F64-C rendered is what is drawn. The fixture marker is not

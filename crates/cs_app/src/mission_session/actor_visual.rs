@@ -11,7 +11,7 @@
 //! **Which model** is the one designed step. The original resolves a record's
 //! name prefix against `vehicle.zrd` (#1453); what that record's fields map to a
 //! drawn model is unmeasured. The reading used here: the `kind_of` chain the
-//! flight import already walked ([`MissionAiAirframe::inheritance_chain`],
+//! flight import already walked ([`MissionAiAirframe::inheritance_chain`](crate::mission_ai::MissionAiAirframe::inheritance_chain),
 //! measured) is searched from the record outward for the first ancestor whose
 //! name is also a root of `planes.zbd`. A record whose chain names no such
 //! root, or whose root draws nothing, is refused by name and stays undrawn;

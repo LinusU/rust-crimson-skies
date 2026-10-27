@@ -12,7 +12,7 @@
 //! * Accept calls `E 2034` and, with `DKA == 0`, `callback($$A$$, 12, 0)`,
 //!   which leaves the screen. Cancel acts only with `DKA != 0`, so here it
 //!   does nothing. Escape is the pre-mission phase's way back
-//!   ([`FlightCheckPhase::press_back`]): it closes an open list first, then
+//!   ([`FlightCheckPhase::press_back`](super::flight_check::FlightCheckPhase::press_back)): it closes an open list first, then
 //!   leaves the screen **without** committing the draft.
 //!
 //! # What is not known
@@ -23,7 +23,7 @@
 //!   rocket lists offer (`docs/findings/2026-10-24-parity5-ordinance-feed.md`).
 //! * Any consumer of the committed record: the mission start does not read
 //!   it yet (the committed record is kept on the phase,
-//!   [`FlightCheckPhase::ordinance_record`]).
+//!   [`FlightCheckPhase::ordinance_record`](super::flight_check::FlightCheckPhase::ordinance_record)).
 //! * The description texts, the plane-info line and the diagrams, as for the
 //!   screen itself (`docs/findings/2026-10-24-parity5-ordinance-layout-screen.md`).
 

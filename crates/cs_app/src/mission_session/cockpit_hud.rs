@@ -273,7 +273,7 @@ pub struct CockpitValues {
 ///
 /// The original's GUNS count at first control is 2000, one `wep_50`
 /// `AMMO_LIMIT` (PARITY2-M01-HUD-VALUES, #1732), not the sum over the three
-/// guns [`WeaponGauge::selected_rounds`] adds up. How the original shares or
+/// guns [`WeaponGauge::selected_rounds`](crate::ui::hud::WeaponGauge::selected_rounds) adds up. How the original shares or
 /// splits ammunition between the guns is unmeasured.
 pub(crate) fn current_gun_rounds(gauge: &crate::ui::hud::WeaponGauge) -> u64 {
     gauge

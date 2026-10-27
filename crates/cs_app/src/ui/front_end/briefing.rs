@@ -7,7 +7,7 @@
 //! * [`Timeline::compile`] walks a [`BriefingScript`]'s commands once, holding
 //!   a cursor in seconds, and records what each named element does when.
 //!   `WaitForMarker n` moves the cursor to the voice-over's `n`th marker
-//!   (the `cue ` points of the sound member, [`WaveCues::marker_seconds`]),
+//!   (the `cue ` points of the sound member, [`WaveCues::marker_seconds`](cs_content::briefing::WaveCues::marker_seconds)),
 //!   `Wait s` advances it by `s`; every other command stamps the element it
 //!   names with the cursor's time.
 //! * [`Timeline::frame`] answers, for a time in seconds, which elements are
@@ -38,7 +38,7 @@
 //!   stays at the second; before it starts the element is at its `Pict`
 //!   position. **`center`** makes the position the picture's centre.
 //! * **Marker `n` is the `n`th earliest cue point**, not the cue with id
-//!   `n + 1` ([`WaveCues::marker_seconds`] gives the reasoning).
+//!   `n + 1` ([`WaveCues::marker_seconds`](cs_content::briefing::WaveCues::marker_seconds) gives the reasoning).
 //! * An element is hidden until its `On`, hidden again by `Off`; with no
 //!   `Fade` it is fully opaque; elements stack in creation order and
 //!   `ToBack` sends one behind every other.

@@ -2882,7 +2882,7 @@ struct SmokeConfig {
     handle: MissionSmokeHandle,
 }
 
-/// The run's own state, filled by [`smoke_step`].
+/// The run's own state, filled by [`smoke_script`].
 #[derive(Resource, Default)]
 struct SmokeData {
     /// Our playing voice set per mission second (Rally #1866).

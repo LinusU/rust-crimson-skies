@@ -5514,7 +5514,7 @@ pub fn survey_retail_scope_objective_records(
 /// follows from the key's own depth, and the label is **derived from the key**,
 /// not written down. A `zrdr.zbd` under some other root (`sounds/x/zrdr.zbd`) is
 /// labelled with that root rather than with `zbd`, so a row cannot claim a
-/// directory it is not in; F13-B's [`mission_scope`] rule, which only ever names a
+/// directory it is not in; F13-B's [`mission_scope`](cs_formats::script_raw::mission_scope) rule, which only ever names a
 /// `zbd` root, is what makes `zbd` the root of every row measured on the owner's
 /// installation — a fact the census reads back through its own rows, not an
 /// assumption made here.

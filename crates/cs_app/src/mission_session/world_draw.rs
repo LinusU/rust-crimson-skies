@@ -17,7 +17,7 @@
 //!
 //! This module is that missing half, and it is deliberately the **same**
 //! production path the playtest draws with — one [`TextureBinder`] over the
-//! group's own [`PlaytestTextureArchive`], one part per stored material group —
+//! group's own [`PlaytestTextureArchive`](crate::playtest_textures::PlaytestTextureArchive), one part per stored material group —
 //! never a second material-binding implementation:
 //!
 //! * [`WorldDrawSource`] carries the world group's stored material table and
@@ -536,7 +536,7 @@ pub fn build_scenery(
 }
 
 /// Gives each part whose stored geometry carries per-corner colours its own
-/// unlit copy of its material ([`STORED_SHADING_LABEL`]): the stored vertex
+/// unlit copy of its material (PARITY-M01-ISLAND-SHADING, #1706): the stored vertex
 /// colours are the world's authored shading channel, so a vertex-coloured
 /// part draws `texture × colour` without a second, dynamic lighting term.
 /// A copy keeps every other user of the shared material as it was, and a

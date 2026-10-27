@@ -32,7 +32,7 @@
 //! layout's focus order is unread, so `Up`/`Down` walk the declaration
 //! order; `Enter` presses the focused button; `Esc` drops a held press, steps
 //! one section back, or quits on the root; the pointer hovers and presses.
-//! What a press *does* is the row's own stated effect ([`ButtonEffect`]):
+//! What a press *does* is the row's own stated effect ([`ButtonEffect`](super::shell::ButtonEffect)):
 //! the `ScriptToExe` section, `terminate`, the `activate(@…@)`+`script_end`
 //! hand-over a screen script states, or a recorded unhandled press — never
 //! a guessed transition.
@@ -3221,7 +3221,7 @@ struct PanePlacement {
 /// Places a transformed pane (`None` for a plain one, or when the engine's
 /// x/y rotation, which is not decoded, is set). The pane's `logical` box is
 /// the picture at the `render` position; the corners come from
-/// [`PaneTransform::corners`], the box centre is the parallelogram's, and the
+/// [`PaneTransform::corners`](super::pane_transform::PaneTransform::corners), the box centre is the parallelogram's, and the
 /// sprite is turned by the z rotation (counter-clockwise on screen, y up here).
 #[inline(always)]
 fn pane_placement(
@@ -5096,7 +5096,7 @@ fn audio_page_setup(
 /// The Previous Missions page for a run (#1956): its rows from the layout,
 /// its captions and list text from the installation's own string table. The
 /// start flow keeps no per-pilot progress yet, so the pilot is a fresh one
-/// ([`MissionProgress::fresh`]). A page the installation cannot supply is
+/// ([`MissionProgress::fresh`](super::MissionProgress::fresh)). A page the installation cannot supply is
 /// reported and the section still draws its panes and buttons.
 fn previous_missions_setup(
     request: &FrontEndRequest,

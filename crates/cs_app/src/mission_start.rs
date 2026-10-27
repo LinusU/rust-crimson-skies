@@ -1329,7 +1329,7 @@ impl MissionStartConfiguration {
     }
 
     /// Replaces whatever the player's airframe resolves to with `reason`,
-    /// keeping the claim [`read`] gave it.
+    /// keeping the claim [`read`](Self::read) gave it.
     ///
     /// Used for the two refusals that must override a binding or stand where
     /// the document-only refusal stood: the engine-state source

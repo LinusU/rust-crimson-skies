@@ -18,13 +18,13 @@
 //! * the option table is F49-D.02's, its pilots the ace identities the survey
 //!   measured ([`IaDenominator::ace_pilot_ids`], F49-D.02-FU-PILOT), validated
 //!   with its remaining unmeasured dimensions kept unmeasured
-//!   ([`ScenarioOptionTable::validate_partial`]).
+//!   ([`ScenarioOptionTable::validate_partial`](cs_content::instant_action::ScenarioOptionTable::validate_partial)).
 //!
 //! Everything the descriptors do not say stays explicitly unmeasured with a
 //! claim id and a reason: the actors' factions, loadouts and survivability, the
 //! wingmen's planes, the preset's title and difficulty. The victory rules are
 //! **measured**: the engine image's Instant Action end check (`0x45b9d0`)
-//! binds one [`VictoryCondition`] per `mission_type` name
+//! binds one [`VictoryCondition`](cs_content::instant_action::VictoryCondition) per `mission_type` name
 //! ([`measured_ia_victory_rules`], F49-D.03-FU-RULES-END), so each preset
 //! carries `Declared` rules. The lowering ([`super::lower_preset`])
 //! therefore still refuses every retail preset, naming the first unmeasured

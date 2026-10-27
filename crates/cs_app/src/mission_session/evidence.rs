@@ -365,7 +365,7 @@ pub(super) struct CaptureData {
     clear_colours: Option<[[u8; 3]; 2]>,
     /// What the probe hid on the frame it requested its screenshot on —
     /// horizon domes, horizon sea planes and player aircraft — read back from
-    /// [`WorldProbeHidden`] so a class the probe found nothing of is refused
+    /// [`ProbeHidden`] so a class the probe found nothing of is refused
     /// rather than silently counted as the world.
     probe_hidden: Option<ProbeHidden>,
     io_error: Option<String>,

@@ -101,7 +101,7 @@
 //!
 //! Making a part *addressable* is not the same as letting a gun hit it. The
 //! F27 gun step sweeps [`PartSweptBox`] entities through
-//! [`part_sweep_candidates`], and until this slice M01's parts carried no box,
+//! [`part_sweep_candidates`](crate::weapons::part_sweep_candidates), and until this slice M01's parts carried no box,
 //! no [`NodeVisualTransform`] and no velocity — so nothing in the composed run
 //! could destroy a part *geometrically*, only the damage authority could.
 //! [`spawn_part_state`] now gives every part the whole geometric face: a box at

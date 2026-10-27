@@ -992,7 +992,7 @@ const NODE_COLLISION_LAYER: cs_sim::collision::CollisionLayer =
 ///   `Query<(&Collider, &ColliderOf)>`, so a body whose colliders live on
 ///   descendants is invisible to a swept body and the sweep passes straight
 ///   through it. The node entity is therefore the body, and the node entity is
-///   also the entity that carries [`NodeColliderPresence`] and — once a clip
+///   also the entity that carries [`NodeColliderPresence`](crate::physics::NodeColliderPresence) and — once a clip
 ///   drives it — the animation layer's own
 ///   [`NodeAnimatedVisibility`](crate::animation::NodeAnimatedVisibility).
 ///   That is a requirement of

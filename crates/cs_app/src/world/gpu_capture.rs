@@ -843,7 +843,7 @@ pub(super) fn covered_permille(covered: usize, width: u32, height: u32) -> u32 {
 
 /// The adapter the driver reported, as `<name> (<backend>)`.
 ///
-/// Read from the renderer's own [`RenderAdapterInfo`] resource, so the name in a
+/// Read from the renderer's own [`RenderAdapterInfo`](bevy::render::renderer::RenderAdapterInfo) resource, so the name in a
 /// capture is the one the driver printed rather than a value this module wrote.
 /// `"no adapter reported"` when the resource is absent, which cannot happen for
 /// a capture that exists (a frame only comes back from an adapter) and says so

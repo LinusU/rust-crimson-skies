@@ -5,7 +5,7 @@
 //! [`super::host::MissionHost::step`] already folds a report from that port in
 //! stage 4 — the port has existed since VS-M01-RT-MISSION-HOST — but no stage
 //! ever wrote one, so every real run folded only the record player's animation
-//! rows and [`MissionHostRefusal::WorldObservation`] stood over an empty
+//! rows and [`MissionHostRefusal::WorldObservation`](super::host::MissionHostRefusal::WorldObservation) stood over an empty
 //! world half. This module is the observation system the port was waiting
 //! for: [`mission_world_observation`] reads the **live ECS world** once per
 //! fixed tick and writes the report the host consumes on the same tick. It is
@@ -92,7 +92,7 @@
 //!
 //! No original executable ran; `retail` is read access to the owner's
 //! installation. Nothing here is `verified_original`. The binding entity's
-//! `Transform` is the pose [`super::mission_actors`] bound it at, and nothing
+//! `Transform` is the pose [`crate::mission_actors`] bound it at, and nothing
 //! in this composition moves it afterwards — M01's `zeppelins.zrd` records
 //! carry no route (`DeclaredMotion::Held`, `MOTION_RESIDUE`), so session pose
 //! and binding pose agree; whether a driven world actor's binding follows its

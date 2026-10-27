@@ -1,7 +1,7 @@
 //! What the composed mission draws for its weapons (M01-WINDOW-FIRE, #1536).
 //!
 //! The F27 gun step and the F28 ordnance step already keep an ECS mirror of
-//! every live projectile — [`WeaponRoundMirror`] for a round and
+//! every live projectile — [`WeaponRoundMirror`](crate::weapons::WeaponRoundMirror) for a round and
 //! [`OrdnanceItemMirror`] for a launched rocket — and each mirror's
 //! [`Transform`] is written from the runtime's own authoritative position.
 //! Those entities carry **no mesh**, and no system read them, so in the
@@ -31,7 +31,7 @@
 //!
 //! The mirror carries a position and nothing else: no orientation, no mesh and
 //! no asset reference is measured for a round or a rocket in the original data
-//! ([`cs_app::weapons`] and [`cs_app::ordnance`] both state that boundary on
+//! ([`crate::weapons`] and [`crate::ordnance`] both state that boundary on
 //! their own `*_transform` functions). The rocket's body and the HUD line's layout are therefore **project
 //! design** under [`MISSION_WEAPON_VISUAL_CLAIM`], never a claim about the
 //! original's sprites. What is *not* design is where they are drawn: every
