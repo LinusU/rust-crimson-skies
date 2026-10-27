@@ -24,7 +24,7 @@
 //!
 //! * **Not the original's screen list.** Which original image belongs to which
 //!   front-end screen is unread; nothing here maps an image onto a
-//!   [`super::Screen`](super::Screen). That binding is resolving task **#742**
+//!   [`super::Screen`]. That binding is resolving task **#742**
 //!   (`docs/findings/2026-10-07-f45-b-original-asset-screen-decks.md`).
 //! * **Not a hotspot layout.** No original button rectangle is read anywhere,
 //!   so a retail capture draws the artwork alone and never a button region.

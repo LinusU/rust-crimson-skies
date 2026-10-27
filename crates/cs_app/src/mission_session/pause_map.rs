@@ -16,7 +16,7 @@
 //!   clock freezes with the session's pause, `playtest::sync_pause`). The
 //!   **Resume** button resumes the session. **Restart** closes the screen,
 //!   resumes the clock and raises the composed host's
-//!   [`MissionHostRestartRequest`](super::host::MissionHostRestartRequest)
+//!   [`MissionHostRestartRequest`]
 //!   (PARITY3-PAUSE-MAP-SCREEN.02-C, #1875), so the host's one restart path
 //!   rebuilds the authored initial state under a fresh session generation.
 //!   **Quit** abandons the mission: it writes `AppExit::Success` (the

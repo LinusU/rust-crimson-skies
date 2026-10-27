@@ -172,7 +172,7 @@ pub enum Request {
     /// ([`ImportDialog::confirmed`]) and is read from there, exactly as
     /// `CommitBlueprint` takes the draft the machine holds: a migration report
     /// is measured data whose equality the producer defines (it is
-    /// [`PartialEq`](std::cmp::PartialEq) but not [`Eq`](std::cmp::Eq)), and
+    /// [`PartialEq`] but not [`Eq`]), and
     /// the request vocabulary is `Eq`, so the value is not duplicated into it.
     /// Asking for
     /// this transaction means "persist what the open dialog confirmed"; with

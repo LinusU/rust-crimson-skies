@@ -467,7 +467,7 @@ fn setup_scene(world: &mut World) {
 /// input policy produced.
 ///
 /// The one edge command the playtest consumes is
-/// [`FlightCommand::LevelOff`](cs_types::input::FlightCommand::LevelOff): each
+/// [`FlightCommand::LevelOff`]: each
 /// delivered press toggles the original law's Level-Off assist
 /// (`OriginalState.level_off`) once, so two presses in one frame cancel out and
 /// a paused or unfocused session — which runs no input boundary and so delivers

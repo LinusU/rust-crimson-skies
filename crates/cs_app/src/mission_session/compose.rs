@@ -16,9 +16,9 @@
 //!
 //! * **Flight, input, camera, pause/reset/quit and telemetry are the
 //!   playtest's own systems** (`crate::playtest`): the player body carries
-//!   [`PlaytestAircraft`](crate::playtest::scene::PlaytestAircraft) so the
+//!   [`PlaytestAircraft`] so the
 //!   existing query systems drive it, and the one additive seam is
-//!   [`AircraftSpawner`](crate::playtest::AircraftSpawner), which replaces
+//!   [`AircraftSpawner`], which replaces
 //!   the playtest's designed aircraft with the mission's player body at the
 //!   mission's pose — `--playtest` itself is unchanged without a mission
 //!   present.
@@ -536,7 +536,7 @@ impl std::error::Error for MissionCompositionError {}
 
 /// The player body's own marker: what teardown despawns and what the
 /// acceptance tests count. The body also carries
-/// [`PlaytestAircraft`](crate::playtest::scene::PlaytestAircraft) so the
+/// [`PlaytestAircraft`] so the
 /// playtest's input, camera, telemetry and reset systems drive it
 /// unchanged.
 #[derive(bevy::prelude::Component, Clone, Copy, Debug, Default)]

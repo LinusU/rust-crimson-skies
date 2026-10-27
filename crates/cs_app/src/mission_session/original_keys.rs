@@ -6,7 +6,7 @@
 //! `verified_original`). Three seams read it:
 //!
 //! * [`original_mission_action_map`] derives the input session's
-//!   [`ActionMap`](cs_types::input::ActionMap): the keys whose plain scancode
+//!   [`ActionMap`]: the keys whose plain scancode
 //!   has no modifier combination bound (arrows, `,` `.`, `=` `-`, the digits,
 //!   `Space`, `Q`, `T`, `Esc`).
 //! * [`mint_original_chord_keys`] delivers the keys that *do* have modifier

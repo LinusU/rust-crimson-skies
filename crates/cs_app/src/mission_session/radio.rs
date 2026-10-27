@@ -15,7 +15,7 @@
 //!
 //! [`EngineObjectives`](cs_content::objectives_engine) models both
 //! transitions and emits a
-//! [`CueEmission`](cs_content::objectives_engine::CueEmission) for each one
+//! [`CueEmission`] for each one
 //! (including the mission-level `RoleJingle`, whose group the record does not
 //! name). This module is the consumer: it resolves the spelled group name into
 //! the voice files the installation stores and offers them to [`AudioSession`]'s

@@ -1005,8 +1005,8 @@ const NODE_COLLISION_LAYER: cs_sim::collision::CollisionLayer =
 ///   *not* a `GlobalTransform` component, and Bevy's transform propagation
 ///   overwrites a `GlobalTransform` from a `Transform` on the same entity
 ///   (measured in [`crate::world::affine`]). So the collision pose is Avian's
-///   own [`Position`](avian3d::prelude::Position) /
-///   [`Rotation`](avian3d::prelude::Rotation) pair and nothing else, and the
+///   own [`Position`] /
+///   [`Rotation`] pair and nothing else, and the
 ///   authored **scale** is folded into the shape rather than left for a
 ///   `Transform` to carry — the same exact image, reached the other way round.
 /// * **The node is a static body** ([`RigidBody::Static`]), because the stage
