@@ -44,7 +44,7 @@ const CURRENT_INSTALL: &str = "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75cce
 /// The content fingerprint of that same tree.
 const CURRENT_CONTENT: &str = "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d";
 
-/// The note heading both documents carry, the shape F16-E established.
+/// The note heading the listed documents carry, the shape F16-E established.
 const NOTE_HEADING: &str = "**Installation note (#798, 2026-10-08).**";
 
 /// The one place the engine image may be read from since #798.
