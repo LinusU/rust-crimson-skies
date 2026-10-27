@@ -81,7 +81,7 @@ pub fn apply_assists(base: &ActionMap, inputs: &GameplayInputs) -> ActionMap {
     let mouse = inputs.assists.contains(&ModernAssist::MouseFlight);
     let controller = inputs.assists.contains(&ModernAssist::ControllerFlight);
 
-    let mut bindings: Vec<Binding> = base
+    let kept: Vec<Binding> = base
         .bindings()
         .iter()
         .copied()
@@ -89,6 +89,7 @@ pub fn apply_assists(base: &ActionMap, inputs: &GameplayInputs) -> ActionMap {
             !is_mouse_motion(binding.source) && !(controller && is_stick(binding.source))
         })
         .collect();
+    let mut bindings = kept.clone();
     if mouse {
         for (source, command, scale) in MOUSE_FLIGHT {
             bindings.push(axis(BindingSource::MouseAxis(source), command, scale));
@@ -100,8 +101,12 @@ pub fn apply_assists(base: &ActionMap, inputs: &GameplayInputs) -> ActionMap {
         }
     }
     // Only sources of the dropped kinds were replaced, each exactly once, so
-    // the base map's own validity carries over.
-    ActionMap::try_new(bindings).unwrap_or_else(|_| base.clone())
+    // the base map's own validity carries over. Were that ever false, fall
+    // back to the map without any modern binding, never to `base`, which may
+    // still bind mouse motion under the original rules.
+    ActionMap::try_new(bindings)
+        .or_else(|_| ActionMap::try_new(kept))
+        .unwrap_or_else(|_| ActionMap::try_new(Vec::new()).expect("an empty map is valid"))
 }
 
 /// The non-original field of view the camera may use, in degrees; `None`
