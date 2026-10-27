@@ -783,6 +783,16 @@ fn accept_m11_a_a_ruled_title_is_named_in_the_ruling_table_and_nowhere_else() {
     let text = fs::read_to_string(repo_path("missions/bindings/title-rulings.tsv"))
         .expect("the ruling table is committed");
     let rulings = TitleRulings::parse(&text).expect("the table parses");
+    // The table covers exactly the seven work orders the owner ruling names and
+    // no other: a row for an order the owner did not rule on would invent a
+    // join, and a missing row would silently drop one.
+    let labels: BTreeSet<&str> = rulings.iter().map(|ruling| ruling.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["M09", "M11", "M14", "M15", "M20", "M22", "M23"]
+            .into_iter()
+            .collect()
+    );
     let ruling = rulings
         .iter()
         .find(|ruling| ruling.label.as_str() == WORK_ORDER)
@@ -792,6 +802,18 @@ fn accept_m11_a_a_ruled_title_is_named_in_the_ruling_table_and_nowhere_else() {
     assert_eq!(
         (ruling.short_row, ruling.long_row),
         (RULED_SHORT_ROW, RULED_LONG_ROW)
+    );
+    // The row exists because the two spellings differ, and the join is exact:
+    // the ruled name is carried verbatim, the declared one by nothing.
+    assert_ne!(ruling.declared_title, ruling.retail_short_name);
+    assert_eq!(
+        title_form(&ruling.retail_short_name, &ruling.retail_short_name),
+        Some(TitleForm::Verbatim)
+    );
+    assert_eq!(
+        title_form(&ruling.retail_short_name, &ruling.declared_title),
+        None,
+        "the ruled row must not carry the declared spelling, or a row would relax the comparison"
     );
 
     // Failure case: a table without M11's row has no ruling for it.
@@ -806,13 +828,7 @@ fn accept_m11_a_a_ruled_title_is_named_in_the_ruling_table_and_nowhere_else() {
             .iter()
             .all(|ruling| ruling.label.as_str() != WORK_ORDER)
     );
-    // The owner ruling is an inferred join, never a licence to loosen the
-    // comparison: no ruling row may name a spelling the installation does not
-    // carry, and confirmation stays exact for the ones it does.
-    assert_eq!(
-        title_form("The Stolen Starlet", RULED_SHORT_NAME),
-        Some(TitleForm::Verbatim)
-    );
+    assert_eq!(stripped.iter().count(), 6);
 }
 
 #[test]
