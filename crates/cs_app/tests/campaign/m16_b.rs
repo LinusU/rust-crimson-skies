@@ -51,8 +51,8 @@
 //!   `SET_AI_NET` site below it, which the engine-image test shows absent
 //!   from the measured directive table the original parser looks keys up in.
 //!   The original ignores what it does not look up (the M01-LC-A finding);
-//!   the measurement keeps them as unmeasured keys, and the lowering refuses
-//!   rather than guesses.
+//!   the measurement keeps them as unmeasured keys measured ignored, and the
+//!   lowering drops their sites rather than guesses.
 //!
 //! Nothing here is `verified_original` (AGENTS.md rule 8): the
 //! work-order ↔ mission join remains M16-A's inference, directive *effects*
@@ -1697,7 +1697,7 @@ fn accept_m16_b_m16_is_complete_and_the_campaign_gate_stays_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic: the refusal mechanisms the retail record leans on
+// Synthetic: the mechanisms the retail record leans on
 // ---------------------------------------------------------------------------
 
 /// A `.zrd` int node.
@@ -1849,19 +1849,20 @@ fn accept_m16_b_fu1_sound_name_lists_bind_as_one_list_argument_and_the_original_
     );
 }
 
-/// **Unmeasured bare keys refuse like any unknown call — and a record that
+/// **Bare keys the original never looks up are dropped like the original
+/// drops them — and a record that
 /// spells both latches, dormant timers, a nap edge and a travelers gate
 /// lowers and validates clean.**
 ///
-/// OBJECTIVE24's four bare words are registered to nothing, because an
-/// unmeasured key registers nothing by design; this authors M16's comment
-/// block and pins the refusal shape. The companion record spells M16's
+/// OBJECTIVE24's four bare words are dropped as the original drops them: the
+/// parser's exact-match lookup never asks for them (#2134), so they register
+/// nothing; this authors M16's comment block and pins the ignore shape. The
+/// companion record spells M16's
 /// terminal *shape* — a nap-armed `INSTANTWIN` beside a nap-armed
 /// `INSTANTLOSS` — with every call bindable: it assembles, validates clean
-/// and counts complete, so what keeps M16 out is the two named gaps, not a
-/// program shape the engine cannot carry.
+/// and counts complete.
 #[test]
-fn accept_m16_b_unmeasured_bare_keys_refuse_but_a_two_latch_program_validates() {
+fn accept_m16_b_unmeasured_bare_keys_are_dropped_but_a_two_latch_program_validates() {
     // OBJECTIVE24's comment block: the four bare words plus a bindable
     // list-argument site, exactly as spelled.
     let document = control_record(vec![block(
@@ -1976,8 +1977,8 @@ fn accept_m16_b_unmeasured_bare_keys_refuse_but_a_two_latch_program_validates() 
     );
     assert!(
         record.is_complete(attempt),
-        "a record of M16's shape lowers completely — the refusal is the two \
-         named gaps, not the shape: unbound={:?}",
+        "a record of M16's shape lowers completely — the words are ignored, \
+         not refused: unbound={:?}",
         attempt.unbound_keys
     );
     // The emitted calls carry the spelled data field for field: the nap's

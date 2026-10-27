@@ -906,7 +906,7 @@ fn accept_m01_lc_directives_every_emitted_call_matches_a_measured_shape_of_its_k
 }
 
 /// The corpus gate is honest: `campaign_ready()` stays `false` while any
-/// mission spells a key no finding covers, and every unhonoured key stays
+/// row is incomplete, and every unhonoured key stays
 /// **counted and named** — in its record's vocabulary and in the unmet
 /// requirement rows the census's `unmet_by_requirement` index groups.
 #[test]
@@ -917,7 +917,7 @@ fn accept_m01_lc_directives_the_corpus_gate_names_every_unhonoured_key() {
     assert!(!census.campaign_ready());
 
     // Every unmeasured key of every row is counted (in `record.keys()`),
-    // named and refused — never silently dropped and never bound.
+    // named and dispositioned — never silently dropped and never bound.
     let mut unmeasured: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in census.measured_rows() {
         let record = row.record().expect("a measured row carries a record");
@@ -937,12 +937,13 @@ fn accept_m01_lc_directives_the_corpus_gate_names_every_unhonoured_key() {
         }
     }
     // The corpus-wide spellings the findings leave unhonoured — each still
-    // counted and named, exactly as the hard constraint demands.
+    // counted and named with its reason, exactly as the hard constraint
+    // demands. Both are ignored by the original.
     for key in ["WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", "SET_AI_"] {
         assert!(
             unmeasured.contains_key(key),
-            "{key}: still spelled and still refused by name across the \
-             corpus: {:?}",
+            "{key}: still spelled and still named with its disposition across \
+             the corpus: {:?}",
             unmeasured.keys().collect::<Vec<_>>()
         );
     }

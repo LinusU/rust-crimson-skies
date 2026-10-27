@@ -12,11 +12,12 @@
 //!   original, not a host binding — and `Supported`/`complete` reads the
 //!   record's own lowering attempt, so a measured vocabulary that lowers
 //!   completely still reports only the two outcome spellings as implemented;
-//! * a key no finding covers stays `DirectiveDisposition::Unmeasured` with its
-//!   named reason — `SET_AI_`, `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`, the
-//!   `OBJECTIVE_HD_*` family, `TEST_COMPLETE`, `WIN_ANIM`, `DELETE_ON_SUCCESS`,
-//!   the record-level fields and the stray English words the corpus spells all
-//!   keep their refusals;
+//! * a key whose effect no finding measures stays `DirectiveDisposition::Unmeasured`
+//!   with its named reason — `IgnoredByOriginal` for `SET_AI_`,
+//!   `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` and the stray English words the
+//!   corpus spells, `MeaningNotMeasured` for the `OBJECTIVE_HD_*` family,
+//!   `TEST_COMPLETE`, `WIN_ANIM`, `DELETE_ON_SUCCESS` and the record-level
+//!   fields;
 //! * and the spellings a per-key refusal used to carry — `INACTIVE1`'s
 //!   disagreeing sites, `ANIM_STATE`'s nested list — are kept by the record as
 //!   measured shapes, bound by the lowering attempt as one signature per shape
@@ -705,31 +706,36 @@ fn accept_m01_lc_directive_e_m01_lowers_completely_while_measured_is_not_impleme
 
 /// Corpus-wide, the boundary is the findings: every spelled key either carries
 /// the measured disposition its evidence supplies, is a terminal outcome, or is
-/// refused `Unmeasured` — and the corpus-only keys that prove the boundary are
-/// named.
+/// `Unmeasured` with its named reason — and the corpus-wide keys that prove the
+/// boundary are named.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_lc_directive_e_corpus_keys_no_finding_covers_stay_refused() {
+fn accept_m01_lc_directive_e_corpus_keys_the_original_ignores_stay_unmeasured() {
     let census =
         survey_mission_control_programs(&game_dir()).expect("the census runs on the installation");
     let mut unmeasured_corpus: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut unmeasured_reasons: BTreeMap<String, &'static str> = BTreeMap::new();
     for row in census.measured_rows() {
         let record = row.record().expect("a measured row carries a record");
         for key in record.keys() {
             match key.disposition() {
                 DirectiveDisposition::Measured(_) => {}
                 DirectiveDisposition::TerminalOutcome { .. } => {}
-                DirectiveDisposition::Unmeasured { .. } => {
+                DirectiveDisposition::Unmeasured { reason } => {
                     unmeasured_corpus
                         .entry(key.key.clone())
                         .or_default()
                         .push(row.mission());
+                    unmeasured_reasons
+                        .entry(key.key.clone())
+                        .or_insert(reason.code());
                 }
             }
         }
     }
-    // The keys the corpus spells and no finding covers — the parser table's
-    // residue and the stray English. Each is a live refusal, not a silent drop.
+    // The keys the corpus spells whose effect stays unmeasured — the parser
+    // table's residue and the stray English. Every one is ignored by the
+    // original: a counted disposition, not a silent drop.
     for key in [
         "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE",
         "SET_AI_",
@@ -740,8 +746,13 @@ fn accept_m01_lc_directive_e_corpus_keys_no_finding_covers_stay_refused() {
     ] {
         assert!(
             unmeasured_corpus.contains_key(key),
-            "{key}: spelled in the corpus, covered by no finding, so refused — \
+            "{key}: spelled in the corpus with an unmeasured disposition — \
              the measured table must not absorb it"
+        );
+        assert_eq!(
+            unmeasured_reasons.get(key),
+            Some(&"ignored_by_original"),
+            "{key}: the original never looks it up, so its sites drop"
         );
     }
     // And no unmeasured key is ever implemented or reported measured.

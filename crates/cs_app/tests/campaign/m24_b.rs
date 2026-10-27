@@ -85,8 +85,8 @@ use cs_content::campaign_bindings::{MissionLabel, SourceContext};
 use cs_content::coordinates::load_engine_image;
 use cs_content::mission_control::{
     AnimList, CallOutcome, ConditionOutcome, ControlRecordField, DecodedMember,
-    DirectiveDisposition, DirectiveOperation, TerminalOutcome, measure_control_record,
-    objective_blocks_of, terminal_outcome_of,
+    DirectiveDisposition, DirectiveOperation, TerminalOutcome, UnmeasuredReason,
+    measure_control_record, objective_blocks_of, terminal_outcome_of,
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, decode_zrd, objective_record, zrd_flat_fields};
@@ -659,8 +659,8 @@ fn accept_m24_b_the_measured_vocabulary_partitions_and_refuses_no_m24_key() {
     assert_eq!(
         binding.unmeasured_keys(),
         ["SET_AI_"],
-        "the only key no finding covers is the truncated `SET_AI_` spelling \
-         of OBJECTIVE19 — the stage's one measured vocabulary gap"
+        "the only key whose effect is unmeasured is the truncated `SET_AI_` \
+         spelling of OBJECTIVE19 — measured ignored by the original"
     );
     assert_eq!(
         record.measured().len() + implemented.len() + binding.unmeasured_keys().len(),
@@ -684,8 +684,8 @@ fn accept_m24_b_the_measured_vocabulary_partitions_and_refuses_no_m24_key() {
     }
 
     // The outcome keys are bare spellings; `SET_AI_` is not — it carries the
-    // five-pair list, which is why its refusal is a vocabulary gap and not
-    // a comment word.
+    // five-pair list, which is why it is a truncated directive and not a
+    // comment word.
     for key in ["INSTANTWIN", "INSTANTLOSS"] {
         let outcome = record
             .key(key)
@@ -705,9 +705,12 @@ fn accept_m24_b_the_measured_vocabulary_partitions_and_refuses_no_m24_key() {
     assert!(
         matches!(
             truncated.disposition(),
-            DirectiveDisposition::Unmeasured { .. }
+            DirectiveDisposition::Unmeasured {
+                reason: UnmeasuredReason::IgnoredByOriginal
+            }
         ),
-        "SET_AI_ stays unmeasured: no original observation states what it does"
+        "SET_AI_ is measured as ignored by the original: the parser's \
+         whole-string lookup never asks for it"
     );
     assert!(
         truncated
@@ -1849,7 +1852,7 @@ fn accept_m24_b_the_campaign_ending_is_one_win_and_one_loss_latch_with_measured_
 }
 
 // ---------------------------------------------------------------------------
-// Retail: the record does not lower, by two named gaps
+// Retail: the record lowers once its truncated key is ignored
 // ---------------------------------------------------------------------------
 
 /// **M24's record lowers: the truncated `SET_AI_` site is dropped as the
@@ -2103,7 +2106,7 @@ fn standalone_offsets(haystack: &[u8], word: &[u8]) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic: the refusal mechanisms the retail record leans on
+// Synthetic: the mechanisms the retail record leans on
 // ---------------------------------------------------------------------------
 
 /// A `.zrd` float node.

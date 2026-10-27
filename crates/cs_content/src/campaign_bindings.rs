@@ -5112,9 +5112,10 @@ pub struct MissionControlBinding {
 }
 
 impl MissionControlBinding {
-    /// The directive keys the record spells that no findings entry covers —
-    /// the keys the engine may not act on **and** that keep the mission's
-    /// lowering from completing.
+    /// The directive keys the record spells whose disposition is
+    /// `Unmeasured` — the keys the engine may not act on. Keys whose reason is
+    /// `IgnoredByOriginal` stay in this list but do not keep the mission's
+    /// lowering from completing; the other reasons do.
     #[must_use]
     pub fn unmeasured_keys(&self) -> Vec<String> {
         self.record

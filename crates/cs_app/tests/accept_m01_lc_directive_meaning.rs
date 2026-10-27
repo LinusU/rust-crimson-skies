@@ -96,8 +96,9 @@ const PARSER_ONLY_KEYS: [&str; 7] = [
     "DELETE_ON_SUCCESS",
 ];
 
-/// The keys some mission in the census spells that no finding covers: the six
-/// live `Unmeasured { MeaningNotMeasured }` refusals the corpus carries.
+/// The keys some mission in the census spells whose effect stays unmeasured:
+/// the six live `Unmeasured` dispositions the corpus carries — all
+/// `IgnoredByOriginal` since #2135, so their sites drop rather than refuse.
 const CORPUS_REFUSED_KEYS: [&str; 6] = [
     "Change",
     "SET_AI_",
@@ -264,8 +265,8 @@ fn accept_m01_lc_directive_meaning_m01s_whole_vocabulary_is_measured_and_cites_i
 /// The same walk also pins the corpus vocabulary the parent finding's
 /// "What still has no measured effect" section rests on, so that section
 /// cannot claim a key the installation spells when it does not: exactly the
-/// six keys some mission spells and no finding covers stay refused, the
-/// parser-only keys are spelled by no mission at all, and
+/// six keys some mission spells stay unmeasured — all ignored by the
+/// original — the parser-only keys are spelled by no mission at all, and
 /// [`measured_directive`] still refuses those.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -285,7 +286,7 @@ fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cite
     let mut cited = BTreeSet::new();
     let mut measurements = 0usize;
     let mut vocabulary: BTreeSet<&str> = BTreeSet::new();
-    let mut refused: BTreeSet<&str> = BTreeSet::new();
+    let mut refused: BTreeSet<(&str, &str)> = BTreeSet::new();
     for row in census.measured_rows() {
         let record = row
             .record()
@@ -301,8 +302,8 @@ fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cite
         }
         for key in record.keys() {
             vocabulary.insert(key.key.as_str());
-            if matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }) {
-                refused.insert(key.key.as_str());
+            if let DirectiveDisposition::Unmeasured { reason } = key.disposition() {
+                refused.insert((key.key.as_str(), reason.code()));
             }
         }
     }
@@ -315,9 +316,13 @@ fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cite
     );
     assert_eq!(
         refused,
-        CORPUS_REFUSED_KEYS.into_iter().collect::<BTreeSet<_>>(),
-        "the keys some mission spells and no finding covers: exactly the corpus's live refusals, \
-         no key the installation does not spell may be claimed as one"
+        CORPUS_REFUSED_KEYS
+            .into_iter()
+            .map(|key| (key, "ignored_by_original"))
+            .collect::<BTreeSet<_>>(),
+        "the keys some mission spells whose effect stays unmeasured: exactly the corpus's live \
+         unmeasured set, every one ignored by the original — no key the installation does not \
+         spell may be claimed as one"
     );
     for key in PARSER_ONLY_KEYS {
         assert!(

@@ -1003,12 +1003,15 @@ fn measured_inactive_stage(key: &str) -> bool {
 /// The table is exactly the vocabulary the findings measure — every entry is a
 /// handler whose argument consumption and consumer were located in the
 /// original, and every key the findings do **not** cover stays `None` here:
-/// `SET_AI_`, `OBJECTIVE_HD_a`,
+/// `OBJECTIVE_HD_a`,
 /// `OBJECTIVE_HD_b`, `TEST_COMPLETE`, `COMPLETION_COUNT`, `WIN_ANIM`,
-/// `LOSS_ANIM`, `DELETE_ON_SUCCESS`, the stray English words the corpus spells
-/// (`Change`, `to`, `mobile`, `net`) and the record-level keys
+/// `LOSS_ANIM`, `DELETE_ON_SUCCESS` and the record-level keys
 /// (`MISSION_TIMER`, `PLAYER_INIT`, the animation lists) are each refused
 /// [`UnmeasuredReason::MeaningNotMeasured`] — a name alone is not evidence.
+/// The keys the original never looks up (`SET_AI_` and the stray English
+/// words `Change`, `to`, `mobile`, `net`) stay `None` here too but are
+/// refused [`UnmeasuredReason::IgnoredByOriginal`] through
+/// [`ignored_directive`], which the disposition consults first.
 #[must_use]
 pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
     let directive = match key {
