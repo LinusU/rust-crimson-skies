@@ -502,7 +502,8 @@ fn accept_f22_j_the_designed_default_comparison_is_recorded() {
     let map = ActionMap::designed_default();
     assert_eq!(
         map.bindings().len(),
-        42,
+        // 42 bindings plus F22-G's flight-context pause request.
+        43,
         "the comparison must run against the real designed default map"
     );
     let rows = compare_with_original_default(&map);

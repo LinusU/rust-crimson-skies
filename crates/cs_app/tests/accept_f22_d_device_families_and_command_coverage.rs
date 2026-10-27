@@ -93,7 +93,7 @@ fn flight_bindings(map: &ActionMap) -> impl Iterator<Item = Binding> + '_ {
 fn edge_command(binding: Binding) -> Option<FlightCommand> {
     match binding.target {
         BindingTarget::Command(command) => Some(command),
-        BindingTarget::Axis { .. } | BindingTarget::Ui(_) => None,
+        BindingTarget::Axis { .. } | BindingTarget::Ui(_) | BindingTarget::Request(_) => None,
     }
 }
 
@@ -362,6 +362,26 @@ fn accept_f22_d_every_declared_device_family_drives_the_simulation() {
                         "releasing {class}'s {source} must not fire {command} again: {:?}",
                         released.delivered
                     );
+                }
+                BindingTarget::Request(request) => {
+                    // A request is asked for, not executed: the consumer sees
+                    // nothing and the screen path receives the request.
+                    let pressing = pump(&mut session, &[report(*class, &[source])], 1);
+                    assert!(pressing.is_clean(), "{:?}", pressing.faults);
+                    assert!(
+                        pressing.delivered.is_empty(),
+                        "{class}'s {source} requests {request}, it commands nothing: {:?}",
+                        pressing.delivered
+                    );
+                    assert_eq!(
+                        session
+                            .take_ui_requests()
+                            .iter()
+                            .map(|queued| queued.action)
+                            .collect::<Vec<_>>(),
+                        vec![request.ui_action()]
+                    );
+                    pump(&mut session, &[report(*class, &[])], 1);
                 }
                 BindingTarget::Ui(_) => {
                     panic!("{class}'s {source} is a flight-context binding, not a UI one")

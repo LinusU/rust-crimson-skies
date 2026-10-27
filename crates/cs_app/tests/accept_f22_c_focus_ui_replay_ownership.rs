@@ -184,7 +184,7 @@ impl WorldTrace {
                         None => self.fired.push((*command, 1)),
                     }
                 }
-                Action::Ui(_) => self.ui_actions += 1,
+                Action::Ui(_) | Action::Request(_) => self.ui_actions += 1,
             }
         }
         for (command, value) in axes {
