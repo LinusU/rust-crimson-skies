@@ -654,6 +654,11 @@ pub enum MissionHostRestartError {
     /// The player body could not be respawned through the production
     /// physics path.
     Player(SceneError),
+    /// The player airframe's canonical scene refused its reload (F11-F):
+    /// the refusal is the scene machinery's own error, and the scene that
+    /// was running stays live — the load's prepare/commit order means a
+    /// refused retry never tears down what it could not replace.
+    AirframeScene(crate::scene::AirframeSessionError),
 }
 
 impl fmt::Display for MissionHostRestartError {
@@ -687,6 +692,9 @@ impl fmt::Display for MissionHostRestartError {
             }
             Self::World(error) => write!(f, "the mission's world refuses to reload: {error}"),
             Self::Player(error) => write!(f, "the player's body refuses to respawn: {error}"),
+            Self::AirframeScene(error) => {
+                write!(f, "the player airframe's scene refuses to reload: {error}")
+            }
         }
     }
 }
@@ -1071,6 +1079,16 @@ impl MissionHost {
             let _ = world.despawn(body);
         }
         spawn_player(world).map_err(MissionHostRestartError::Player)?;
+
+        // The canonical airframe scene follows the session's generation
+        // (F11-F, #2122): the retry's own `start_airframe_scene` supersedes
+        // whatever is live and releases the previous generation's entities,
+        // and a refusal leaves that scene running rather than a torn-down
+        // one. A stage that installed no scene source (synthetic, or a
+        // mission whose airframe stayed unknown) answers `None` and restarts
+        // without one — the stage's own record, not a fault here.
+        super::airframe_scene::start_mission_airframe_scene(world)
+            .map_err(MissionHostRestartError::AirframeScene)?;
 
         // The scripted actors go with their generation: despawned before
         // the respawn so a restart leaves exactly the roster's set, and

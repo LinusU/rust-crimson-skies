@@ -29,6 +29,8 @@ use bevy::asset::{AssetApp, Assets};
 use bevy::image::Image;
 use bevy::prelude::{AlphaMode, Entity, Quat, Resource, StandardMaterial, Visibility, World};
 
+use cs_types::content::{ContentId, Resolved};
+
 use crate::airframe_damage::{AirframeDamageRegion, WingFlare};
 use crate::playtest::propeller::{
     PropellerBlur, PropellerBlurSecond, PropellerSpin, StaticPropellerBlades,
@@ -112,7 +114,12 @@ pub const MISSION_PLAYER_LOD_DISTANCE_M: f64 =
 
 /// What the stage carries so the composition can draw the player's
 /// airframe: the `zbd/planes.zbd` container and the texture archive its
-/// materials resolve against, read through [`read_aircraft_sources`].
+/// materials resolve against, read through [`read_aircraft_sources`], plus
+/// the airframe the mission's start resolution names for its player —
+/// the identity the drawn visual and the canonical scene
+/// ([`super::airframe_scene`], F11-F) both serve. An airframe the start
+/// resolution leaves [`Resolved::Unknown`] stays recorded as unknown on the
+/// source itself; nothing is substituted for it.
 ///
 /// `None` on the synthetic acceptance stages, which have no installation to
 /// read one from — their player body spawns without a visual, as it did
@@ -121,6 +128,7 @@ pub const MISSION_PLAYER_LOD_DISTANCE_M: f64 =
 pub struct PlayerAirframeSource {
     sources: AircraftSources,
     install_root: PathBuf,
+    airframe: Resolved<ContentId>,
 }
 
 impl PlayerAirframeSource {
@@ -136,15 +144,31 @@ impl PlayerAirframeSource {
         &self.install_root
     }
 
+    /// The airframe the mission's start resolution named for its player.
+    /// `Known` for M01 (`airframe/player_pfighter`); `Unknown` for every
+    /// mission the engine-facts table commits no airframe row for — the
+    /// recorded reason travels with it and is never replaced by a guess.
+    pub(super) const fn airframe(&self) -> &Resolved<ContentId> {
+        &self.airframe
+    }
+
     /// Reads the airframe container and the texture archive for
     /// `world_group` out of `install_root` — one production discovery pass,
     /// never a second parser and never a write inside the installation.
+    /// `airframe` is the resolved player airframe of
+    /// [`crate::mission_start::MissionStartConfiguration`], kept on the
+    /// source so the canonical scene loads the airframe the mission actually
+    /// resolved rather than a pinned name.
     ///
     /// # Errors
     ///
     /// [`MissionCompositionError::AirframeVisual`] when discovery, the
     /// container read or the texture archive refuses.
-    pub fn read(install_root: &Path, world_group: &str) -> Result<Self, MissionCompositionError> {
+    pub fn read(
+        install_root: &Path,
+        world_group: &str,
+        airframe: &Resolved<ContentId>,
+    ) -> Result<Self, MissionCompositionError> {
         let sources = read_aircraft_sources(install_root, world_group).map_err(|error| {
             MissionCompositionError::AirframeVisual(format!(
                 "the player airframe's sources refuse: {error}"
@@ -153,6 +177,7 @@ impl PlayerAirframeSource {
         Ok(Self {
             sources,
             install_root: install_root.to_path_buf(),
+            airframe: airframe.clone(),
         })
     }
 }

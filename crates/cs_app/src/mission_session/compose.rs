@@ -100,10 +100,11 @@ use cs_types::asset_id::{
 };
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ContentHash;
-use cs_types::space::Quaternion;
+use cs_types::space::{Meters, Quaternion};
 
 use super::actor_census::MissionActorAidPlugin;
 use super::actor_visual::build_actor_visuals;
+use super::airframe_scene::MissionAirframeScene;
 use super::ambient_sound::{AmbientSound, AmbientSoundError, measure_ambient_sound};
 use super::flak_sound::{FlakSound, FlakSoundError, measure_flak_sound};
 use super::gun_sound::{GunSound, GunSoundError, measure_gun_sound};
@@ -114,7 +115,8 @@ use super::hud_art::{
 use super::landings::{MissionLandings, read_landings};
 use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
-    MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
+    MISSION_PLAYER_LOD_DISTANCE_M, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
+    spawn_player_visual,
 };
 use super::radio::{MissionRadio, declared_sound_groups};
 use super::weapon_counts::{OriginalWeaponCounts, WeaponCountsError, measure_weapon_counts};
@@ -409,6 +411,9 @@ pub enum MissionCompositionError {
     /// The player airframe's sources or drawn visual refused through the
     /// production selection-and-build path.
     AirframeVisual(String),
+    /// The player airframe's canonical scene refused its session load
+    /// (F11-F): the refusal is the scene machinery's own error.
+    AirframeScene(crate::scene::AirframeSessionError),
     /// The mission world's drawn sources refused through the playtest's own
     /// material/texture path (M01-PLAY-WORLD-VISIBLE, #1433).
     WorldVisual(String),
@@ -488,6 +493,9 @@ impl fmt::Display for MissionCompositionError {
             Self::World(error) => write!(f, "the mission's world refuses to load: {error}"),
             Self::AirframeVisual(reason) => {
                 write!(f, "the mission's player airframe visual refuses: {reason}")
+            }
+            Self::AirframeScene(error) => {
+                write!(f, "the mission's player airframe scene refuses: {error}")
             }
             Self::WorldVisual(reason) => {
                 write!(f, "the mission's world visual refuses: {reason}")
@@ -914,6 +922,7 @@ pub fn stage_for(
         player_aircraft: Some(PlayerAirframeSource::read(
             install_root,
             plan.group_dir.trim_start_matches("zbd/"),
+            content.start.airframe(),
         )?),
         // The mission world's drawn source: the group's stored material table
         // and texture archive, joined to the stored mesh-array slot of every
@@ -1510,6 +1519,31 @@ fn add_composition(
     if let Some(source) = &stage.player_aircraft {
         let visual = build_player_visual(app, source)?;
         app.insert_resource(visual);
+        // The canonical airframe scene (F11-F, #2122): the session's own
+        // start loads the airframe the mission's start resolution named —
+        // its subtree imported from the same `planes.zbd` container through
+        // the F11-C producer, under the scene's own generation. An airframe
+        // the resolution left unknown builds no scene and stays recorded
+        // unknown; a built scene is live before the first frame, and the
+        // plugin serves its requests, damage and LOD passes from here on.
+        if let Some(scene) = MissionAirframeScene::build(source)? {
+            app.insert_resource(scene);
+            app.add_plugins(crate::scene::AirframeScenePlugin);
+            // The LOD distance is the viewer stage's own declared value —
+            // the designed pick the drawn visual's bands are selected at —
+            // never a distance this owner invents.
+            app.insert_resource(
+                crate::scene::LodDistance::new(Meters(MISSION_PLAYER_LOD_DISTANCE_M)).map_err(
+                    |error| {
+                        MissionCompositionError::AirframeVisual(format!(
+                            "the player airframe's LOD distance refuses: {error}"
+                        ))
+                    },
+                )?,
+            );
+            super::airframe_scene::start_mission_airframe_scene(app.world_mut())
+                .map_err(MissionCompositionError::AirframeScene)?;
+        }
         // The pilot's eye (#1810): the airframe's own `cockpit_camera` node.
         app.insert_resource(super::cockpit_camera::resolve_player_cockpit_eye(source)?);
         // The cockpit1 interior (#1811), shown only in the pilot-eye views.
@@ -2050,6 +2084,20 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<super::turret_fire::MissionTurretFire>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
+    // The canonical airframe scene (F11-F, #2122): the session's own end
+    // releases every entity the live generation owns, then the scene's
+    // records — its source, log, generation counter and damage state — go
+    // with the composition so a second build in the same process starts
+    // from nothing, scene generation included.
+    crate::scene::end_airframe_scene(world);
+    world.remove_resource::<MissionAirframeScene>();
+    world.remove_resource::<crate::scene::AirframeSceneLog>();
+    world.remove_resource::<crate::scene::SceneGenerations>();
+    world.remove_resource::<crate::scene::AirframeDamageState>();
+    world.remove_resource::<crate::scene::AirframeSceneRequest>();
+    world.remove_resource::<crate::scene::PartDebrisPublish>();
+    world.remove_resource::<crate::scene::SceneCollisionGeometry>();
+    world.remove_resource::<crate::scene::LodDistance>();
     world.remove_resource::<super::cockpit_camera::MissionCockpitEye>();
     world.remove_resource::<super::cockpit_interior::MissionCockpitInterior>();
     world.remove_resource::<super::cockpit_dials::MissionCockpitDials>();

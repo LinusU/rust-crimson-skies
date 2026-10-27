@@ -93,6 +93,7 @@
 
 mod actor_census;
 mod actor_visual;
+mod airframe_scene;
 mod ambient_sound;
 mod briefing_screen;
 mod burst_puffs;
@@ -162,6 +163,7 @@ pub use actor_visual::{
     ACTOR_MODEL_CLAIM, ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals,
     build_actor_visuals,
 };
+pub use airframe_scene::MissionAirframeScene;
 pub use ambient_sound::{AmbientSound, AmbientSoundError, measure_ambient_sound};
 pub use briefing_screen::{
     BriefingArtwork, BriefingDriver, BriefingReadError, BriefingScreenPlugin, BriefingSource,
