@@ -10,7 +10,7 @@ use super::*;
 /// on: M16's seven sound-cleanup sites bind and no census row anywhere
 /// still refuses `STOP_QUEUED_SOUNDS`.
 const RETAIL_TESTS_M16_B_FU1: &[&str] = &[
-    "accept_m16_b_fu1_m16s_record_does_not_lower_and_four_of_its_calls_refuse",
+    "accept_m16_b_fu1_m16s_record_lowers_and_the_four_comment_words_are_ignored",
     "accept_m16_b_fu1_no_census_row_refuses_a_sound_cleanup_site",
 ];
 
@@ -232,9 +232,10 @@ fn evidence_report_m16_b_fu1_writes_the_acceptance_report() {
              consumer the first ten names, the bound the original's `cmp esi, 0xa; jg` name \
              copy at VA 0x4688bc applies, verified in the image — the spelled fourteen stay \
              faithful data in the call. NOT CLAIMED: no consumer runs the operation yet, so no \
-             runtime behavior is pinned; M16's record still does not lower (OBJECTIVE24's four \
-             bare comment words are unmeasured keys), M24's truncated `SET_AI_` key still \
-             refuses, no mission was played, no original executable was run and nothing is \
+             runtime behavior is pinned; M16's record lowers now that OBJECTIVE24's four \
+             bare comment words are measured ignored by the original (#2134), and M24's \
+             truncated `SET_AI_` site is likewise ignored (#2135), so both census rows are \
+             complete; no mission was played, no original executable was run and nothing is \
              verified_original. Claim is implemented only; validated with \
              tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
              commit the suite and this harness ran on; the only later delta is this report's \

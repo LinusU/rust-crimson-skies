@@ -113,9 +113,10 @@ fn review_method(observed: &Observed) -> String {
          each finding recorded are carried per key (IDENTITY's third child, the in-play flag's \
          writers, DEDG's member-field rewrites, TRAVELERS' polarity, the sound-group handles, the \
          animation call's trailing arguments) and named again on the lowering row that owns them; \
-         of the keys no finding covers only {corpus_unmeasured} unmeasured key occurrence(s) are \
-         refused in the census's own rows: the spelled keys SET_AI_, WAKEUP_OBJECTIVE_WHEN_I_COMPLETE \
-         and the stray English spellings Change / to / mobile / net. OBJECTIVE_HD_*, TEST_COMPLETE, \
+         of the keys whose effect stays unmeasured, {corpus_unmeasured} unmeasured key occurrence(s) \
+         sit in the census's own rows — the spelled keys SET_AI_, WAKEUP_OBJECTIVE_WHEN_I_COMPLETE \
+         and the stray English spellings Change / to / mobile / net, every one measured ignored by \
+         the original, so their sites drop rather than refuse. OBJECTIVE_HD_*, TEST_COMPLETE, \
          COMPLETION_COUNT, WIN_ANIM, LOSS_ANIM and DELETE_ON_SUCCESS sit in the executable's parser \
          vocabulary but are spelled by no mission in this census, so they carry no disposition here \
          and would only be refused if spelled; the five record-level keys are refused as \
