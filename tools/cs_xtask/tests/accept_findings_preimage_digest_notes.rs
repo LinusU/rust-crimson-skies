@@ -1,22 +1,25 @@
-//! Task #1158 `FINDINGS-PREIMAGE-DIGEST-NOTES`: the two findings documents
-//! that still presented the pre-image installation fingerprint as current
+//! Task #1158 `FINDINGS-PREIMAGE-DIGEST-NOTES`: the findings documents that
+//! still presented the pre-image installation fingerprint as current
 //! provenance now carry the same dated installation note the F16-E finding
 //! already carried.
 //!
 //! Rally #804 regenerated every committed acceptance report that still carried
 //! the fingerprint measured while the owner's decrypted engine image was an
 //! inventoried file of `$CS_GAME_DIR`; the owner moved the image out on
-//! 2026-10-08 (#798). Two *findings documents* were left quoting the old
-//! digest with nothing saying so, which made them disagree with their own
-//! committed reports:
+//! 2026-10-08 (#798). Three *findings documents* quoted the old digest with
+//! nothing saying so, which made them disagree with their own committed
+//! reports:
 //!
 //! * `docs/findings/2026-10-07-f17-d-comparison-matrix-and-material-coverage.md`
 //!   (`docs/findings/evidence/F17-D.json`);
 //! * `docs/findings/2026-10-08-t574-zeppelins-zrd-placed-zeppelin-carrier.md`
-//!   (`docs/findings/evidence/T574.json`).
+//!   (`docs/findings/evidence/T574.json`);
+//! * `docs/findings/missions/2026-10-08-f50-b-campaign-binding.md`
+//!   (`docs/findings/evidence/F50-B.json`), covered since Rally #2151 — its
+//!   own text pointed at a fingerprint note that was never written.
 //!
 //! These tests are a documentation guard: they read the committed documents and
-//! reports from the workspace. Removing either note, rewriting a digest the run
+//! reports from the workspace. Removing a note, rewriting a digest the run
 //! actually recorded, or leaving any findings document that quotes the
 //! pre-image value without explanatory framing fails them.
 //!
@@ -48,7 +51,7 @@ const NOTE_HEADING: &str = "**Installation note (#798, 2026-10-08).**";
 const IMAGE_VARIABLE: &str = "$CS_ENGINE_IMAGE";
 
 /// `(findings document, its committed acceptance report)`.
-const DOCUMENTS: [(&str, &str); 2] = [
+const DOCUMENTS: [(&str, &str); 3] = [
     (
         "docs/findings/2026-10-07-f17-d-comparison-matrix-and-material-coverage.md",
         "docs/findings/evidence/F17-D.json",
@@ -57,19 +60,22 @@ const DOCUMENTS: [(&str, &str); 2] = [
         "docs/findings/2026-10-08-t574-zeppelins-zrd-placed-zeppelin-carrier.md",
         "docs/findings/evidence/T574.json",
     ),
+    (
+        "docs/findings/missions/2026-10-08-f50-b-campaign-binding.md",
+        "docs/findings/evidence/F50-B.json",
+    ),
 ];
 
 /// A framing that explains why a document quotes the pre-image digest. Every
-/// findings document that quotes it has to carry at least one of these; the two
-/// this task fixed carry the dated note, F16-E and F50-C carry theirs, and
-/// F50-B's `What was measured on $CS_GAME_DIR` section frames its values as a
-/// measurement — the dated note that section's own dangling pointer promises is
-/// Rally #2151's work, which also adds that document to `DOCUMENTS` below.
-const EXPLANATIONS: [&str; 5] = [
+/// findings document that quotes it has to carry at least one of these; the
+/// three `DOCUMENTS` entries carry the dated note and F16-E and F50-C carry
+/// theirs. F50-B's bare `What was measured on $CS_GAME_DIR` heading stopped
+/// being an explanation when Rally #2151 gave that document the dated note its
+/// own pointer promised.
+const EXPLANATIONS: [&str; 4] = [
     "#798",
     "Installation note",
     "recorded at the time",
-    "What was measured on",
     "as it stood at implement time",
 ];
 
@@ -113,10 +119,10 @@ fn report_string_field(text: &str, key: &str) -> Option<String> {
     Some(text[start..end].to_owned())
 }
 
-/// Both documents carry the dated #798 note, and the note names the current
-/// digests, the image's new home and the recorded-at-the-time framing.
+/// Every listed document carries the dated #798 note, and the note names the
+/// current digests, the image's new home and the recorded-at-the-time framing.
 #[test]
-fn accept_findings_preimage_digest_notes_both_documents_carry_the_dated_798_note() {
+fn accept_findings_preimage_digest_notes_each_document_carries_the_dated_798_note() {
     for (document, _) in DOCUMENTS {
         let text = read_workspace_file(document);
         for needle in [
@@ -141,8 +147,8 @@ fn accept_findings_preimage_digest_notes_both_documents_carry_the_dated_798_note
     }
 }
 
-/// The recorded values are kept: both documents still quote the digests the run
-/// actually measured, and those are not the current tree's.
+/// The recorded values are kept: every listed document still quotes the
+/// digests the run actually measured, and those are not the current tree's.
 #[test]
 fn accept_findings_preimage_digest_notes_the_recorded_values_are_kept() {
     assert_ne!(
