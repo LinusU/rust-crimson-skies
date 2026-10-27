@@ -1477,6 +1477,14 @@ pub enum OrdnanceDefinitionError {
     NegativeNitroThrust,
     /// A fixed nitro burn declared zero ticks, which is not an activation.
     ZeroNitroBurn,
+    /// A charge-bounded nitro rule declared a start or stop fraction that is
+    /// non-finite or breaks `0 <= stop < start <= 1` with `start > 0`.
+    InvalidNitroChargeFractions {
+        /// The declared start fraction.
+        start_min_fraction: f64,
+        /// The declared stop fraction.
+        stop_below_fraction: f64,
+    },
     /// A nitro authority multiplier was NaN or infinite.
     NonFiniteAuthorityMultiplier,
     /// A nitro authority multiplier was outside `(0, 1]`.
@@ -1584,6 +1592,14 @@ impl fmt::Display for OrdnanceDefinitionError {
                 write!(f, "the nitro extra thrust is negative")
             }
             Self::ZeroNitroBurn => write!(f, "a fixed nitro burn must last at least one tick"),
+            Self::InvalidNitroChargeFractions {
+                start_min_fraction,
+                stop_below_fraction,
+            } => write!(
+                f,
+                "the nitro start fraction {start_min_fraction} and stop fraction \
+                 {stop_below_fraction} must be finite with 0 <= stop < start <= 1"
+            ),
             Self::NonFiniteAuthorityMultiplier => {
                 write!(f, "the nitro authority multiplier must be finite")
             }
@@ -1608,18 +1624,36 @@ impl std::error::Error for OrdnanceDefinitionError {}
 /// contract. Which rule the original used — a held control or a fixed burn —
 /// is **unmeasured**, so both are declared vocabulary and the original's
 /// choice is F28-D's to record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NitroActivationRule {
     /// Active on every tick the control is held and capacity remains.
     WhileHeld,
     /// Each accepted activation runs for this many whole ticks.
     FixedTicks { ticks: u64 },
+    /// The rule measured from the original engine image (task #452, T452.03):
+    /// a start needs the control pressed **and** charge of at least
+    /// `start_min_fraction` of capacity; once running, the burn latches and
+    /// continues until charge falls below `stop_below_fraction` of capacity.
+    /// Releasing the control does not stop it.
+    UntilCharge {
+        /// Fraction of capacity a start needs, in `(0, 1]`.
+        start_min_fraction: f64,
+        /// Fraction of capacity below which a running burn is cut, in
+        /// `[0, start_min_fraction)`.
+        stop_below_fraction: f64,
+    },
 }
 
 impl NitroActivationRule {
     /// Every activation rule, in a stable order.
-    pub const ALL: &'static [NitroActivationRule] =
-        &[Self::WhileHeld, Self::FixedTicks { ticks: 1 }];
+    pub const ALL: &'static [NitroActivationRule] = &[
+        Self::WhileHeld,
+        Self::FixedTicks { ticks: 1 },
+        Self::UntilCharge {
+            start_min_fraction: 0.99,
+            stop_below_fraction: 0.05,
+        },
+    ];
 
     /// The stable label used in reports.
     #[must_use]
@@ -1627,6 +1661,10 @@ impl NitroActivationRule {
         match self {
             Self::WhileHeld => "while_held".to_owned(),
             Self::FixedTicks { ticks } => format!("fixed_ticks({ticks})"),
+            Self::UntilCharge {
+                start_min_fraction,
+                stop_below_fraction,
+            } => format!("until_charge(start {start_min_fraction}, stop {stop_below_fraction})"),
         }
     }
 }
@@ -1777,6 +1815,22 @@ impl NitroParameters {
             && ticks == 0
         {
             return Err(OrdnanceDefinitionError::ZeroNitroBurn);
+        }
+        if let NitroActivationRule::UntilCharge {
+            start_min_fraction,
+            stop_below_fraction,
+        } = activation
+            && !(start_min_fraction.is_finite()
+                && stop_below_fraction.is_finite()
+                && start_min_fraction > 0.0
+                && start_min_fraction <= 1.0
+                && stop_below_fraction >= 0.0
+                && stop_below_fraction < start_min_fraction)
+        {
+            return Err(OrdnanceDefinitionError::InvalidNitroChargeFractions {
+                start_min_fraction,
+                stop_below_fraction,
+            });
         }
         Ok(Self {
             capacity_units,
@@ -3708,6 +3762,9 @@ pub enum NitroRefusal {
     /// `FLIGHT-PHYSICS`: "Pressing a button while boost is unavailable does
     /// not consume capacity."
     CapacityExhausted,
+    /// The tank is not empty but holds less than a charge-bounded rule's
+    /// start fraction ([`NitroActivationRule::UntilCharge`]); consumes nothing.
+    BelowStartCharge,
     /// A fixed-duration burn is already running.
     BurnAlreadyRunning {
         /// The tick the running burn ends on.
@@ -3721,6 +3778,7 @@ impl NitroRefusal {
     pub fn label(&self) -> String {
         match self {
             Self::CapacityExhausted => "capacity_exhausted".to_owned(),
+            Self::BelowStartCharge => "below_start_charge".to_owned(),
             Self::BurnAlreadyRunning { until } => {
                 format!("burn_already_running(until {})", until.0)
             }
@@ -3836,6 +3894,9 @@ pub struct NitroLedger {
     capacity_units: f64,
     parameters: NitroParameters,
     burn_until: Option<Tick>,
+    /// A charge-bounded burn ([`NitroActivationRule::UntilCharge`]) is
+    /// latched: it runs until charge falls, whatever the control does.
+    charge_burn_latched: bool,
 }
 
 impl NitroLedger {
@@ -3854,6 +3915,7 @@ impl NitroLedger {
             capacity_units: parameters.capacity_units(),
             parameters,
             burn_until: None,
+            charge_burn_latched: false,
         }
     }
 
@@ -3900,7 +3962,7 @@ impl NitroLedger {
     /// Whether a fixed-duration burn is still running.
     #[must_use]
     pub fn burn_active_at(&self, tick: Tick) -> bool {
-        self.burn_until.is_some_and(|until| tick < until)
+        self.charge_burn_latched || self.burn_until.is_some_and(|until| tick < until)
     }
 
     /// Resolves one tick's activation request.
@@ -3957,6 +4019,48 @@ impl NitroLedger {
         let elapsed = tick.0.saturating_sub(self.tick.0);
         let dt_s = elapsed as f64 * self.rate.dt_seconds();
         let burn_running = self.burn_active_at(tick);
+        let max_units = self.parameters.capacity_units();
+        let per_tick = self.parameters.consumption_per_s() * self.rate.dt_seconds();
+        // Ticks a charge-bounded burn may run in this step: the burn is cut
+        // at the first tick that starts below the stop fraction, so a jump
+        // costs what the same ticks walked cost.
+        let mut charge_ticks: Option<u64> = None;
+        if let NitroActivationRule::UntilCharge {
+            start_min_fraction,
+            stop_below_fraction,
+        } = self.parameters.activation()
+        {
+            let stop_units = stop_below_fraction * max_units;
+            let runnable = |units: f64| -> u64 {
+                if units < stop_units {
+                    0
+                } else if per_tick > 0.0 {
+                    (((units - stop_units) / per_tick).floor() as u64).saturating_add(1)
+                } else {
+                    u64::MAX
+                }
+            };
+            if self.charge_burn_latched {
+                let n = runnable(self.capacity_units).min(elapsed);
+                charge_ticks = Some(n);
+                if n < elapsed || self.capacity_units - per_tick * (n as f64) < stop_units {
+                    self.charge_burn_latched = false;
+                }
+            } else if requested
+                && self.capacity_units > 0.0
+                && self.capacity_units >= start_min_fraction * max_units
+            {
+                let n = runnable(self.capacity_units).min(elapsed);
+                charge_ticks = Some(n);
+                self.charge_burn_latched = n > 0
+                    && n >= elapsed
+                    && self.capacity_units - per_tick * (n as f64) >= stop_units;
+            }
+        }
+        let charge_rule = matches!(
+            self.parameters.activation(),
+            NitroActivationRule::UntilCharge { .. }
+        );
 
         // Whether the booster runs on this tick is decided **before** any
         // capacity moves, because recovery is an idle-only effect: a tick
@@ -3964,7 +4068,15 @@ impl NitroLedger {
         // would drift upward and a jumped tick would not — and ten ticks
         // walked would not cost what ten ticks jumped cost.
         let mut refused = None;
-        if requested && !burn_running {
+        if charge_rule {
+            if requested && charge_ticks.is_none() {
+                refused = Some(if self.capacity_units <= 0.0 {
+                    NitroRefusal::CapacityExhausted
+                } else {
+                    NitroRefusal::BelowStartCharge
+                });
+            }
+        } else if requested && !burn_running {
             if self.capacity_units <= 0.0 {
                 // The rule `FLIGHT-PHYSICS` states: an unavailable boost
                 // consumes nothing. Capacity is already empty, so this is a
@@ -3976,6 +4088,7 @@ impl NitroLedger {
                     NitroActivationRule::FixedTicks { ticks } => {
                         self.burn_until = Some(Tick(tick.0 + ticks));
                     }
+                    NitroActivationRule::UntilCharge { .. } => {}
                 }
             }
         } else if requested && burn_running {
@@ -3989,7 +4102,11 @@ impl NitroLedger {
         // activation, so gating `active` on it would stop the accepted burn
         // one tick in, and — because recovery is idle-only — would then pay
         // out capacity on every tick of a burn the pilot is still paying for.
-        let active = burn_running || (requested && refused.is_none());
+        let active = if charge_rule {
+            charge_ticks.is_some_and(|n| n > 0)
+        } else {
+            burn_running || (requested && refused.is_none())
+        };
 
         // Idle recovery, for the elapsed seconds of a tick the booster was
         // not running.
@@ -4004,9 +4121,9 @@ impl NitroLedger {
         // caller that walks ten ticks and one that jumps ten reach the same
         // capacity. Both the recovery above and the consumption here convert
         // through the declared tick rate, never through a wall clock.
-        let per_tick = self.parameters.consumption_per_s() * self.rate.dt_seconds();
         let consumed = if active {
-            (per_tick * elapsed as f64).min(self.capacity_units)
+            let ticks = charge_ticks.map_or(elapsed, |n| n.min(elapsed));
+            (per_tick * ticks as f64).min(self.capacity_units)
         } else {
             0.0
         };
