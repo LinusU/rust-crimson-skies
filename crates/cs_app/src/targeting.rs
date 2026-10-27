@@ -75,17 +75,17 @@ use cs_content::target_rules::{
 };
 use cs_sim::damage::{ActorId, DamageEvent, DamageEventKind, HitEvent, HitEventId, LifecycleKind};
 use cs_sim::targeting::{
-    Allegiance, AllegianceTable, CrosshairQuery, CycleDirection, Reticle, SelectionAction,
-    SelectionBinding, SelectionClearReason, SelectionFrame, TargetClass, TargetError, TargetFilter,
-    TargetPhase, TargetPolicy, TargetRecord, TargetSelection, TargetStore, ThreatCue, ThreatFeed,
-    WeaponGuidance,
+    Allegiance, AllegianceTable, CrosshairError, CrosshairQuery, CycleDirection, Reticle,
+    SelectionAction, SelectionBinding, SelectionClearReason, SelectionFrame, TargetClass,
+    TargetError, TargetFilter, TargetPhase, TargetPolicy, TargetRecord, TargetSelection,
+    TargetStore, ThreatCue, ThreatFeed, WeaponGuidance,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
-use cs_types::space::{Meters, WorldPosition};
+use cs_types::space::{Meters, Radians, UnitVec3, WorldPosition};
 
 use crate::scene::SceneGeneration;
 
@@ -615,6 +615,8 @@ pub enum TargetingError {
     NoSession,
     /// The store refused the work.
     Store(TargetError),
+    /// The crosshair query's cone was refused.
+    Crosshair(CrosshairError),
 }
 
 impl std::fmt::Display for TargetingError {
@@ -627,6 +629,7 @@ impl std::fmt::Display for TargetingError {
                 )
             }
             Self::Store(error) => write!(f, "{error}"),
+            Self::Crosshair(error) => write!(f, "{error}"),
         }
     }
 }
@@ -636,6 +639,7 @@ impl std::error::Error for TargetingError {
         match self {
             Self::NoSession => None,
             Self::Store(error) => Some(error),
+            Self::Crosshair(error) => Some(error),
         }
     }
 }
@@ -792,6 +796,136 @@ pub struct SelectionReport {
     pub selection: Option<ActorId>,
     /// The phase record the pass derived.
     pub phase: Option<TargetPhase>,
+}
+
+/// The actors an authoritative sight oracle reports blocked from one origin,
+/// for one targeting session — the occlusion evidence
+/// [`CrosshairQuery::occluded`] carries.
+///
+/// The report is the typed transaction between the occlusion producer
+/// ([`produce_crosshair_occlusion`], which asks a physics or camera sight
+/// oracle) and the crosshair query ([`OcclusionReport::crosshair_query`]): a
+/// session never builds the set by hand, and a report from one session
+/// generation cannot be spent against another's store. It claims nothing
+/// about the original's occlusion or reveal rules, which are unmeasured
+/// (F30-E): it carries what the oracle said.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OcclusionReport {
+    session: SessionId,
+    origin: WorldPosition,
+    blocked: BTreeSet<ActorId>,
+    tested: usize,
+}
+
+impl OcclusionReport {
+    /// The session generation whose roster was tested.
+    #[must_use]
+    pub const fn session(&self) -> SessionId {
+        self.session
+    }
+
+    /// The point the sight rays were cast from.
+    #[must_use]
+    pub const fn origin(&self) -> WorldPosition {
+        self.origin
+    }
+
+    /// The actors the oracle reported blocked from the origin.
+    #[must_use]
+    pub const fn blocked(&self) -> &BTreeSet<ActorId> {
+        &self.blocked
+    }
+
+    /// How many eligible actors the oracle was asked about.
+    #[must_use]
+    pub const fn tested(&self) -> usize {
+        self.tested
+    }
+
+    /// Builds the crosshair query for this report's origin and the producer's
+    /// ray, carrying the reported set as its occlusion evidence.
+    ///
+    /// # Errors
+    ///
+    /// [`TargetingError::NoSession`] without a session,
+    /// [`TargetError::ForeignSession`] when the report was produced for
+    /// another session generation than the installed one — the actors it
+    /// names would be another store's — and the store's cone refusals.
+    pub fn crosshair_query(
+        self,
+        world: &World,
+        direction: UnitVec3,
+        cone: Option<Radians>,
+    ) -> Result<CrosshairQuery, TargetingError> {
+        let targeting = world
+            .get_resource::<TargetingSession>()
+            .ok_or(TargetingError::NoSession)?;
+        if targeting.session != self.session {
+            return Err(TargetError::ForeignSession {
+                expected: targeting.session.get(),
+                found: self.session.get(),
+            }
+            .into());
+        }
+        targeting
+            .store
+            .crosshair_query(self.origin, direction, cone, self.blocked)
+            .map_err(TargetingError::Crosshair)
+    }
+}
+
+/// Asks `blocked` whether the segment from `origin` to each eligible actor
+/// (never `observer`) is obstructed, and reports the actors it says are.
+///
+/// `blocked(from, to)` is the authoritative oracle — the physics line of
+/// sight in a mission — and this function adds nothing to its answer: it
+/// does not invent an occluder, and an actor the oracle does not name stays
+/// reachable. Only eligible actors are asked about; an ineligible one is
+/// skipped by the selection anyway. The actors are visited in stable actor
+/// order.
+///
+/// # Errors
+///
+/// [`TargetingError::NoSession`] without a session and
+/// [`TargetError::ForeignSession`] when `observer` belongs to another
+/// session generation, so one store's actors are never reported against
+/// another's origin.
+pub fn produce_crosshair_occlusion(
+    world: &World,
+    observer: ActorId,
+    origin: WorldPosition,
+    mut blocked: impl FnMut(WorldPosition, WorldPosition) -> bool,
+) -> Result<OcclusionReport, TargetingError> {
+    let targeting = world
+        .get_resource::<TargetingSession>()
+        .ok_or(TargetingError::NoSession)?;
+    if observer.session != targeting.session {
+        return Err(TargetError::ForeignSession {
+            expected: targeting.session.get(),
+            found: observer.session.get(),
+        }
+        .into());
+    }
+    let store = &targeting.store;
+    let mut report = OcclusionReport {
+        session: targeting.session,
+        origin,
+        blocked: BTreeSet::new(),
+        tested: 0,
+    };
+    for actor in store.registered() {
+        if actor == observer || !store.eligible(&actor) {
+            continue;
+        }
+        let Some(record) = store.record(&actor) else {
+            continue;
+        };
+        report.tested += 1;
+        if blocked(origin, record.position) {
+            report.blocked.insert(actor);
+        }
+    }
+    Ok(report)
 }
 
 /// Runs one frame's edges through the session's command-edge table and
