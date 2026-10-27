@@ -2921,9 +2921,9 @@ impl OriginalLimitClaim {
     pub const fn deferral_reason(self) -> &'static str {
         match self {
             Self::AmmoNamesDamage => {
-                "the per-type damage amounts are in the executable's own tables: no shipped \
-                 member states a numeric amount, and the images that would hold one carry no \
-                 readable plaintext"
+                "the per-(gun, ammunition kind) damage amounts live in the weapon records \
+                 weapons.zrd ships, and at least one record the engine's map names did not \
+                 state both amounts as numbers"
             }
             Self::GunGroupAssignment => {
                 "the per-airframe gun tables are in the executable, and the mesh nodes that do \
@@ -3794,6 +3794,274 @@ impl OriginalLimitReport {
     pub fn is_complete(&self) -> bool {
         self.unaccounted().is_empty()
     }
+}
+
+// ------------------------------------------------- the shipped damage table ----
+
+/// The first `wep_NN` record index of each of the original's five guns, in the
+/// order of the loadout's gun ids `0..=4`: the bases the engine's
+/// (gun, ammunition) → record map answers (`[gun_loadout]` `gun_base_0..4` in
+/// `data/owner-static/engine-facts.toml`, map at image VA `0x443d70`, finding
+/// `docs/findings/2026-10-19-m01-window-fire-gun-loadout.md`).
+pub const ORIGINAL_GUN_RECORD_BASES: [u32; ORIGINAL_GUN_COUNT] = [30, 40, 50, 60, 70];
+
+/// How many guns the loadout offers (ids `0..=4`).
+pub const ORIGINAL_GUN_COUNT: usize = 5;
+
+/// The ammunition kinds the engine's map adds to a gun's base (`1..=3` add
+/// their value, `0` adds nothing; kind `4` is "no ammunition" and names no
+/// record), so four kinds carry a record.
+pub const ORIGINAL_DAMAGE_AMMO_KINDS: u32 = 4;
+
+/// The weapon-record key the engine's parser stores at `weapon+0x4c`.
+pub const ORIGINAL_ARMOR_DAMAGE_KEY: &str = "ARMOR_DAMAGE";
+
+/// The weapon-record key the engine's parser stores at `weapon+0x50`.
+pub const ORIGINAL_HEALTH_DAMAGE_KEY: &str = "HEALTH_DAMAGE";
+
+/// One shipped gun record's damage: the (gun, ammunition kind) cell of the
+/// original's table, with each amount's source span.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalGunAmmoDamage {
+    gun: u32,
+    ammo: u32,
+    record: String,
+    damage: DeclaredWeaponDamage,
+}
+
+impl OriginalGunAmmoDamage {
+    /// The loadout gun id, `0..=4`.
+    #[must_use]
+    pub const fn gun(&self) -> u32 {
+        self.gun
+    }
+
+    /// The ammunition kind, `0..=3`.
+    #[must_use]
+    pub const fn ammo(&self) -> u32 {
+        self.ammo
+    }
+
+    /// The `weapons.zrd` record the engine's map answers for the pair.
+    #[must_use]
+    pub fn record(&self) -> &str {
+        &self.record
+    }
+
+    /// The two amounts, each with an observed provenance naming its bytes.
+    #[must_use]
+    pub const fn damage(&self) -> &DeclaredWeaponDamage {
+        &self.damage
+    }
+}
+
+/// The damage table `weapons.zrd` ships for the original's guns: one cell per
+/// (gun, ammunition kind), every amount read from the record the engine's own
+/// map selects.
+///
+/// Units are **not** stated by the member (`weapons.zrd` carries bare numbers);
+/// the channel names are the engine parser's (`ARMOR_DAMAGE` → `weapon+0x4c`,
+/// subtracted from the victim's armor pool; `HEALTH_DAMAGE` → `weapon+0x50`,
+/// subtracted from the health pool), so the amounts are in the engine's own
+/// pool units and nothing is converted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalGunDamageTable {
+    cells: Vec<OriginalGunAmmoDamage>,
+    unmeasured: Vec<String>,
+    claim: Provenance,
+}
+
+impl OriginalGunDamageTable {
+    /// Every cell whose two amounts were read.
+    #[must_use]
+    pub fn cells(&self) -> &[OriginalGunAmmoDamage] {
+        &self.cells
+    }
+
+    /// The cell for a (gun, ammunition kind) pair, when it was read.
+    #[must_use]
+    pub fn cell(&self, gun: u32, ammo: u32) -> Option<&OriginalGunAmmoDamage> {
+        self.cells
+            .iter()
+            .find(|cell| cell.gun == gun && cell.ammo == ammo)
+    }
+
+    /// The records the map names that did not state both amounts as numbers,
+    /// each with what was missing. Empty when the table is complete.
+    #[must_use]
+    pub fn unmeasured(&self) -> &[String] {
+        &self.unmeasured
+    }
+
+    /// The observation backing the table as a whole: the `weapons.zrd` member.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.claim
+    }
+
+    /// What the table says about `f27.d.limit.ammo_names_damage`: measured when
+    /// every cell was read, otherwise partly measured with the shortfall counted.
+    #[must_use]
+    pub fn limit_evidence(&self) -> LimitEvidence {
+        let expected = ORIGINAL_GUN_COUNT * ORIGINAL_DAMAGE_AMMO_KINDS as usize;
+        if self.cells.len() == expected && self.unmeasured.is_empty() {
+            LimitEvidence::Measured {
+                provenance: self.claim.clone(),
+            }
+        } else if self.cells.is_empty() {
+            LimitEvidence::Unmeasurable {
+                reason: format!(
+                    "no gun record stated both damage amounts: {:?}",
+                    self.unmeasured
+                ),
+            }
+        } else {
+            LimitEvidence::PartlyMeasured {
+                provenance: self.claim.clone(),
+                unmeasured: expected - self.cells.len(),
+            }
+        }
+    }
+}
+
+/// Reads the damage table out of a decoded `weapons.zrd`.
+///
+/// A record the map names but the document lacks, or one whose amount is not a
+/// number, is listed in [`OriginalGunDamageTable::unmeasured`] and its cell is
+/// absent: nothing is defaulted.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError::Span`] when a span or claim
+/// id cannot be built.
+pub fn original_gun_damage_table_from_document(
+    document: &crate::original_airframe::SpannedDocument,
+) -> Result<OriginalGunDamageTable, crate::original_airframe::OriginalImportError> {
+    use crate::original_airframe::{OriginalImportError, SpannedValue};
+
+    let span_error = |detail: String| OriginalImportError::Span(detail);
+    let mut cells = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (gun, base) in (0u32..).zip(ORIGINAL_GUN_RECORD_BASES) {
+        for ammo in 0..ORIGINAL_DAMAGE_AMMO_KINDS {
+            let name = format!("wep_{:02}", base + ammo);
+            let Some(body) = find_weapon_record(document.root(), &name) else {
+                unmeasured.push(format!("{name}: no such record"));
+                continue;
+            };
+            let amount = |key: &str| -> Option<&SpannedValue> {
+                body.chunks(2).find_map(|field| {
+                    let [field_key, value] = field else {
+                        return None;
+                    };
+                    (field_key.as_text() == Some(key))
+                        .then(|| value.as_list().and_then(<[SpannedValue]>::first))
+                        .flatten()
+                        .filter(|node| node.as_scalar_f64().is_some_and(f64::is_finite))
+                })
+            };
+            let (Some(armor), Some(health)) = (
+                amount(ORIGINAL_ARMOR_DAMAGE_KEY),
+                amount(ORIGINAL_HEALTH_DAMAGE_KEY),
+            ) else {
+                unmeasured.push(format!("{name}: an amount is absent or not a number"));
+                continue;
+            };
+            let known = |node: &SpannedValue, channel: &str| {
+                let claim = format!("f27.e2.damage.{name}.{channel}");
+                let value = node.as_scalar_f64().expect("filtered to a finite number");
+                document.provenance(node, &claim).map(|provenance| {
+                    Resolved::Known(cs_types::content::Known::new(value, provenance))
+                })
+            };
+            cells.push(OriginalGunAmmoDamage {
+                gun,
+                ammo,
+                record: name.clone(),
+                damage: DeclaredWeaponDamage {
+                    armor: known(armor, "armor")?,
+                    internal: known(health, "health")?,
+                },
+            });
+        }
+    }
+    let claim = document
+        .provenance(document.root(), "f27.e2.gun-ammunition-damage-table")
+        .map_err(|error| span_error(error.to_string()))?;
+    Ok(OriginalGunDamageTable {
+        cells,
+        unmeasured,
+        claim,
+    })
+}
+
+/// The body of the first `name` record found anywhere in the tree.
+fn find_weapon_record<'a>(
+    node: &'a crate::original_airframe::SpannedValue,
+    name: &str,
+) -> Option<&'a [crate::original_airframe::SpannedValue]> {
+    let children = node.as_list()?;
+    for (index, child) in children.iter().enumerate() {
+        if child.as_text() == Some(name)
+            && let Some(body) = children.get(index + 1).and_then(|body| body.as_list())
+        {
+            return Some(body);
+        }
+        if let Some(found) = find_weapon_record(child, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Reads the shipped `weapons.zrd` (`ZBD/zrdr.zbd`) of the installation at
+/// `install_root` and returns its gun damage table.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] for an undiscoverable
+/// installation, an unreadable archive, a missing or undecodable member.
+pub fn read_original_gun_damage_table(
+    install_root: &std::path::Path,
+) -> Result<OriginalGunDamageTable, crate::original_airframe::OriginalImportError> {
+    use crate::ordnance::ORIGINAL_WEAPONS_MEMBER;
+    use crate::original_airframe::{OriginalImportError, READER_ARCHIVE, SpannedDocument};
+    use cs_formats::io::ParseContext;
+    use cs_formats::zbd::{ZbdProbe, dispatch, read_reader_archive, read_version_one_index};
+
+    let io = |error: String| OriginalImportError::Io(error);
+    let archive_error = |error: String| OriginalImportError::Archive(error);
+    let found = cs_assets::install::discover(install_root).map_err(|e| io(e.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest);
+    let bytes = std::fs::read(install_root.join(READER_ARCHIVE)).map_err(|e| io(e.to_string()))?;
+    let spelling =
+        cs_types::install::RelativePath::new(READER_ARCHIVE).map_err(|e| io(e.to_string()))?;
+    let mut context = ParseContext::with_defaults("original_gun_damage");
+    let decision = dispatch(ZbdProbe::new(READER_ARCHIVE, &spelling, &bytes))
+        .map_err(|e| archive_error(e.to_string()))?;
+    let index = read_version_one_index(&mut context, decision, &bytes)
+        .map_err(|e| archive_error(e.to_string()))?;
+    let table = index.member_table();
+    let archive = read_reader_archive(&mut context, &table, index.data())
+        .map_err(|e| archive_error(e.to_string()))?;
+    let entry = archive
+        .entries()
+        .find(|entry| {
+            String::from_utf8_lossy(entry.name()).eq_ignore_ascii_case(ORIGINAL_WEAPONS_MEMBER)
+        })
+        .ok_or_else(|| OriginalImportError::MemberMissing {
+            member: ORIGINAL_WEAPONS_MEMBER.to_owned(),
+        })?;
+    let content = entry.content().to_vec();
+    let member_sha256 = cs_assets::install::sha256(&content);
+    let document = SpannedDocument::decode(
+        install_sha256,
+        ORIGINAL_WEAPONS_MEMBER,
+        &content,
+        entry.span().offset,
+        member_sha256,
+    )?;
+    original_gun_damage_table_from_document(&document)
 }
 
 // ---------------------------------------------------------------- fixture ----
