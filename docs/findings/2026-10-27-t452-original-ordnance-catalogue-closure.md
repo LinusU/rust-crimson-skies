@@ -41,8 +41,8 @@ every value nobody measured as a named claim instead of a default.
   `read_original_catalogue` (the production reader),
   `catalogue_measured_ordnance`, `OriginalCatalogueCoverage` and
   `original_catalogue_coverage`, plus the claim ids this stage records.
-- `crates/cs_app/tests/accept_t452_ordnance_catalogue.rs` (**new**, 14 tests:
-  9 synthetic, 5 retail) and `crates/cs_app/tests/evidence_report_t452.rs`
+- `crates/cs_app/tests/accept_t452_ordnance_catalogue.rs` (**new**, 15 tests:
+  10 synthetic, 5 retail) and `crates/cs_app/tests/evidence_report_t452.rs`
   (**new**, evidence harness, not an acceptance test).
 - `crates/cs_app/tests/suite_a.rs` (wiring: two `mod` declarations).
 - This file and `docs/findings/evidence/T452.json`.
@@ -113,6 +113,14 @@ rule was the observable gap. It is now a declared property of the fuse:
 models are production code, and the measured one is exercised by a test that
 shows the difference: a target crossing that begins and ends inside one step is
 caught by the swept model and missed by the original's single sample.
+
+**The sample's target phase is stated, not claimed as measured.** The measured
+sample is the item's position at the start of its step against the target's
+position as the world held it at that moment. `TargetPath::current()` is this
+model's end-of-tick target position, which is what the sampling uses; whether
+the original read the target before or after the target's own advance is
+T452.02's open `t452_02.limit.position_advance` (item side) together with the
+T2116/T2120 target-position question, and is not settled here.
 
 **This is not a claim that the swept model is wrong for the product.** The
 sheet's AC01 requires a fast near-pass to trigger, which is the swept model;
@@ -210,9 +218,14 @@ the unmeasured tradeoff (`t452.limit.nitro_tradeoff`) instead of choosing
    `on release` for all sixteen, because T452.02 found no arming condition on
    the proximity path besides the fuse's own live conditions (`RANGE_MINIMUM`
    gates impact detonations, not the proximity burst). Lost target: measured
-   coast-then-detonate-at-end-of-`RANGE` for the fifteen records task #454
-   covers, and an explicit unmeasured rule for `wep_25`. Nitro: the measured
-   values and both gaps, as above.
+   coast-then-detonate-at-end-of-`RANGE` for the twelve records task #454
+   covers (the thirteen targeted entries minus the glidebomb `wep_25`), and an
+   explicit unmeasured rule for `wep_25`. The rule is only mapped when the
+   record's end of `RANGE` **detonates** (`OriginalRangeEnd::Detonates`, which
+   the twelve measured records do): a record that declared `EXPIRES` without
+   `DETONATE_AT_RANGE` would end some other way that nothing measured, so it
+   keeps the claim instead of being folded into `CoastThenDetonate`. Nitro: the
+   measured values and both gaps, as above.
 5. **A code/test pass alone awards at most checked.** This report claims
    `implemented`; the reviewer's merge awards `checked`. No `verified_original`
    is self-awarded, and no agent review replaces the owner's approval.
@@ -231,6 +244,7 @@ the unmeasured tradeoff (`t452.limit.nitro_tradeoff`) instead of choosing
 | which slot holds a record with no `ROCKET` flag | `t452_04.limit.rocket_flag_missing` | `wep_25` | #452 |
 | what each clustered sub-munition does | `t454.limit.swarm` | 11 entries | #454 follow-up |
 | the end-of-flight trigger of `wep_13` and `wep_26` | `t452.limit.fuse` | 2 entries | #452 |
+| whether the cannonball `wep_28` is a hardpoint component at all | `t452_01.limit.wep_28` (carried from T452.01) | `wep_28`; it is named in `excluded`, never folded into a family | a T452.01 follow-up |
 | `wep_25`'s behavior after a lost target | `t452.limit.lost_target` | `wep_25` | a #454 follow-up |
 | the charge-bounded nitro rule as a runtime variant | `t452.limit.nitro_activation_rule` | the boost model; every airframe with `nitro` | filed follow-up (#452 note) |
 | the nitro extra thrust and authority tradeoff | `t452.limit.nitro_tradeoff` | the boost model | #452 |
@@ -253,31 +267,61 @@ re-run, and the file restored from git:
 | the builder takes `DETONATION_DISTANCE` as a fuse without requiring a seeker | `accept_t452_retail_each_fuse_is_the_records_own_trigger` (`wep_12`) |
 | the catalogue drops the per-entry runtime-lowering claim | `accept_t452_retail_every_entry_names_the_values_it_does_not_measure` |
 | an unmeasured lost-target rule becomes `Coast` | `accept_t452_a_guided_entry_names_its_lost_target_rule_or_its_claim` |
+| a record whose end of `RANGE` does not detonate is folded into `CoastThenDetonate` | `accept_t452_an_unmeasured_range_end_is_a_claim_not_a_coast_detonate` |
 
 The retail tests are the second half of the sensitivity: they re-read the
 owner's installation through the production readers on every run, so a changed
 record, a changed family, a changed fuse radius or a changed claim fails rather
-than passes.
+than passes. The reviewer re-ran the selection on the reviewed branch head: 15
+tests, 15 passed, 0 failed, with `CS_GAME_DIR` set and `--include-ignored`.
 
 ## Review
 
-**Implementer:** `deepseek-1` (agent, model `deepseek-v4.1-flash`).
-**Reviewer:** to be recorded by the reviewing agent; this session hands the
-branch over without reviewing its own work. F28-D is mission-semantics and
-fidelity territory, so the project's preference is a reviewer that is a
-different agent instance or model with a fresh context. Nothing here is
-original-run or human evidence; a merge awards at most **checked**.
+**Implementer:** `deepseek-1` (agent, model `deepseek-v4.1-flash`), session
+2026-10-27 21:03–21:58, which handed the branch over without reviewing it.
+**Reviewer:** `deepseek-1` (same agent name and model) in a **separate session
+with a fresh context**, which read the diff, the spec section, the four measured
+findings and the evidence contract, re-ran every check and fixed what it found.
+The reviewer is not an independent model, and no agent review — fresh context or
+not — replaces the owner's human approval. F28-D is mission-semantics and
+fidelity territory, so the project's preference is a different agent instance or
+model; that preference was not available in this rotation and is recorded here
+rather than glossed.
+
+What the review changed:
+
+- `measured_lost_target` no longer folds *every* measured rule into
+  `CoastThenDetonate`: only a record whose end of `RANGE` detonates, which is
+  what task #454 measured; anything else keeps `t452.limit.lost_target`. Pinned
+  by `accept_t452_an_unmeasured_range_end_is_a_claim_not_a_coast_detonate`.
+- A rejected `DETONATION_DISTANCE` is reported as
+  `CatalogueError::InvalidTriggerRadius`, not as a rejected timer duration.
+- `ProximitySampling::StartOfStepSample`'s documentation no longer claims the
+  target's read phase as measured (see "The sample's target phase" above).
+- The retail coverage test pins `wep_28` as a named exclusion and asserts no
+  component is both catalogued and excluded.
+- The evidence report now carries every unmeasured value in its `unknowns`
+  list (derived from the catalogue's own claim ids) and is validated
+  structurally, not with `--require-pass` (see "Evidence" below). No limitation
+  was removed to satisfy the validator.
 
 ## Evidence
 
 `private/evidence/T452/acceptance.json`, committed as
 `docs/findings/evidence/T452.json`, validates with
 `python3 tools/validate_evidence.py private/evidence/T452/acceptance.json
---artifact-root private/evidence/T452 --require-pass`. It records:
+--artifact-root private/evidence/T452`. It records:
 
 - `capabilities: ["retail", "synthetic"]`, `claim: "implemented"`;
-- `tests` — the `accept_t452_` selection: 14 tests (9 synthetic, 5 retail),
+- `tests` — the `accept_t452_` selection: 15 tests (10 synthetic, 5 retail),
   all run with `--include-ignored` and `CS_GAME_DIR` set;
+- `unknowns` — every value the catalogue does not measure, one string per
+  distinct claim id, **derived** by the harness from the catalogue's own
+  `CatalogueUnknown` rows rather than typed in. It is deliberately nonempty:
+  `--require-pass` is not used, because it rejects a report with unresolved
+  issues, and removing a limitation to satisfy a validator is exactly what
+  AGENTS.md forbids. The report's `claim` is `implemented`, which the schema
+  permits with unresolved issues;
 - `install_sha256` and `content_sha256`, measured by production
   `cs_assets::install` discovery, never typed in;
 - two hashed artifacts: `cargo-test.log` (the recorded acceptance run) and
@@ -288,14 +332,13 @@ original-run or human evidence; a merge awards at most **checked**.
   Identifiers, numbers and digests only: no original display text, no script
   text.
 
-`unknowns` is empty because the validator's `--require-pass` rejects a nonempty
-list; the fourteen limitations are therefore recorded in the four places the
-validator does not read for that field — the report's `review.method`, the
-hashed `original-catalogue.json`, the code's claim ids and this file — rather
-than removed. The report's `candidate_tree` names the tree that was measured,
-which is the code-and-test commit; this file is the documentation commit that
-follows it, so the report is one documentation commit behind the branch head
-and nothing it measured changed.
+The fifteen claim ids the catalogue records, plus `wep_28`'s carried
+`t452_01.limit.wep_28`, are recorded in all four places: the report's
+`unknowns` and `review.method`, the hashed `original-catalogue.json`, the code's
+claim ids and this file. The report's `candidate_tree` names the tree that was
+measured, which is the code-and-test commit; this file is the documentation
+commit that follows it, so the report is one documentation commit behind the
+branch head and nothing it measured changed.
 
 ## Not claimed
 
