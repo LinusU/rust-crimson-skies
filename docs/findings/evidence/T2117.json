@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T2117",
+ "candidate_tree": "369c395b9f13e575f38071a7b6a69ebb8c55be02",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-27T11:03:55Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_t2117_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t2117_guided_rocket_lifetime_end::accept_t2117_image_pins_the_lifetime_end_and_teardown", "status": "pass", "evidence": ["cargo-test.log", "lifetime-end.json"]}, {"id": "accept_t2117_guided_rocket_lifetime_end::accept_t2117_flare_declares_no_range_and_cluster_census", "status": "pass", "evidence": ["cargo-test.log", "lifetime-end.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "b51ef67a6bb99f935cba6ed65b7ecf6153d218f36322ed653209162bc665f686", "kind": "log"}, {"path": "lifetime-end.json", "sha256": "a3219ae8e4e4f942631915534a21f4e56c19466a78a1b6061bae169e68ebaa42", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer, not independent)", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR and CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second record, lifetime-end.json, holding the engine image digest, the resolutions and the limitations. MEASURED by static analysis of the owner-supplied decrypted executable (byte windows and closed caller inventories pinned in the acceptance test): at the end of RANGE (record +0x1c, default 500.0 at 0x5ad80b when the key is absent) the step either detonates (0x5ac3a0) or removes the node silently by setting its state to 0 at 0x5b0318; the cleanup walk 0x5af900 releases a state-0 node one frame later through 0x5b08d0; a session teardown (0x5ae810/0x5ae950 -> 0x5ae820 -> 0x5ae690(0)) destroys the visuals of every pool node and frees the pool and the weapon table without calling any projectile callback; CLUSTER_SIZE (descriptor +0x0c) is read only by the getter 0x4bad90 (two callers) and a byte test at 0x4ab16b, never by the launch routine 0x5aef40. STILL UNMEASURED (none claimed): see the limitations array of lifetime-end.json. The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
