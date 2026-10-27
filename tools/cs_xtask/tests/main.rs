@@ -17,6 +17,7 @@ mod accept_f00_d_workspace_bootstrap;
 mod accept_f54_x7_missing_harness_binary;
 mod accept_f61_a_release_contents;
 mod accept_f61_a_user_data_policy;
+mod accept_findings_preimage_digest_notes;
 mod accept_parity_m01_compare;
 mod accept_t1170_push_guard;
 mod accept_t1265_fleet_target_dirs;
