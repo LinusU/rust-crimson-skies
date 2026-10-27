@@ -3192,14 +3192,25 @@ fn catalogue_unknowns(
 /// The blast reader is of `ROCKET`-flagged records (task #454), so a guided
 /// record without that flag — the glidebomb `wep_25` — has no measured rule and
 /// the catalogue names [`T452_LOST_TARGET_CLAIM`] instead of assuming it.
+///
+/// The rule is measured per record by task #454, and what the end of `RANGE`
+/// does is part of it: [`OriginalRangeEnd::Detonates`] is the measured
+/// coast-then-detonate rule, and no retail rocket declares `EXPIRES`. A record
+/// that *did* declare `EXPIRES` without `DETONATE_AT_RANGE` would not detonate
+/// at the end of its range, and what removes it then is unmeasured
+/// (`t454.limit.range_end_removal`), so it keeps the claim rather than being
+/// folded into the measured rule.
 fn measured_lost_target(
     record: &str,
     blasts: &[cs_content::ordnance::OriginalRocketBlast],
 ) -> Option<LostTargetBehavior> {
     let blast = blasts.iter().find(|blast| blast.record == record)?;
-    blast
-        .lost_target_rule()
-        .map(|_| LostTargetBehavior::CoastThenDetonate)
+    match blast.lost_target_rule() {
+        Some(rule) if rule.range_end == cs_content::ordnance::OriginalRangeEnd::Detonates => {
+            Some(LostTargetBehavior::CoastThenDetonate)
+        }
+        _ => None,
+    }
 }
 
 /// Builds the measured catalogue from an already-read component table, the
@@ -3270,8 +3281,9 @@ pub fn original_catalogue(
                     unknowns.push(named_unknown(
                         &row.record,
                         T452_LOST_TARGET_CLAIM,
-                        "no measurement covers this guided record's behavior after it \
-                         loses its target, so no rule is assumed",
+                        "the measured rule (task #454) is coast-then-detonate at the end of \
+                         a RANGE that detonates, and nothing measures this record's behavior \
+                         after it loses its target, so no rule is assumed",
                     )?);
                 }
                 CataloguedGuidance::Targeted { lost_target }
@@ -3285,7 +3297,7 @@ pub fn original_catalogue(
         {
             Some(radius) => {
                 let fuse = ProximityFuse::try_new(radius)
-                    .map_err(|_| CatalogueError::InvalidDuration { seconds: radius })
+                    .map_err(|_| CatalogueError::InvalidTriggerRadius { radius_m: radius })
                     .map_err(OriginalCatalogueError::Catalogue)?
                     .with_sampling(ProximitySampling::StartOfStepSample);
                 CataloguedFuse::Proximity {

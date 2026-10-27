@@ -554,9 +554,13 @@ pub enum ProximitySampling {
     /// step (`FLIGHT-PHYSICS`, "Check relative movement").
     SweptRelativePath,
     /// One sample per step: the item's position at the **start** of the step
-    /// against the target's position at its end. The measured original rule
-    /// (T452.02), which misses a crossing that happens entirely between two
-    /// samples.
+    /// against the target's position as the world holds it for that step (here
+    /// [`TargetPath::current`], the end of the tick). The measured original
+    /// rule (T452.02), which misses a crossing that happens entirely between
+    /// two samples. Which frame stage the original reads the target at — before
+    /// or after the target's own advance — is *unmeasured*
+    /// (`t452_02.limit.position_advance`, T452.02's "still unknown"), so this
+    /// model states the phase it uses rather than claiming the original's.
     StartOfStepSample,
 }
 
@@ -2386,6 +2390,14 @@ pub enum CatalogueError {
         /// The refused duration.
         seconds: f64,
     },
+    /// A record's stated `DETONATION_DISTANCE` cannot be a trigger radius: it
+    /// is not a positive finite number. Kept separate from
+    /// [`InvalidDuration`](Self::InvalidDuration) so a rejected radius is never
+    /// reported as a rejected timer.
+    InvalidTriggerRadius {
+        /// The refused radius, in meters.
+        radius_m: f64,
+    },
 }
 
 impl fmt::Display for CatalogueError {
@@ -2416,6 +2428,11 @@ impl fmt::Display for CatalogueError {
             Self::InvalidDuration { seconds } => write!(
                 f,
                 "a timed catalogue fuse must state a positive finite duration, not {seconds}"
+            ),
+            Self::InvalidTriggerRadius { radius_m } => write!(
+                f,
+                "a catalogue proximity fuse's trigger radius must be positive and finite, \
+                 not {radius_m}"
             ),
         }
     }

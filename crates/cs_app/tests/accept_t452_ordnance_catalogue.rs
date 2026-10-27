@@ -33,8 +33,8 @@ use cs_sim::weapons::guns::ProjectileSegment;
 use cs_sim::weapons::{
     CatalogueError, CataloguedFuse, CataloguedGuidance, CataloguedMount, CataloguedOrdnance,
     FuseDecision, FuseRule, FuseTrigger, LostTargetBehavior, OrdnanceFamily, OrdnanceId,
-    OrdnanceRegistry, OrdnanceRegistryError, OrdnanceState, ProjectileOrdnance, ProximityFuse,
-    ProximitySampling, ProximityShape, TargetPath,
+    OrdnanceRegistry, OrdnanceRegistryError, OrdnanceState, ProximityFuse, ProximitySampling,
+    ProximityShape, TargetPath,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
@@ -309,6 +309,26 @@ fn accept_t452_a_guided_entry_names_its_lost_target_rule_or_its_claim() {
 }
 
 #[test]
+fn accept_t452_an_unmeasured_range_end_is_a_claim_not_a_coast_detonate() {
+    // Task #454 measured coast-then-detonate-at-end-of-RANGE for the twelve
+    // `ROCKET` records: locked on, no `EXPIRES`, so the end of range detonates.
+    // A record that declares `EXPIRES` without `DETONATE_AT_RANGE` is outside
+    // that measurement — what removes it at the end of range is unmeasured
+    // (`t454.limit.range_end_removal`) — so the catalogue names the claim rather
+    // than folding it into the measured rule.
+    let mut expires = measured_blast("wep_04", 30.0, None);
+    expires.keys.insert("EXPIRES".to_owned());
+    let catalogue = catalogue_of(
+        vec![row("wep_04", DeclaredOrdnanceFamily::GuidedRocket)],
+        &[expires],
+    );
+    let guided = entry(&catalogue, "wep_04");
+    assert!(guided.guidance().is_targeted());
+    assert_eq!(guided.lost_target(), None);
+    assert!(guided.names_claim(T452_LOST_TARGET_CLAIM));
+}
+
+#[test]
 fn accept_t452_an_unmeasured_mount_is_a_claim_not_a_default_slot() {
     let mut glidebomb = row("wep_25", DeclaredOrdnanceFamily::GuidedRocket);
     glidebomb.mount = OriginalMountDeclaration::Unknown {
@@ -501,6 +521,24 @@ fn accept_t452_retail_every_declared_component_id_resolves_in_the_registry() {
     assert_eq!(catalogue.rocket_slots, 8);
     assert_eq!(catalogue.ammunition_slots, 4);
     assert_eq!(catalogue.hardpoint_points, 2);
+
+    // The excluded records are named, and no catalogued component is also
+    // excluded: the thirty-one `CANNON` machine and turret guns are F27's, and
+    // the cannonball `wep_28` reaches no stated family (T452.01's
+    // `t452_01.limit.wep_28`), so it is named as a limitation rather than
+    // catalogued with an invented one.
+    assert!(
+        catalogue.excluded.iter().any(|record| record == "wep_28"),
+        "the cannonball is a named exclusion: {:?}",
+        catalogue.excluded
+    );
+    for declared in &catalogue.entries {
+        assert!(
+            !catalogue.excluded.contains(&declared.record),
+            "{} is both catalogued and excluded",
+            declared.record
+        );
+    }
 }
 
 #[test]
@@ -643,7 +681,4 @@ fn accept_t452_retail_the_projectile_component_type_is_still_the_runtime_one() {
             declared.record
         );
     }
-    // The runtime type is still what a session registers; the catalogue only
-    // answers coverage.
-    let _: Option<&ProjectileOrdnance> = None;
 }
