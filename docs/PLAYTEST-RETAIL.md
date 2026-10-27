@@ -66,7 +66,7 @@ turn `RETAIL_STEER`, rudder only — and the spawn went back to its designed
 | | chosen value | why this one |
 | --- | --- | --- |
 | world container | `ZBD/C1C/gamez.zbd` | the group #629 imported, so this lane reuses its measured reader and its exact per-container mesh naming |
-| area | the node subtree of stored node slot **517**, authored name `piratezep` | a record of the world node's own stored child list; measured 793 nodes, 401 of them binding a mesh, **8 673 stored triangles**, composed extent 106.3 × 217.7 × 839.5 canonical m |
+| area | the node subtree of stored node slot **517**, authored name `piratezep` | a record of the world node's own stored child list; measured 793 nodes, 401 of them binding a mesh, **8 673 stored triangles**, composed extent 106.3 × 217.7 × 839.5 canonical m; the documented selection draws **293 bindings / 8 108 triangles** of that stored set (sections below) |
 | aircraft container | `ZBD/planes.zbd` | the shared aircraft archive |
 | aircraft airframe | the root named **`bloodhawk`**, found by name through the production `SceneGraph::root` | F11's identity rule: an airframe references a root in PLANES.ZBD, never a mesh-array position |
 | aircraft meshes | the **whole intact airframe** (#665): the subtree of node slot **2296** `healthy`, one LOD band (`nearest`, slot 2299) selected by the F11-B rule, plus the propeller node slot **2541** `staticprop1`, drawn and spun about its measured hub (#710) | measured 16 mesh bindings, 927 triangles, composed extent about 11.6 × 2.7 × 10.6 units; 24 of the airframe's 40 bindings are listed as undrawn |
@@ -369,8 +369,8 @@ behaviour this free-flight playtest never runs), so the **flat-colour card**
 rule (`flat_card_reason`, `PlaytestConfig::hide_flat_colour_cards`) hides both
 from drawing **and** from collision, listed with their reason in `area_undrawn`.
 The drawn set is
-293 of the 401 stored bindings — two fewer than #753's 295 — and colliders
-follow the drawn set. The before/after GPU frames of that end of the airship
+293 of the 401 stored bindings — two fewer than #753's 295 — covering
+8 108 of the 8 673 stored triangles, and colliders follow the drawn set. The before/after GPU frames of that end of the airship
 are measured in `docs/findings/2026-10-08-playtest-area-flat-shape.md` (hashes
 only; the PNGs stay under `private/`).
 

@@ -26,8 +26,10 @@ UNCALIBRATED AGAINST AN ORIGINAL RUN #358)**. You fly the whole intact original
 (`ZBD/planes.zbd`: 16 mesh bindings, 927 triangles: fuselage, wings, ailerons,
 elevators, rudder, canopy, pilot and the propeller disc, which spins with the
 engine) beside one original airship
-of `ZBD/C1C/gamez.zbd` (subtree `piratezep`, 401 mesh records, 8 673
-triangles). The controls below are the same. The airship's colliders are derived
+of `ZBD/C1C/gamez.zbd` (subtree `piratezep`: 401 stored mesh bindings / 8 673
+stored triangles, of which the documented selection — the #753 selection's one
+intact variant of every part, minus the two flat-colour landing cards #795
+hides — draws 293 bindings / 8 108 triangles). The controls below are the same. The airship's colliders are derived
 from the triangles it draws: fly into it and the HUD counts an obstacle
 contact and the aircraft stops. `R` resets the aircraft only (the area is
 never respawned). `--aircraft bloodhawk` is the only documented aircraft and the
