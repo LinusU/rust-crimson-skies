@@ -1,5 +1,5 @@
 //! Evidence-report harnesses for the per-mission binding stages M01-A,
-//! M02-A, M03-A, M04-A, M05-A, M06-A, M07-A, M08-A, M09-A, M10-A, M12-A, M13-A, M16-A,
+//! M02-A, M03-A, M04-A, M05-A, M06-A, M07-A, M08-A, M09-A, M10-A, M11-A, M12-A, M13-A, M16-A,
 //! M17-A, M18-A, M19-A, M21-A, M24-A, for the mission-compatibility stages
 //! M02-B, M03-B, M04-B, M06-B, M08-B, M10-B, M12-B, M13-B, M16-B, M17-B,
 //! M18-B, M19-B and M24-B, for the whole-campaign binding stage
@@ -12,8 +12,8 @@
 //! whole-installation fingerprint.
 //!
 //! These tests are deliberately **not** named `accept_m01_a_*` …
-//! `accept_m08_a_*` … `accept_m10_a_*` … `accept_m16_a_*` … `accept_m17_a_*` …
-//! `accept_m18_a_*` … `accept_m19_a_*` … `accept_m21_a_*` … `accept_f50_b_*` …
+//! `accept_m08_a_*` … `accept_m10_a_*` … `accept_m11_a_*` … `accept_m16_a_*` …
+//! `accept_m17_a_*` … `accept_m18_a_*` … `accept_m19_a_*` … `accept_m21_a_*` … `accept_f50_b_*` …
 //! `accept_f50_c_*`: they are not part
 //! of the acceptance
 //! suites, they fail
@@ -51,8 +51,8 @@
 //! the acceptance run passed. The bindings' own unbound checklist entries are
 //! **not** dropped anywhere: they are carried in
 //! `missions/bindings/M01.json` … `missions/bindings/M08.json`, `M10.json`,
-//! `M12.json`, `M13.json`, `M16.json`, `M17.json`, `M18.json`, `M19.json`,
-//! `M21.json`, `M24.json` and in
+//! `M11.json`, `M12.json`, `M13.json`, `M16.json`, `M17.json`, `M18.json`,
+//! `M19.json`, `M21.json`, `M24.json` and in
 //! `docs/findings/`, which is where the product-incompleteness state lives
 //! (`AUDIT-PLAN-SYNC`: keep the states separate). The claim is `implemented`,
 //! never `checked` or `verified_original`.
@@ -169,6 +169,7 @@ mod m09_a;
 mod m09_b;
 mod m10_a;
 mod m10_b;
+mod m11_a;
 mod m12_a;
 mod m12_b;
 mod m13_a;

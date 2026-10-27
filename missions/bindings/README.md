@@ -136,6 +136,18 @@ directory is original game data — no assets, scripts or extracted bytes.
   which sorts earlier (see
   `docs/findings/2026-10-02-m10-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M11.json` — the M11 binding output (stage M11-A), generated and pinned the
+  same way by `accept_m11_a_the_committed_record_is_what_the_installation_derives`
+  (`CS_REGENERATE_M11_BINDING=1` rewrites it). Its declared title
+  `The Stolen Scarlet` is carried by no localized row; the original spells the
+  mission `The Stolen Starlet` at row 3490 (`Hollywood - Nathan Zachary & The
+  Stolen Starlet` at row 3460). The join is therefore the owner ruling of
+  Rally #470 (`title-rulings.tsv`), confirmed exactly at the ruled rows: the
+  title dependency is `Inferred`, the record's `title ruling:` unknown says so,
+  and mission id, world group and program are read from the position the ruled
+  row selects — not from the declared ordinal. Same five resolved critical
+  dependencies, same unverified status (see
+  `docs/findings/2026-10-27-m11-a-source-binding.md`).
 - `M12.json` — the M12 binding output (stage M12-A), generated and pinned the
   same way by `accept_m12_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M12 is the twelfth campaign
@@ -287,17 +299,17 @@ contract those consumers drive.
 
 ## What is not here yet
 
-- `M11.json`, `M14.json`, `M15.json`, `M20.json`,
+- `M14.json`, `M15.json`, `M20.json`,
   `M22.json` and `M23.json` — the per-mission binding outputs of
-  M11-A, M14-A, M15-A, M20-A, M22-A and M23-A, created from
+  M14-A, M15-A, M20-A, M22-A and M23-A, created from
   original data the same way. Every one of them starts unresolved. (Listed
   one by one rather than as ranges, because M19, M21 and M24 are bound while
   M20, M22 and M23 are not.)
 - Titles the installation spells differently — M09, M11, M14, M15, M20, M22
   and M23 — match neither display form. The owner ruling of Rally #470
   (`title-rulings.tsv`, `docs/findings/2026-10-25-owner-ruling-guide-titles.md`)
-  joins each to its retail rows as an inferred claim; M09 is the first of
-  them bound here, the other six wait for their own stages.
+  joins each to its retail rows as an inferred claim; M09, M11 and M14 are
+  bound here, the other four wait for their own stages.
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,
