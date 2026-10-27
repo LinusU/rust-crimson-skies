@@ -1305,7 +1305,7 @@ fn spawn_mesh_presentation(
 /// [`RigidBody::Static`] and is therefore something a swept body is stopped by
 /// (the collider-on-body rule, [`crate::asset_stack`]); a `Sensor` cuboid is a
 /// trigger volume, so it gets **no** rigid body at all and Avian's swept CCD
-/// cannot reach it — see [`trigger_volume_layout`] and the module docs. The
+/// cannot reach it — see `spawn_mesh_trigger_volume` and the module docs. The
 /// event opt-in, the [`Sensor`] marker and the declared [`BodyLayer`] are on the
 /// collider's own entity, which is where Avian reads the first two from and
 /// where the F23 preflight reads the third from.
