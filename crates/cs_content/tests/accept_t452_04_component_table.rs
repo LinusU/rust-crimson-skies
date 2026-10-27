@@ -18,7 +18,7 @@ use cs_content::ordnance::{
     ORIGINAL_HARDPOINTS_SCREEN, ORIGINAL_ORDNANCE_LAYOUT_SCREEN, ORIGINAL_ROCKET_SLOT_ARRAY,
     OriginalClusterShape, OriginalComponentTable, OriginalLifetime, OriginalMountDeclaration,
     OriginalMountLayout, OriginalScreenError, OriginalSlotArray, OriginalWeaponRecord,
-    T452_04_AREA_LIFETIME, T452_04_CLUSTER, T452_04_MOUNT, T452_04_NO_EXPIRES,
+    T452_04_AREA_LIFETIME, T452_04_AREA_RADIUS, T452_04_CLUSTER, T452_04_MOUNT, T452_04_NO_EXPIRES,
     T452_04_PER_AIRFRAME, T452_04_RELEASE_DELAY, T452_04_STATUS_DURATION, T452_04_STATUS_KIND,
     T452_04_VELOCITY_UNIT, classify_original_weapons, original_component_table,
     read_original_component_table,
@@ -26,56 +26,59 @@ use cs_content::ordnance::{
 
 // -------------------------------------------------------------- fixtures ---
 
-/// A hardpoint screen in the shape the original's own declares: two points,
-/// no `deactivate`, so an empty point is still shown.
+/// A hardpoint screen in the shape the original's own declares — one array,
+/// the loop that fills it, no `deactivate` — written with **invented**
+/// identifiers and spacing: the only original facts it carries are the array
+/// name and its count, which the committed findings already state. This is a
+/// synthetic fixture, not the original's text (AGENTS rule 3).
 const HARDPOINTS: &str = "\
 main
 {
 gui_create
 {
 object DT[2]
-for (R = 0; R < 2; R++)
+for (Q = 0; Q < 2; Q++)
 {
-DT[R] = @ctl@PM
-}
-}
-gui_mailbox
-{
-switch (getmessage())
-{
-case 10015:
-AT[BA] = sender.QG
+DT[Q] = @ctl@ZQ
 }
 }
 }
 ";
 
-/// An ordnance screen in the shape the original's own declares: four
-/// ammunition slots, eight rocket slots, and `deactivate` for an empty slot.
+/// An ordnance screen in the shape the original's own declares — four
+/// ammunition slots, eight rocket slots, and a `deactivate` for an empty slot
+/// — again with invented identifiers; the array names and counts are the
+/// measured facts, the statements around them are not the original's.
 const ORDNANCE_LAYOUT: &str = "\
 main
 {
 gui_create
 {
 object QKA[4]
-for (BA = 0; BA < 4; BA++)
+for (K = 0; K < 4; K++)
 {
-QKA[BA] = @ctl@PM
+QKA[K] = @ctl@ZQ
 }
 object RKA[8]
-for (BA = 0; BA < 8; BA++)
+for (K = 0; K < 8; K++)
 {
-RKA[BA] = @ctl@PM
+RKA[K] = @ctl@ZQ
 }
 }
 gui_init
 {
-for (BA = 0; BA < 8; BA++)
+for (K = 0; K < 8; K++)
 {
-UKA = callback($$E$$, 2031, (ZQ), (BA), YKA)
-if (-1 == UKA)
+if (-1 == SLOT)
 {
-deactivate(RKA[BA])
+deactivate(RKA[K])
+}
+}
+for (K = 0; K < 4; K++)
+{
+if (-1 == SLOT)
+{
+deactivate(QKA[K])
 }
 }
 }
@@ -161,7 +164,7 @@ fn incendiary() -> OriginalWeaponRecord {
 /// A screen states its slot count twice — in the array declaration and in the
 /// loop that fills it — and the reader takes both, so a disagreement is a
 /// finding rather than an average. `deactivate` is the screen's own handling of
-/// an empty slot, and the hardpoint screen does not have it.
+/// an empty slot, matched per array, and the hardpoint screen does not have it.
 #[test]
 fn accept_t452_04_a_screen_states_its_slot_array_and_fill_loop() {
     let rockets =
@@ -169,7 +172,7 @@ fn accept_t452_04_a_screen_states_its_slot_array_and_fill_loop() {
     assert_eq!(rockets.array, "RKA");
     assert_eq!(rockets.member, "m.SCRIPT");
     assert_eq!(rockets.slots, 8, "`object RKA[8]`");
-    assert_eq!(rockets.loop_bound, 8, "`for (BA = 0; BA < 8; BA++)`");
+    assert_eq!(rockets.loop_bound, 8, "`for (K = 0; K < 8; K++)`");
     assert!(rockets.is_consistent());
     assert!(
         rockets.deactivates_empty_slots,
@@ -179,6 +182,10 @@ fn accept_t452_04_a_screen_states_its_slot_array_and_fill_loop() {
     let ammunition = OriginalSlotArray::read("m.SCRIPT", ORDNANCE_LAYOUT, "QKA").expect("QKA");
     assert_eq!(ammunition.slots, 4);
     assert_eq!(ammunition.loop_bound, 4);
+    assert!(
+        ammunition.deactivates_empty_slots,
+        "the screen deactivates QKA too"
+    );
 
     let points = OriginalSlotArray::read("h.SCRIPT", HARDPOINTS, "DT").expect("DT");
     assert_eq!(points.slots, 2);
@@ -188,6 +195,29 @@ fn accept_t452_04_a_screen_states_its_slot_array_and_fill_loop() {
         "HARDPOINTS.SCRIPT has no `deactivate`, so both points always show"
     );
 
+    // The empty-slot flag belongs to the array, not to the screen: taking the
+    // call off QKA leaves RKA's handling stated.
+    let mixed = ORDNANCE_LAYOUT.replace("deactivate(QKA[K])", "SLOT = 0");
+    assert_ne!(mixed, ORDNANCE_LAYOUT, "the fixture must have changed");
+    let ammunition = OriginalSlotArray::read("m.SCRIPT", &mixed, "QKA").expect("QKA");
+    let rockets = OriginalSlotArray::read("m.SCRIPT", &mixed, "RKA").expect("RKA");
+    assert!(
+        !ammunition.deactivates_empty_slots,
+        "QKA's empty slots are no longer hidden"
+    );
+    assert!(
+        rockets.deactivates_empty_slots,
+        "RKA's are still hidden: the flag is per array"
+    );
+    let spaced = ORDNANCE_LAYOUT.replace("deactivate(QKA[K])", "deactivate ( QKA[K] )");
+    assert_ne!(spaced, ORDNANCE_LAYOUT, "the fixture must have changed");
+    assert!(
+        OriginalSlotArray::read("m.SCRIPT", &spaced, "QKA")
+            .expect("QKA")
+            .deactivates_empty_slots,
+        "the call's spacing is the original's, not the reader's"
+    );
+
     assert!(OriginalSlotArray::read("m.SCRIPT", "no arrays here", "RKA").is_none());
     assert!(
         OriginalSlotArray::read("m.SCRIPT", "object RKA[8]\nno loop at all", "RKA").is_none(),
@@ -195,8 +225,12 @@ fn accept_t452_04_a_screen_states_its_slot_array_and_fill_loop() {
     );
 
     let disagreeing = ORDNANCE_LAYOUT.replace(
-        "object RKA[8]\nfor (BA = 0; BA < 8; BA++)",
-        "object RKA[8]\nfor (BA = 0; BA < 4; BA++)",
+        "object RKA[8]\nfor (K = 0; K < 8; K++)",
+        "object RKA[8]\nfor (K = 0; K < 4; K++)",
+    );
+    assert_ne!(
+        disagreeing, ORDNANCE_LAYOUT,
+        "the fixture must have changed"
     );
     let refused = OriginalMountLayout::from_screens(HARDPOINTS, &disagreeing)
         .expect("the layout still reads");
@@ -362,6 +396,15 @@ fn accept_t452_04_a_status_flag_records_the_duration_the_record_states() {
         !row.names_claim(T452_04_STATUS_DURATION),
         "this flag states its duration"
     );
+    // Its whole effect is an area and the record states no area at all.
+    assert!(
+        row.names_claim(T452_04_AREA_RADIUS),
+        "an area-denial record declares no radius"
+    );
+    assert!(
+        row.names_claim(T452_04_AREA_LIFETIME),
+        "its effect duration is not stated to be the area's lifetime"
+    );
 
     let undated = record("wep_08", &["ROCKET", "SONIC"], &[], &[], &[]);
     let table = table_with(vec![undated], &layout());
@@ -371,6 +414,28 @@ fn accept_t452_04_a_status_flag_records_the_duration_the_record_states() {
     assert!(row.statuses[0].duration_unit.is_none());
     assert!(row.names_claim(T452_04_STATUS_DURATION));
     assert!(row.names_claim(T452_04_STATUS_KIND));
+
+    // A guided effect record does state its blast radius, so only the area's
+    // lifetime is unknown there.
+    let flash = record(
+        "wep_09",
+        &["ROCKET", "LOCK_ON", "FLASH", "IMPACT_PROXIMITY"],
+        &[("IMPACT_PROXIMITY", 450.0)],
+        &[],
+        &[],
+    );
+    let table = table_with(vec![flash], &layout());
+    let row = table.row("wep_09").expect("one row");
+    assert_eq!(row.family, DeclaredOrdnanceFamily::GuidedRocket);
+    assert_eq!(row.area.radius_m, Some(450.0));
+    assert!(
+        !row.names_claim(T452_04_AREA_RADIUS),
+        "this record states its radius"
+    );
+    assert!(
+        row.names_claim(T452_04_AREA_LIFETIME),
+        "a declared radius with no stated lifetime is an unknown"
+    );
 }
 
 /// A lifetime is only what a record states: `DETONATION_TIME` is one, an absent
@@ -447,8 +512,8 @@ fn accept_t452_04_the_mount_slot_counts_follow_the_declared_layout() {
     let narrow = ORDNANCE_LAYOUT
         .replace("object RKA[8]", "object RKA[3]")
         .replace(
-            "for (BA = 0; BA < 8; BA++)\n{\nRKA[BA]",
-            "for (BA = 0; BA < 3; BA++)\n{\nRKA[BA]",
+            "for (K = 0; K < 8; K++)\n{\nRKA[K]",
+            "for (K = 0; K < 3; K++)\n{\nRKA[K]",
         );
     assert_ne!(narrow, ORDNANCE_LAYOUT, "the fixture must have changed");
     let three = OriginalMountLayout::from_screens(HARDPOINTS, &narrow).expect("a 3-slot layout");
@@ -622,6 +687,14 @@ fn accept_t452_04_retail_every_component_row_is_read_from_its_record() {
     assert_eq!(choker.statuses[0].duration_s, Some(2.0));
     assert_eq!(choker.statuses[0].duration_unit.as_deref(), Some("TIME"));
     assert_eq!(choker.area.radius_m, None, "the choker declares no radius");
+    assert!(
+        choker.names_claim(T452_04_AREA_RADIUS),
+        "an area effect with no stated area is an unknown"
+    );
+    assert!(
+        choker.names_claim(T452_04_AREA_LIFETIME),
+        "and so is its unstated lifetime"
+    );
 
     let smoke = get("wep_13");
     assert_eq!(
@@ -631,6 +704,14 @@ fn accept_t452_04_retail_every_component_row_is_read_from_its_record() {
     assert_eq!(smoke.area.lifetime_s, Some(8.0), "SMOKE_SCREEN's 8 s");
     assert_eq!(smoke.statuses[0].duration_s, Some(8.0));
     assert_eq!(smoke.cluster, OriginalClusterShape::Volley { munitions: 6 });
+    assert!(
+        smoke.names_claim(T452_04_AREA_RADIUS),
+        "the smoke screen states no radius either"
+    );
+    assert!(
+        !smoke.names_claim(T452_04_AREA_LIFETIME),
+        "but it does state how long its smoke lasts"
+    );
 
     let beeper = get("wep_10");
     assert_eq!(beeper.statuses[0].key, "BEEPER");
@@ -703,7 +784,15 @@ fn accept_t452_04_retail_no_record_declares_a_lifetime_key() {
         );
         assert_eq!(
             row.names_claim(T452_04_AREA_LIFETIME),
-            row.area.radius_m.is_some() && row.area.lifetime_s.is_none(),
+            row.area.lifetime_s.is_none()
+                && (row.area.radius_m.is_some()
+                    || row.family == DeclaredOrdnanceFamily::AreaDenialEngine),
+            "{}",
+            row.record
+        );
+        assert_eq!(
+            row.names_claim(T452_04_AREA_RADIUS),
+            row.family == DeclaredOrdnanceFamily::AreaDenialEngine && row.area.radius_m.is_none(),
             "{}",
             row.record
         );
@@ -801,7 +890,8 @@ fn accept_t452_04_retail_every_unknown_names_the_rows_it_affects() {
     assert_eq!(
         counts,
         [
-            (T452_04_AREA_LIFETIME.to_owned(), 14),
+            (T452_04_AREA_LIFETIME.to_owned(), 15),
+            (T452_04_AREA_RADIUS.to_owned(), 2),
             (T452_04_NO_EXPIRES.to_owned(), 15),
             (T452_04_PER_AIRFRAME.to_owned(), 0),
             (T452_04_RELEASE_DELAY.to_owned(), 16),

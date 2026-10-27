@@ -80,10 +80,10 @@
 //! own `object <array>[n]` declaration and fill loop through the base retail
 //! archive). Every value no file states is a named [`OriginalComponentUnknown`],
 //! never a default: the `VELOCITY` unit, what `FIRE_RATE` delays, the absent
-//! `EXPIRES` lifetime, a status effect's gameplay kind, the area's lifetime,
-//! which slot holds a record with no `ROCKET` flag, what each clustered
-//! sub-munition does, and which component fills which slot on a given
-//! airframe. Details and measurements:
+//! `EXPIRES` lifetime, a status effect's gameplay kind, the area-denial
+//! effect's radius and lifetime, which slot holds a record with no `ROCKET`
+//! flag, what each clustered sub-munition does, and which component fills which
+//! slot on a given airframe. Details and measurements:
 //! `docs/findings/2026-10-25-t452-04-component-hardpoints-launch-speeds-and-lifetimes.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -3181,6 +3181,9 @@ pub const T452_04_STATUS_DURATION: &str = "t452_04.limit.status_effect_duration"
 /// The claim id for "an effect area states no lifetime".
 pub const T452_04_AREA_LIFETIME: &str = "t452_04.limit.area_lifetime";
 
+/// The claim id for "an area-denial record states an effect but no radius".
+pub const T452_04_AREA_RADIUS: &str = "t452_04.limit.area_radius";
+
 /// The claim id for "an ordnance-shaped record declares no `ROCKET` flag, so
 /// no screen states which slot holds it".
 pub const T452_04_MOUNT: &str = "t452_04.limit.rocket_flag_missing";
@@ -3260,8 +3263,11 @@ impl From<OriginalScreenError> for OriginalComponentError {
 /// independent statements of the same count, so [`Self::is_consistent`] is a
 /// real check rather than a restatement. `deactivates_empty_slots` is the
 /// screen's own handling of a slot the engine reports as `-1`: the ordnance
-/// screen calls `deactivate(...)` on it, the hardpoint screen has no
-/// `deactivate` at all and always shows both points.
+/// screen calls `deactivate(...)` on an empty slot of each of its two arrays,
+/// the hardpoint screen has no `deactivate` at all and always shows both
+/// points. The call is matched against *this* array's name, so a screen that
+/// hid one list's empty slots and not another's would state that difference
+/// rather than a single screen-wide flag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OriginalSlotArray {
     /// The member the array is declared in.
@@ -3272,7 +3278,8 @@ pub struct OriginalSlotArray {
     pub slots: u32,
     /// The bound the loop that fills it states.
     pub loop_bound: u32,
-    /// Whether the screen deactivates a slot the engine reports as empty.
+    /// Whether the screen calls `deactivate(...)` on an empty slot of this
+    /// array.
     pub deactivates_empty_slots: bool,
 }
 
@@ -3300,7 +3307,7 @@ impl OriginalSlotArray {
             array: array.to_owned(),
             slots,
             loop_bound,
-            deactivates_empty_slots: screen.contains("deactivate("),
+            deactivates_empty_slots: deactivates_empty_slot(screen, array),
         })
     }
 
@@ -3309,6 +3316,30 @@ impl OriginalSlotArray {
     pub fn is_consistent(&self) -> bool {
         self.slots == self.loop_bound
     }
+}
+
+/// Whether the screen calls `deactivate` on an empty slot of `array`.
+///
+/// The screen's own call is `deactivate(<array>[<index>])`. The array name is
+/// matched so two lists in one screen report their empty-slot handling
+/// separately, and the spacing after the call is skipped because it is the
+/// original build's, not this reader's, to decide.
+fn deactivates_empty_slot(screen: &str, array: &str) -> bool {
+    const CALL: &str = "deactivate";
+    let mut rest = screen;
+    while let Some(position) = rest.find(CALL) {
+        let after_call = rest[position + CALL.len()..].trim_start();
+        if let Some(after_open) = after_call.strip_prefix('(') {
+            let after_open = after_open.trim_start();
+            if let Some(after_array) = after_open.strip_prefix(array)
+                && after_array.trim_start().starts_with('[')
+            {
+                return true;
+            }
+        }
+        rest = &rest[position + CALL.len()..];
+    }
+    false
 }
 
 /// The `< n` bound of a `for (...)` header, as the header spells it.
@@ -3857,10 +3888,28 @@ fn component_launch(
              duration, so its lifetime is unmeasured",
         ));
     }
-    if area.radius_m.is_some() && area.lifetime_s.is_none() {
+    // An area-denial record's whole effect is an area, and it declares the
+    // effect flag without stating that area's size. `wep_12` (TANGLER) states
+    // a duration for the effect and no area lifetime either; `wep_13`'s
+    // SMOKE_SCREEN states 8 s, which the row keeps as the area's lifetime.
+    let area_effect = family == DeclaredOrdnanceFamily::AreaDenialEngine;
+    if area_effect && area.radius_m.is_none() {
+        unknowns.push(OriginalComponentUnknown::new(
+            T452_04_AREA_RADIUS,
+            "the record's whole effect is an area and it declares no \
+             IMPACT_PROXIMITY, so the area's radius is stated by no file",
+        ));
+    }
+    if area.lifetime_s.is_none() && (area.radius_m.is_some() || area_effect) {
         unknowns.push(OriginalComponentUnknown::new(
             T452_04_AREA_LIFETIME,
-            "the record declares a blast radius and no lifetime for the area",
+            if area_effect {
+                "the record's whole effect is an area and no file states how long \
+                 the area lasts; its effect duration is the effect's, not stated \
+                 to be the area's"
+            } else {
+                "the record declares a blast radius and no lifetime for the area"
+            },
         ));
     }
     if !statuses.is_empty() {

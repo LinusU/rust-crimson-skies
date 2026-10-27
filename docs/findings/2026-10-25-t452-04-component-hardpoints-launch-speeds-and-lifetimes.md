@@ -105,8 +105,8 @@ unit conversion, no rounding — and each field the record does not state is
 | `wep_09` | guided | rocket slot | 1000 | 1 | 2 | 450 | `DAMAGE` 0 | – | `FLASH` |
 | `wep_10` | guided | rocket slot | 1200 | 0.3 | 4 | 15 | 0 / 0 | – | `BEEPER` 20 s (`TIME`) |
 | `wep_11` | guided | rocket slot | 400 | 4 | 4 | 15 | 60 / 60 | – | `BEEPER_SEEKER` |
-| `wep_12` | area denial | rocket slot | 1200 | 1 | 2 | – | 0 / 0 | – | `TANGLER` 2 s (`TIME`) |
-| `wep_13` | area denial | rocket slot | – | 1 | 6 | – | 0 / 0 | area 8 s | `SMOKE_SCREEN` 8 s (`TIME`) |
+| `wep_12` | area denial | rocket slot | 1200 | 1 | 2 | – (unknown area) | 0 / 0 | – | `TANGLER` 2 s (`TIME`) |
+| `wep_13` | area denial | rocket slot | – | 1 | 6 | – (unknown area) | 0 / 0 | area 8 s | `SMOKE_SCREEN` 8 s (`TIME`) |
 | `wep_14` | torpedo | rocket slot | 60 | 1 | 1 | 30 | 200 / 200 | – | – |
 | `wep_15` | guided | rocket slot | 1 | 1 | 2 | 500 | `DAMAGE` 0 | **2 s** (`DETONATION_TIME`) | `FLASH` |
 | `wep_24` | guided | rocket slot | 1200 | 3 | 7 | 15 | 100 / 100 | – | – |
@@ -142,9 +142,14 @@ unit conversion, no rounding — and each field the record does not state is
   records), so it is not recorded as a lifetime.
 - **Area** is `IMPACT_PROXIMITY` in metres (T1318 Q1: no conversion into
   world space, and F16-E's metre), plus the only declared area lifetime: the
-  second value of `SMOKE_SCREEN`, 8 s on `wep_13`. Fourteen rows declare a radius
-  and no lifetime (`t452_04.limit.area_lifetime`); the two effect records that
-  declare no radius (`wep_12`, `wep_13`) raise no area claim at all.
+  second value of `SMOKE_SCREEN`, 8 s on `wep_13`. Fourteen rows declare a
+  radius and no lifetime (`t452_04.limit.area_lifetime`), and the two
+  area-denial effect records state no radius at all —
+  `t452_04.limit.area_radius` (`wep_12`, `wep_13`). `wep_12` also states no
+  area lifetime: its `TANGLER` duration is the effect's, and nothing says the
+  area lasts as long (`t452_04.limit.area_lifetime`, fifteen rows). `wep_13`'s
+  8 s is kept as both the effect duration and the area lifetime because it is
+  one declared value of one key.
 - **Damage** keeps the three channels apart: the `ARMOR_DAMAGE`/`HEALTH_DAMAGE`
   pair, or the single `DAMAGE` of the two flash records (`wep_09`, `wep_15`,
   both 0). A known zero stays a zero; it is not an unknown.
@@ -178,21 +183,25 @@ unit conversion, no rounding — and each field the record does not state is
 | the unit of `VELOCITY` | `t452_04.limit.velocity_unit` | the fifteen rows that declare one; every launch-speed claim |
 | which delay `FIRE_RATE` governs, and in which direction | `t452_04.limit.release_delay` | all sixteen rows; every release-delay claim |
 | the projectile lifetime | `t452_04.limit.no_expires_key` | the fifteen rows with no stated duration; the member has no `EXPIRES` key |
-| the area's lifetime | `t452_04.limit.area_lifetime` | the fourteen rows that declare a radius and no lifetime |
+| the area's lifetime | `t452_04.limit.area_lifetime` | the fifteen rows that state no area lifetime (fourteen with a radius, plus `wep_12`) |
+| the area-denial effect's radius | `t452_04.limit.area_radius` | `wep_12`, `wep_13` |
 | a status effect's gameplay kind | `t452_04.limit.status_effect_kind` | the seven rows carrying an effect flag |
 | a status effect's duration where the flag states none | `t452_04.limit.status_effect_duration` | `wep_08`, `wep_09`, `wep_11`, `wep_15` |
 | what each clustered sub-munition does | `t454.limit.swarm` (carried) | the eleven rows whose `CLUSTER_SIZE` exceeds 1 |
 | which slot holds a record with no `ROCKET` flag | `t452_04.limit.rocket_flag_missing` | `wep_25` |
 
 `accept_t452_04_retail_every_unknown_names_the_rows_it_affects` pins each claim
-and its row count (14, 15, 16, 1, 4, 7, 15, 11) so this table and the code
+and its row count (15, 2, 15, 16, 1, 4, 7, 15, 11) so this table and the code
 cannot drift apart, and every unknown carries a nonempty reason.
 
 ## Test sensitivity (measured, one mutation at a time)
 
-Seven mutations were applied to `crates/cs_content/src/ordnance.rs`, one at a
-time, the `accept_t452_04_` selection re-run after each, and the file restored
-from a byte-identical backup (`shasum d267ae48…`) after every probe:
+Seven mutations were applied to `crates/cs_content/src/ordnance.rs` by the
+implementer, one at a time, the `accept_t452_04_` selection re-run after each,
+and the file restored from a byte-identical backup (`shasum d267ae48…`) after
+every probe. The reviewer re-ran three further mutations on the reviewed file,
+one at a time, and restored it byte-identically each time
+(`shasum e1db272b…`):
 
 | mutation | caught by |
 | --- | --- |
@@ -203,6 +212,9 @@ from a byte-identical backup (`shasum d267ae48…`) after every probe:
 | a record with no `ROCKET` flag is treated as a rocket-slot component | `accept_t452_04_a_record_without_a_rocket_flag_leaves_the_mount_unknown` |
 | status flags lose the duration the key carries | `accept_t452_04_a_status_flag_records_the_duration_the_record_states` |
 | the `no_expires_key` unknown is no longer recorded | `accept_t452_04_a_lifetime_is_only_what_a_record_states` and `accept_t452_04_a_rocket_record_carries_its_declared_launch_values` |
+| the empty-slot flag goes back to screen-wide `contains("deactivate(")` | `accept_t452_04_a_screen_states_its_slot_array_and_fill_loop` ("QKA's empty slots are no longer hidden") |
+| the `area_radius` unknown is no longer recorded | `accept_t452_04_a_status_flag_records_the_duration_the_record_states` and four retail tests |
+| `area_lifetime` is raised only for a declared radius, so `wep_12` loses it | `accept_t452_04_a_status_flag_records_the_duration_the_record_states` and four retail tests |
 
 The retail tests are the second half of the sensitivity: they re-read the owner's
 installation through the production readers on every run, so a stale count, a
@@ -227,9 +239,17 @@ passes.
 - **`wep_25` keeps its unknown mount.** The glidebomb reaches `guided_rocket`
   through `LOCK_ON` and has no `ROCKET` flag; assuming one would fabricate a
   slot the screens do not state.
-- **The screens' own behavioural difference is kept.** `deactivates_empty_slots`
-  records that the ordnance screen hides an empty slot and the hardpoint screen
-  does not — a fact about the two screens, not a layout count.
+- **The screens' own behavioural difference is kept, per array.**
+  `deactivates_empty_slots` records that the ordnance screen hides an empty slot
+  of each of its two arrays and the hardpoint screen does not — a fact about the
+  screen's own call, matched against that array's name rather than a screen-wide
+  flag, so a screen that hid one list and not the other would state the
+  difference.
+- **An effect that is an area states no area.** `wep_12` and `wep_13` declare an
+  effect flag and no `IMPACT_PROXIMITY`, so their radius is a named unknown
+  (`t452_04.limit.area_radius`); `wep_12`'s effect duration is not stated to be
+  the area's lifetime either. A missing declaration is an unknown, exactly like
+  the absent `EXPIRES` key.
 - **The evidence harness reads the same production function.** Its second
   observation is a re-read of `read_original_component_table`, not a parallel
   implementation, so the artifact cannot describe an installation state the
@@ -238,8 +258,33 @@ passes.
 ## Review
 
 **Implementer:** `deepseek-1` (agent, model `deepseek-v4.1-flash`).
-**Reviewer:** pending; no independent review yet. This is not evidence of
-original behaviour and awards at most **checked**.
+**Reviewer:** `deepseek-1` (agent, model `deepseek-v4.1-flash`), a fresh
+session context but the same agent name and model as the implementer. This is
+**not** an independent review by the project's preference ("prefer a reviewer
+that is a different agent instance or model"), and it is not original-run or
+human evidence; it awards at most **checked**. What the review changed:
+
+- The synthetic fixture reproduced several verbatim lines of the original
+  `HARDPOINTS.SCRIPT`/`ORDNANCELAYOUT.SCRIPT` while the finding claimed no
+  script text was committed. It is now written with invented identifiers and
+  spacing; the only original facts it carries are the array names and counts
+  the committed findings already state, and the `deactivate(<array>[...])` call
+  the flag is measuring.
+- `deactivates_empty_slots` was `screen.contains("deactivate(")`, so one
+  array's call was reported for every array in the screen. It is now matched
+  per array (whitespace tolerated), with a test that removing QKA's call leaves
+  RKA's stated.
+- The two area-denial records (`wep_12`, `wep_13`) declared an effect that is an
+  area and stated no area, and the table recorded nothing about it. They now
+  carry `t452_04.limit.area_radius` (2 rows), and `wep_12` also carries
+  `t452_04.limit.area_lifetime` (the lifetime count is 15, not 14).
+- The report's method text said "one airproximity" for the one proximity-flak
+  row; corrected to "one proximity flak".
+
+The reviewer re-ran fmt, workspace clippy, the full `-p cs_content` suite, the 14
+`accept_t452_04_` tests with `CS_GAME_DIR`, the test-layout guard, the evidence
+harness and the validator on the reviewed tree, and re-ran three mutations of
+the production file (table above).
 
 ## Evidence
 
@@ -259,14 +304,14 @@ original behaviour and awards at most **checked**.
   per-claim row counts and the table-level unknown. Identifiers, numbers and
   digests only: no script text, no display text.
 
-The report's `candidate_tree` names the tree that was measured
-(`bdfab3be…`, the commit carrying the code, the tests and this finding). This
-section was added in the following commit, so the report is one documentation
-commit behind the head it travels with; nothing it measured changed. It should
-be regenerated on the reviewed commit, as F28-D's report was.
+The report's `candidate_tree` names the tree that was measured — the tree of the
+commit carrying the reviewed code, the tests and the claim changes. The report
+and this section were rewritten in the documentation commit that follows it, so
+the report is one documentation commit behind the branch head; nothing it
+measured changed.
 
 **`unknowns` is empty and that is a claim worth checking.** The validator's
-`--require-pass` rejects a nonempty `unknowns` list. The nine limitations are
+`--require-pass` rejects a nonempty `unknowns` list. The ten limitations are
 therefore recorded in the four places the validator does not read for that field
 — the report's `review.method`, the hashed `component-table.json`, the code's
 claim ids and this file — rather than removed. They are *unmeasured original
