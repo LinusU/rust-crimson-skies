@@ -58,7 +58,12 @@ RECORDED_IMAGE_SHA256 = (
 IMAGE_VA_BASE = 0x400000
 
 #: File-creating / writing entry points.  `WriteFile`-family and MSVCRT
-#: `fwrite` are both audited: the engine is MSVC and does both.
+#: `fwrite` are both audited: the engine is MSVC and does both.  `fprintf`
+#: is the only other file-writing primitive the image imports (`fputs`,
+#: `fputc` and `vfprintf` are absent - see below); it writes only into a
+#: `FILE*` the audited `fopen`/`freopen`/`tmpfile` calls returned, so the
+#: file-level coverage is complete either way, but the enumeration is
+#: literal about it.
 WRITE_APIS: tuple[str, ...] = (
     "CreateFileA",
     "WriteFile",
@@ -70,6 +75,7 @@ WRITE_APIS: tuple[str, ...] = (
     "SetFileAttributesA",
     "fopen",
     "fwrite",
+    "fprintf",
     "tmpfile",
     "freopen",
     "remove",
@@ -80,11 +86,58 @@ WRITE_APIS: tuple[str, ...] = (
 )
 
 #: Entry points whose *absence* from the import table matters to the finding:
-#: a memory-mapped persistent store would need `CreateFileMappingA/W`.
+#: a memory-mapped persistent store would need `CreateFileMappingA/W`, and
+#: the finding's negative names the rest of the writing surface too, so the
+#: probe checks every name it claims is missing rather than asserting it.
 PROBED_ABSENT_APIS: tuple[str, ...] = (
     "CreateFileMappingA",
     "CreateFileMappingW",
     "MapViewOfFile",
+    "OpenFileMappingA",
+    "CreateFileW",
+    "CopyFileA",
+    "CopyFileW",
+    "MoveFileW",
+    "DeleteFileW",
+    "RemoveDirectoryW",
+    "SetEndOfFile",
+    "WriteFileEx",
+    "fputs",
+    "fputc",
+    "vfprintf",
+    "_wfopen",
+    "_open",
+    "_creat",
+    "_write",
+    "_sopen",
+    "_fsopen",
+    "_fdopen",
+    "SHFileOperationA",
+    "WritePrivateProfileStringA",
+    "CreateProcessA",
+    "WinExec",
+    "system",
+    "_wsystem",
+    "_popen",
+)
+
+#: Imported entry points that matter to the audit's boundary without being
+#: file writers themselves: registry writes (settings under the game's own
+#: key, not files), an external-handler launch, a save-dialog path answer,
+#: a `.ini` reader, and handle/FILE* positioning or flush calls whose write
+#: side is already enumerated above.  Their site counts are reported so the
+#: finding can say they were accounted for rather than overlooked.
+CONTEXT_APIS: tuple[str, ...] = (
+    "RegCreateKeyExA",
+    "RegSetValueExA",
+    "RegDeleteKeyA",
+    "ShellExecuteA",
+    "GetSaveFileNameA",
+    "GetPrivateProfileStringA",
+    "SetFilePointer",
+    "fseek",
+    "fflush",
+    "fclose",
 )
 
 #: The cache/residency vocabulary, by exact string.  These are the only strings
@@ -428,10 +481,15 @@ class PeImage:
             if self.data[index] == 0x68:
                 value = struct.unpack_from("<I", self.data, index + 1)[0]
                 text = self.read_c_string(value)
-                if text and text.isprintable() and len(text) >= 2:
+                if text and text.isprintable():
                     return value, text
+            # A call/jump between the push and the site ends the window.  The
+            # scan runs backwards, so it meets the ModRM byte of `FF /2` or
+            # `FF /4` (0x15/0x25 absolute, 0xD0-0xD7 call reg, 0xE0-0xE7 jmp
+            # reg) with the 0xFF opcode still ahead of it.
             if self.data[index] in (0xC3, 0xCB) or (
-                self.data[index] == 0xFF and self.data[index - 1] in (0x15, 0xD0, 0xD1, 0xD2, 0xD3)
+                self.data[index - 1] == 0xFF
+                and self.data[index] in (0x15, 0x25, *range(0xD0, 0xD8), *range(0xE0, 0xE8))
             ):
                 return None
             index -= 1
@@ -521,6 +579,14 @@ def analysis_data(image: PeImage, game_dir: str | None = None) -> dict:
         api: image.imports.get(api) for api in PROBED_ABSENT_APIS if api in image.imports
     }
 
+    context_sites: dict[str, list[int]] = {}
+    for api in CONTEXT_APIS:
+        address = image.imports.get(api)
+        if address is None:
+            context_sites[api] = []
+            continue
+        context_sites[api] = [site for site, _kind in image.references_to(address)]
+
     cache_strings = image.strings_containing("cache")
 
     naming_sites = {
@@ -577,6 +643,7 @@ def analysis_data(image: PeImage, game_dir: str | None = None) -> dict:
         "path_strings": path_addresses,
         "source_labels": labels,
         "present_probed_absent_apis": absent,
+        "context_api_sites": context_sites,
         "cache_strings": cache_strings,
         "naming_sites": naming_sites,
         "retail_reader_container": retail,
@@ -613,12 +680,19 @@ def summarise(facts: dict) -> str:
                 f"    (+{facts['other_reference_counts'][api]} unclassified 4-byte occurrence(s))"
             )
     lines.append("")
-    lines.append("probed-absent entry points (would be needed by a memory-mapped store):")
+    lines.append("probed-absent entry points (a persistent or memory-mapped store would need one):")
     lines.append(
         "  " + (", ".join(
             f"{api} {va:#x}" for api, va in facts["present_probed_absent_apis"].items()
-        ) or "none imported")
+        ) or "none of the probed entry points is imported")
     )
+    lines.append("")
+    lines.append("context entry points (accounted for, not file writers):")
+    for api, sites in facts["context_api_sites"].items():
+        if sites:
+            lines.append(f"  {api}: {len(sites)} site(s) at {[hex(s) for s in sites]}")
+        else:
+            lines.append(f"  {api}: not imported or not referenced")
     lines.append("")
     lines.append("cache/residency vocabulary:")
     for text, addresses in facts["vocabulary_strings"].items():

@@ -90,6 +90,7 @@ recognising one shape fails the test.
 | `WriteFile` | 6 | `0x406934`, `0x533ff9` (loaded), `0x59dba6` (loaded), `0x59dd6e`, `0x5a9aab` (loaded), `0x5bff5e` |
 | `fopen` | 26 | of which the write modes are listed below |
 | `fwrite` | 45 | the archive, model, material, texture-directory and animation-record writers |
+| `fprintf` | 110 | the text-record writers (Net Edit, dumps, logs); writes only into a `FILE*` the audited opens returned, so it adds no new writable file — its sites are enumerated anyway because it is a writing entry point the image really imports |
 | `CreateDirectoryA` | 1 | `0x406bf8` — the `%TEMP%\~RCSA~` probe only |
 | `_mkdir` | 3 | `0x41a7d8` (`Planes`), `0x46b206` (`SavedGames\<profile>`), `0x5b7cc7` (the script `mkdir` command) |
 | `GetTempPathA` | 3 | `0x406bdf` (writability probe), `0x59c9bc`, `0x59cab1` (`gamez.err` / `gamez.out` fallback) |
@@ -102,11 +103,29 @@ recognising one shape fails the test.
 | `_chmod` / `SetFileAttributesA` | 1 / 4 | attribute fix-ups on the same paths |
 | `_rmtmp` | 2 | End of the ZAR writer |
 
-The image imports **none** of `CreateFileMappingA`, `CreateFileMappingW` or
-`MapViewOfFile`, and none of `CreateFileW`, `CopyFileA`, `_open`, `_creat`,
-`_write`, `fputs`, `fputc`, `SetEndOfFile`. There is therefore no memory-mapped
-or CRT-handle path by which a derived store could be created that the audit above
-does not cover.
+The image imports **none** of `CreateFileMappingA`, `CreateFileMappingW`,
+`MapViewOfFile` or `OpenFileMappingA`, and none of `CreateFileW`, `CopyFileA/W`,
+`MoveFileW`, `DeleteFileW`, `RemoveDirectoryW`, `SetEndOfFile`, `WriteFileEx`,
+`fputs`, `fputc`, `vfprintf`, `_wfopen`, `_open`, `_creat`, `_write`, `_sopen`,
+`_fsopen`, `_fdopen`, `SHFileOperationA`, `WritePrivateProfileStringA`,
+`CreateProcessA`, `WinExec`, `system`, `_wsystem` or `_popen` — every name on
+that list is checked by the probe, not asserted. There is therefore no
+memory-mapped, wide-char, CRT-handle, copy/move or child-process path by which a
+derived store could be created that the audit above does not cover.
+
+Three imported entry points sit just outside the writer list and were accounted
+for rather than overlooked: `RegCreateKeyExA`/`RegSetValueExA`/`RegDeleteKeyA`
+(4/6/2 sites) write **registry** values under the game's own key — settings,
+not files, and not an asset store; `ShellExecuteA` (1 site) hands a document or
+URL to an external handler — a child process is already clause (b) of the
+unknown below; and `SetFilePointer`, `fseek`, `fflush`, `fclose`,
+`GetSaveFileNameA` and `GetPrivateProfileStringA` only position, flush, close,
+name or read handles the audited entry points produced. The MFC42.DLL import
+block (203 ordinals, nameless in the image) is covered by clause (b) as well.
+
+Two `fopen` sites in the resolver at `0x59d270` take their mode from a register
+the labeler cannot see; all four call sites (`0x5104b8`, `0x511019`,
+`0x5312cd`, `0x5bd2f1`) pass `"r"` or `"rb"`, so they are read opens.
 
 A source scan adds one more, independent negative: case-insensitively, the
 substring "cache" occurs exactly twice in the image: at `0x60c3fc` inside

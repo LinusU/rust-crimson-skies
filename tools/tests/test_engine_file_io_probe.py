@@ -257,12 +257,41 @@ class OwnerImageFactsTests(unittest.TestCase):
         )
         self.assertEqual(len(sites["fopen"]), 26)
         self.assertEqual(len(sites["fwrite"]), 45)
+        self.assertEqual(len(sites["fprintf"]), 110)
         self.assertEqual(len(sites["tmpfile"]), 2)
         self.assertEqual(len(sites["remove"]), 3)
         self.assertEqual(len(sites["rename"]), 1)
         self.assertEqual(len(sites["_mkdir"]), 3)
-        # A memory-mapped persistent store would need one of these.
+        # A memory-mapped or second writable path would need one of these; the
+        # probed-absent list also pins every writer the finding names absent.
         self.assertEqual(self.facts["present_probed_absent_apis"], {})
+        context = self.facts["context_api_sites"]
+        self.assertEqual(
+            {api: len(s) for api, s in context.items()},
+            {
+                "RegCreateKeyExA": 4,
+                "RegSetValueExA": 6,
+                "RegDeleteKeyA": 2,
+                "ShellExecuteA": 1,
+                "GetSaveFileNameA": 1,
+                "GetPrivateProfileStringA": 1,
+                "SetFilePointer": 6,
+                "fseek": 29,
+                "fflush": 27,
+                "fclose": 57,
+            },
+        )
+        # The write-mode opens named in the finding: the labeler must resolve
+        # even the one-character modes or the audit's labels say nothing.
+        fopen_modes = {
+            row["site_va"]: row["pushed_string"] for row in sites["fopen"]
+        }
+        self.assertEqual(fopen_modes[0x41A7E8], "wb+")
+        self.assertEqual(fopen_modes[0x4E2283], "wb+")
+        self.assertEqual(fopen_modes[0x521457], "wb")
+        self.assertEqual(fopen_modes[0x5BB854], "w")
+        self.assertEqual(fopen_modes[0x404769], "r")
+        self.assertEqual(fopen_modes[0x5B747E], "r")
 
     def test_accept_f15_f_the_only_cache_strings_are_sound_residency_names(self) -> None:
         self.assertEqual(

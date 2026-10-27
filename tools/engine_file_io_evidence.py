@@ -55,6 +55,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "tools" / "tests"
 TEST_PATTERN = "test_engine_file_io_probe.py"
 TASK_ID = "F15-F"
+IMPLEMENTER = "deepseek-1/deepseek-1"
+
+#: `review.identity` when only the implementer has run: a hand-over text, never
+#: a review record.  A reviewing agent supplies its own identity through
+#: `--reviewer` or `CS_EVIDENCE_REVIEWER` (the same runtime-identity
+#: convention the Rust evidence harnesses use), so regenerating this report
+#: during review cannot silently put a placeholder back.
+HANDOVER_IDENTITY = f"{IMPLEMENTER} (implementer); no reviewer has run yet"
 
 UNKNOWN = (
     "Whether the original engine wrote any persistent derived artefact during a "
@@ -126,6 +134,13 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         required=True,
         help="a cs-inspect inventory report for the same installation",
+    )
+    parser.add_argument(
+        "--reviewer",
+        default=os.environ.get("CS_EVIDENCE_REVIEWER"),
+        help="the reviewing agent's identity record; the default env var is "
+        "CS_EVIDENCE_REVIEWER, matching the Rust harness convention. Without "
+        "it the report is an implementer hand-over and names no reviewer",
     )
     args = parser.parse_args(argv)
 
@@ -245,7 +260,11 @@ def main(argv: list[str] | None = None) -> int:
         ],
         "unknowns": [UNKNOWN],
         "review": {
-            "identity": "deepseek-1 (implementer); no reviewer has run yet",
+            "identity": (
+                f"implementer: {IMPLEMENTER}; reviewer: {args.reviewer}"
+                if args.reviewer
+                else HANDOVER_IDENTITY
+            ),
             "method": (
                 "Every field is derived from the recorded run: candidate_tree from "
                 "HEAD^{tree} on a clean checkout, the counts and assertion statuses "
