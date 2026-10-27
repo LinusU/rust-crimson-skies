@@ -34,6 +34,7 @@ mod fidelity;
 mod gpu_capture;
 mod navigation;
 mod objective_page;
+mod present;
 mod record;
 mod remap;
 mod session;
