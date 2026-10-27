@@ -18,6 +18,7 @@
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 //!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app --test cs_app_tests_b -- accept_f11_f_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+//!    CS_EVIDENCE_REVIEW="<implementer and reviewer identities>" \
 //!    CS_GAME_DIR="$CS_GAME_DIR" \
 //!    CS_ENGINE_IMAGE="$CS_ENGINE_IMAGE" \
 //!      cargo test -p cs_app --locked --test cs_app_tests_b -- evidence_report_f11_f --ignored
@@ -33,10 +34,9 @@
 //! environment, production discovery of `$CS_GAME_DIR`, the session-scene
 //! observation this harness itself re-derives through production code
 //! (written as `session-scene.json`), `rustc --version` and `Cargo.lock`.
-//! The only text this file holds is the [`review_identity`] literal the
-//! committed report carries (a reviewing agent replaces it with their own
-//! through `CS_EVIDENCE_REVIEW`) and the limitations quoted into
-//! `review.method`.
+//! The only text this file holds is the limitations quoted into
+//! `review.method`; the `review.identity` comes from `CS_EVIDENCE_REVIEW`
+//! (the reviewing agent supplies it, so the report names the review that happened).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -73,10 +73,11 @@ const RETAIL_TESTS: &[&str] = &[
 const SYNTHETIC_TESTS: &[&str] = &["accept_f11_f_synthetic_composition_carries_no_airframe_scene"];
 
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR, CS_ENGINE_IMAGE"]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEW, CS_GAME_DIR, CS_ENGINE_IMAGE"]
 fn evidence_report_f11_f_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let review = env_var("CS_EVIDENCE_REVIEW");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
         .split_whitespace()
         .map(str::to_owned)
@@ -202,7 +203,7 @@ fn evidence_report_f11_f_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        jstr(&review_identity()),
+        jstr(&review),
         jstr(&review_method()),
     );
 
@@ -338,22 +339,6 @@ fn observe_session_scene(game_dir: &Path, install_sha256: &str) -> String {
         second_generation.0,
         MISSION_PLAYER_LOD_DISTANCE_M,
     )
-}
-
-/// The `review.identity` this harness records.
-///
-/// A reviewing agent supplies their own text through `CS_EVIDENCE_REVIEW` and
-/// replaces the literal with it in the same commit, which is how the report
-/// then names the review that actually happened.
-fn review_identity() -> String {
-    let recorded = String::from(
-        "implementer: swe2-max-1 (SWE-2 Max; Rally #2122 implement claim); independent review \
-         pending - Rally assigns the reviewer. The implementer wired the session-owned scene \
-         calls, wrote the acceptance tests and this evidence harness, and ran the acceptance \
-         suite locally with CS_GAME_DIR; this record names no reviewer because no review has \
-         happened yet",
-    );
-    std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
 
 /// The `review.method` this harness records, with the limits of what was
