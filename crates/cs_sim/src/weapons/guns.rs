@@ -1317,6 +1317,20 @@ impl fmt::Display for MountTransformError {
 
 impl std::error::Error for MountTransformError {}
 
+/// Whether this module draws a sample from a [`SpreadCone`] — always
+/// `false`, declared rather than implied.
+///
+/// This module owns the shot's trajectory, so it is the system that owns
+/// shot dispersion, including the AI's declared aim error
+/// (`cs_sim::ai::combat::FiringSolution::aim_error_rad`, reported-only at
+/// its own boundary). The original's sampling model is unmeasured, so a
+/// [`ProjectileSpawn`] carries the gun's declared cone untouched and no AI
+/// aim error widens it. A change that starts sampling flips this
+/// declaration, `cs_sim::ai::combat::AIM_ERROR_RAD_APPLIED` and the
+/// `accept_f32_aim_` test that pins both (`f32.d.limit.fire_discipline`,
+/// #1347 `F32-AIM-ERROR-APPLY`).
+pub const SPREAD_SAMPLED: bool = false;
+
 /// A request to fire: the currently selected bank of one actor, on one
 /// tick.
 ///

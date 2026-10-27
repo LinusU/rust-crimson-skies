@@ -599,3 +599,22 @@ fn accept_f32_fd_the_probe_discriminates_tiers_that_differ_only_in_fire_discipli
 fn synthetic_difficulty_probe_spec_ticks() -> u64 {
     600
 }
+
+/// The aim error's owner is the weapon system: `weapons::guns` owns the
+/// shot's trajectory, declares that it samples no spread, and the AI's
+/// reported-only declaration agrees with it. A change that starts dispersing
+/// shots by the knob must flip both declarations together, and a real
+/// firing solution still reports a non-zero knob that nothing widens.
+#[test]
+fn accept_f32_aim_error_is_re_declared_report_only_at_the_weapon_boundary() {
+    const { assert!(!cs_sim::weapons::guns::SPREAD_SAMPLED) };
+    assert_eq!(
+        cs_sim::ai::combat::AIM_ERROR_RAD_APPLIED,
+        cs_sim::weapons::guns::SPREAD_SAMPLED,
+        "the AI declaration and the weapon-boundary declaration cannot drift"
+    );
+    let mut runtime = synthetic_combat_runtime();
+    let step = fighter_step(&mut runtime, 1, 100, &hostile(40), &synthetic_arsenal());
+    let firing = step.trace().firing.as_ref().expect("a target was selected");
+    assert!(firing.aim_error_rad > 0.0 && !firing.aim_error_applied());
+}

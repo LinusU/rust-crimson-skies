@@ -1212,9 +1212,11 @@ pub enum FireHoldReason {
 ///
 /// [`FiringSolution::aim_error_applied`] pins it: the solution reports the
 /// profile's declared half-angle, and the dispersion itself belongs to the
-/// weapon system that owns the shot — the firing solution names an error;
-/// it does not own a trajectory to disperse (`f32.d.limit.fire_discipline`,
-/// resolved by #571 as a declared reported-only field).
+/// weapon system that owns the shot, `cs_sim::weapons::guns`, whose
+/// `SPREAD_SAMPLED` declares at that boundary that no spread is sampled yet —
+/// the firing solution names an error; it does not own a trajectory to
+/// disperse (`f32.d.limit.fire_discipline`, resolved by #571 as a declared
+/// reported-only field; #1347 re-declared it at the weapon boundary).
 pub const AIM_ERROR_RAD_APPLIED: bool = false;
 
 /// Which of one actor's mounts may fire this tick, and the aim error the
