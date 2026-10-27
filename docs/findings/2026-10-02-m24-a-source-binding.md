@@ -26,7 +26,7 @@ only: `crates/cs_app/tests/campaign/main.rs` (`mod m24_a;`).
 | Fact | Value |
 | --- | --- |
 | `install_sha256` | `b4e780ab…c631978` (same installation as M01-A … M19-A) |
-| Title | exactly one localized row equals `Death on the Docks` (campaign position 23) |
+| Title | exactly one localized row equals `Battle over Broadway` (campaign position 23); the region-prefixed long name for the same position in the other campaign-length row block is a different string. Measured by `accept_m24_a_the_original_name_is_confirmed_against_the_local_strings` |
 | Mission id | `mission/ch5-m04` (chapter 5, mission 4) |
 | World group | `world/c5` (`ZBD/C5`) |
 | Program | `script/c5-m04-zrdr`, `ZBD/C5/M04/zrdr.zbd`, 62 785 bytes, SHA-256 `28d0076b…cfef4` |
