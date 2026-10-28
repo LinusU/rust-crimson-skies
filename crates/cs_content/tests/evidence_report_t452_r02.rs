@@ -118,7 +118,7 @@ fn evidence_report_t452_r02_writes_the_acceptance_report() {
     let smoke_area = smoke.area.expect("wep_13 has an area");
     assert!(matches!(
         smoke_area.radius_source,
-        MeasuredAreaSource::Unmeasured { .. }
+        MeasuredAreaSource::GlobalKey { .. }
     ));
     let (_, glidebomb) = measured
         .iter()
@@ -181,6 +181,9 @@ fn evidence_report_t452_r02_writes_the_acceptance_report() {
                         MeasuredAreaSource::RecordKey { key } => format!("record:{}", jstr(key)),
                         MeasuredAreaSource::ImageDefault { value } => {
                             format!("image_default:{value}")
+                        }
+                        MeasuredAreaSource::GlobalKey { key, image_default } => {
+                            format!("global_key:{}:image_default:{image_default}", jstr(key))
                         }
                         MeasuredAreaSource::InstantaneousBlast => "instantaneous_blast".to_owned(),
                         MeasuredAreaSource::Unmeasured { claim } => {

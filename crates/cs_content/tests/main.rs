@@ -116,6 +116,7 @@ mod accept_t452_r03_hardpoint_price;
 mod accept_t452_r04_flight_and_release;
 mod accept_t452_r05_slot_and_status;
 mod accept_t452_r05ammo_script_census;
+mod accept_t452_smoke;
 mod accept_t454_guidance_loss;
 mod accept_t548_retail_blast;
 mod accept_t574_zeppelin_carrier;

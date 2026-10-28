@@ -375,7 +375,7 @@ fn accept_t452_r02_a_tangler_is_an_area_with_the_image_default_radius() {
 }
 
 #[test]
-fn accept_t452_r02_a_smoke_screen_has_a_lifetime_but_no_measured_radius() {
+fn accept_t452_r02_a_smoke_screen_has_a_lifetime_and_a_global_key_radius() {
     let row = row(
         "wep_13",
         DeclaredOrdnanceFamily::AreaDenialEngine,
@@ -389,13 +389,15 @@ fn accept_t452_r02_a_smoke_screen_has_a_lifetime_but_no_measured_radius() {
     assert_eq!(area.radius_m, None);
     assert_eq!(
         area.radius_source,
-        MeasuredAreaSource::Unmeasured {
-            claim: T452_R02_SMOKE_RADIUS
+        MeasuredAreaSource::GlobalKey {
+            key: "smokescreen_stun_range",
+            image_default: 200.0
         }
     );
     assert_eq!(area.lifetime_s, Some(8.0));
     assert!(measured.resolves_claim(T452_04_AREA_LIFETIME));
-    assert!(measured.names_claim(T452_R02_SMOKE_RADIUS));
+    assert!(measured.resolves_claim(T452_04_AREA_RADIUS));
+    assert!(!measured.names_claim(T452_R02_SMOKE_RADIUS));
     // The record states no trigger at all, so its flight is now measured.
     assert_eq!(measured.fuse.range_end, MeasuredRangeEnd::ExpiresSilently);
     assert!(measured.resolves_claim(T452_R02_FUSE_CLAIM));
@@ -584,7 +586,7 @@ fn accept_t452_r02_retail_the_measured_facts_read_the_original_rows() {
     let area = smoke.area.expect("wep_13 is an area");
     assert_eq!(area.radius_m, None);
     assert_eq!(area.lifetime_s, Some(8.0));
-    assert!(smoke.names_claim(T452_R02_SMOKE_RADIUS));
+    assert!(!smoke.names_claim(T452_R02_SMOKE_RADIUS));
     assert!(smoke.resolves_claim(T452_R02_FUSE_CLAIM));
     assert_eq!(smoke.fuse.range_end, MeasuredRangeEnd::ExpiresSilently);
 
