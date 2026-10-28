@@ -18,8 +18,9 @@ use cs_sim::damage::ActorId;
 use cs_sim::time::TickRate;
 use cs_sim::weapons::ordnance::{
     ArmingRule, EquipmentRules, FuseDecision, FuseInert, FuseRule, FuseTrigger, GuidanceRule,
-    OrdnanceDefinitionError, OrdnanceFamily, OrdnanceRuntime, OrdnanceState, ProjectileOrdnance,
-    StackLoad, synthetic_channels, synthetic_launch_geometry, synthetic_media, synthetic_ordnance,
+    GuidanceUpdate, LostTargetBehavior, OrdnanceDefinitionError, OrdnanceFamily, OrdnanceRuntime,
+    OrdnanceState, ProjectileOrdnance, StackLoad, TargetObservation, synthetic_channels,
+    synthetic_launch_geometry, synthetic_media, synthetic_ordnance,
 };
 use cs_sim::weapons::{MountTransform, ProjectileId, ProjectileSegment, SweptHit};
 use cs_types::Tick;
@@ -117,6 +118,30 @@ fn area_denial_ending_at(range_m: f64, lifetime_ticks: u64) -> ProjectileOrdnanc
         EquipmentRules::new(None, BTreeSet::new()),
     )
     .expect("the range-ending area-denial fixture is coherent")
+}
+
+/// A guided component that can be retired by losing its target (`Disarm`) and
+/// whose fuse is the measured range end, so a dud and a range bound meet on one
+/// item.
+fn range_bounded_guided_dud(range_m: f64, lifetime_ticks: u64) -> ProjectileOrdnance {
+    ProjectileOrdnance::try_new(
+        synthetic_ordnance("synthetic.range_ending_guided_dud"),
+        OrdnanceFamily::GuidedRocket,
+        synthetic_launch_geometry(),
+        StackLoad::try_new(2, 0.0).expect("a two-round stack is valid"),
+        ArmingRule::AfterTicks(0),
+        FuseRule::ExpiresAtRange { range_m },
+        GuidanceRule::Targeted {
+            lost_target: LostTargetBehavior::Disarm,
+        },
+        lifetime_ticks,
+        None,
+        synthetic_channels(),
+        Vec::new(),
+        synthetic_media(),
+        EquipmentRules::new(None, BTreeSet::new()),
+    )
+    .expect("the range-ending guided fixture is coherent")
 }
 
 // ------------------------------------------------------------------- tests ---
@@ -331,4 +356,149 @@ fn accept_t452_silent_an_area_denial_component_end_on_range_but_not_on_contact()
             ..
         }
     ));
+}
+
+/// A retired dud is never consumed: `retire` ends its fuse, so reaching the
+/// record's `RANGE` afterwards is not the measured end of its flight and the
+/// runtime still removes it when its declared lifetime is spent.
+///
+/// This is the guard that keeps the runtime's one-tick expiry deferral from
+/// becoming a permanent one: a dud whose bound is behind it answers
+/// [`OrdnanceState::reaches_range_end`] with `false`, so the lifetime cap it is
+/// still spending is what ends it.
+#[test]
+fn accept_t452_silent_a_retired_range_bounded_dud_still_expires() {
+    // State level: the fuse can never fire, so nothing is consumed.
+    let mut state = range_bounded(20.0, 10);
+    state.retire();
+    state.advance(&segment(0.0, -40.0));
+    assert!(state.is_retired());
+    assert!(
+        !state.reaches_range_end(),
+        "a retired item's bound being behind it is not a measured end of flight"
+    );
+    assert_eq!(
+        state.fuse_decision(&segment(0.0, -40.0), &[], &[]),
+        FuseDecision::Inert(FuseInert::AlreadyTriggered),
+        "the dud reports its retirement, not a consumption"
+    );
+    assert!(!state.is_consumed());
+    assert!(
+        !state.has_ended(),
+        "a dud has not ended its fuse — it is spending its lifetime"
+    );
+
+    // Runtime level: the dud ages out at its lifetime, exactly as the other
+    // fuse kinds' duds do, even though its path also passed the bound.
+    let definition = range_bounded_guided_dud(20.0, 3);
+    let target = actor(9);
+    let mut runtime = OrdnanceRuntime::new(session(), Tick(0), rate(), PRODUCER);
+    runtime
+        .launch(
+            actor(1),
+            projectile(1),
+            &definition,
+            &transform(),
+            Some(target),
+            [0.0; 3],
+        )
+        .expect("the fixture launches");
+    let lost = runtime.guidance_tick(session(), TargetObservation::destroyed(target, Tick(1)));
+    assert_eq!(
+        lost.update_for(&projectile(1)),
+        Some(GuidanceUpdate::Disarmed),
+        "the disarm loss retires the item"
+    );
+    assert!(
+        runtime
+            .get(&projectile(1))
+            .expect("a dud stays visible")
+            .state()
+            .is_retired(),
+        "the disarm loss retires the item"
+    );
+
+    let mut expired_at = None;
+    for at in 1..=3 {
+        let advanced = runtime
+            .advance(tick_seconds(), [0.0; 3])
+            .expect("the fixture advances");
+        assert!(
+            runtime
+                .get(&projectile(1))
+                .is_none_or(|live| !live.state().is_consumed()),
+            "tick {at}: a dud is never consumed"
+        );
+        if advanced.expired.contains(&projectile(1)) {
+            expired_at = Some(at);
+            break;
+        }
+    }
+    assert_eq!(
+        expired_at,
+        Some(3),
+        "the dud is removed once its declared lifetime is spent"
+    );
+    assert!(
+        runtime.is_empty(),
+        "a retired range-bounded dud does not leak past its lifetime"
+    );
+}
+
+/// The measured end is decided before the cap only on the tick the cap first
+/// falls due: an item whose fuse is never asked still expires on the next tick,
+/// so the deferral cannot make an item immortal.
+#[test]
+fn accept_t452_silent_the_deferral_never_outlives_the_declared_lifetime() {
+    // 21 m is three ticks at 7 m/tick, and the cap is those three ticks: the
+    // bound and the cap fall due on the same tick, which is what the runtime
+    // defers for the fuse decision.
+    let definition = area_denial_ending_at(3.0 * METRES_PER_TICK, 3);
+    let mut runtime = OrdnanceRuntime::new(session(), Tick(0), rate(), PRODUCER);
+    runtime
+        .launch(
+            actor(1),
+            projectile(1),
+            &definition,
+            &transform(),
+            None,
+            [0.0; 3],
+        )
+        .expect("the fixture launches");
+
+    // The deferral tick: the item is still live, and its fuse says the measured
+    // end is due.
+    for _ in 0..3 {
+        let advanced = runtime
+            .advance(tick_seconds(), [0.0; 3])
+            .expect("the fixture advances");
+        assert!(
+            advanced.expired.is_empty(),
+            "the measured end is not the lifetime cap: {:?}",
+            advanced.expired
+        );
+    }
+    assert!(
+        runtime
+            .get(&projectile(1))
+            .expect("still live for the fuse decision")
+            .state()
+            .reaches_range_end(),
+        "the measured end is the fuse decision's to report"
+    );
+
+    // A caller that never decides still gets the item removed: the deferral is
+    // one tick.
+    let advanced = runtime
+        .advance(tick_seconds(), [0.0; 3])
+        .expect("the fixture advances");
+    assert_eq!(
+        advanced.expired,
+        vec![projectile(1)],
+        "the declared lifetime is a cap, not a suggestion"
+    );
+    assert!(
+        runtime.is_empty(),
+        "an item whose fuse is never asked does not outlive its lifetime"
+    );
 }

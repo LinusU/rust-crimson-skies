@@ -3500,15 +3500,25 @@ impl OrdnanceState {
 
     /// Whether the measured end of the item's flight is due now: its
     /// [`FuseRule::ExpiresAtRange`] bound has been reached, it has not
-    /// detonated and the end has not already been reported.
+    /// detonated, the end has not already been reported **and** it has not
+    /// been retired.
     ///
     /// A pure query over the path already flown, so
     /// [`fuse_decision`](Self::fuse_decision) and
     /// [`OrdnanceRuntime::advance`] answer it identically and cannot
     /// disagree about which tick the item's flight ends.
+    ///
+    /// A retired item is not due, exactly as it can never detonate:
+    /// [`retire`](Self::retire) ended its fuse, so its flight is not the
+    /// measured end of `RANGE` but the declared lifetime the dud is still
+    /// spending (see [`advance`](Self::advance)). This keeps a dud from being
+    /// reported consumed — and from holding
+    /// [`OrdnanceRuntime::advance`]'s one-time expiry deferral open forever —
+    /// after its bound is behind it.
     #[must_use]
     pub fn reaches_range_end(&self) -> bool {
-        !self.is_triggered()
+        !self.destroyed
+            && !self.is_triggered()
             && !self.is_consumed()
             && self
                 .fuse
@@ -6079,14 +6089,22 @@ impl OrdnanceRuntime {
         }
         for live in self.live.values() {
             // A [`FuseRule::ExpiresAtRange`] item whose path has reached its
-            // record's `RANGE` is left live here, even when the designed
-            // lifetime cap — which for a measured record is derived from the
-            // same `RANGE` — falls on this very tick. That measured end is
+            // record's `RANGE` is left live here on the one tick the designed
+            // lifetime cap first falls due, even when that is the same tick —
+            // which for a measured record it is, because the cap is derived
+            // from the same `RANGE`. That measured end is
             // [`decide`](Self::decide)'s to report, and expiring the item here
             // would report the cap instead and hide the end the record
-            // measured. The item is removed on this tick either way, so the
-            // deferral never extends a flight.
-            if live.state.reaches_range_end() {
+            // measured.
+            //
+            // The deferral is that one tick, not a suspension: a later tick
+            // expires the item even when nobody asked its fuse, so an item the
+            // caller never decides cannot outlive its declared lifetime (and a
+            // retired dud, whose fuse can never be consumed, is never deferred
+            // at all).
+            let defer_to_the_measured_end = live.state.reaches_range_end()
+                && live.state.ticks_live() == live.state.lifetime_ticks();
+            if defer_to_the_measured_end {
                 continue;
             }
             if live.state.is_expired() {
