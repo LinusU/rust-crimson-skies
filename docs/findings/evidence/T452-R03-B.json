@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T452-R.03-B",
+ "candidate_tree": "f25f2df711575f4375cf9601e87fe3b2002268f8",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-28T01:07:27Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t452_r03_b_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t452_r03_b_image_pins_the_parser_default_read_and_slot_store", "status": "pass", "evidence": ["cargo-test.log", "ammo-declarations.json"]}, {"id": "accept_t452_r03_b_slot_count_is_cluster_size_not_ammo_limit", "status": "pass", "evidence": ["cargo-test.log", "ammo-declarations.json"]}, {"id": "accept_t452_r03_b_retail_rocket_stacks_follow_cluster_size", "status": "pass", "evidence": ["cargo-test.log", "ammo-declarations.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "5cc9995f13800c7f690a281442529588b847ca1396fbfad22e4e0ab768523aa6", "kind": "log"}, {"path": "ammo-declarations.json", "sha256": "fa7ffb7777ca2e02410b24fcdfe05e4a9b427d40287239aa0fe0c37540bda63b", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer; no independent review yet)", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR) and the engine image (CS_ENGINE_IMAGE); the report is derived from the recorded log plus a second production pass recorded in ammo-declarations.json. MEASURED (addresses, record names and counts only; provenance static, never verified_original): the weapons.zrd record parser (0x5ad630) reads AMMO_LIMIT at 0x5ad925 into the float at record + 0x18, defaulted to 50.0 at 0x5ad805; the slot count the installer reads, (record + 0x210) + 0xc, is filled from CLUSTER_SIZE at 0x4baa17 in a zero-filled object (0 when absent), per slot, and not from AMMO_LIMIT; through cs_content::ordnance::read_original_ammo_declarations the eleven selectable rocket records all declare CLUSTER_SIZE and only wep_12 also declares AMMO_LIMIT (100, stack 2). NOT CLAIMED: any original-run behavior (retail is read access, no agent ran the original); any reader of the parsed AMMO_LIMIT float (a negative static search found none, which is not proof of absence), so the meaning of its 50.0 default and of 100 / 9999 on ordnance records is unknown; the runtime use of the installed count; the media mapping and equipment-rule census, which stay with the parent task T452-R.03. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
