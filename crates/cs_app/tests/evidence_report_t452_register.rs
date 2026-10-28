@@ -4,12 +4,12 @@
 //! not part of the acceptance suite and fails loudly when its inputs are
 //! missing.
 //!
-//! 1. `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t452_register_ --include-ignored 2>&1 |
+//! 1. `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t452_ --include-ignored 2>&1 |
 //!    tee private/evidence/T452-RUNTIME-REGISTER/cargo-test.log` (note the exit status)
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/T452-RUNTIME-REGISTER \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t452_register_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t452_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
 //!      cargo test --locked -p cs_app --test cs_app_tests_a evidence_report_t452_register -- --ignored
 //!    ```
@@ -36,21 +36,22 @@ use cs_app::ordnance::{OriginalRegistrationOutcome, read_and_register_measured_o
 use cs_assets::install::{self, content_fingerprint, fingerprint, sha256};
 use cs_sim::weapons::{FuseRule, GuidanceRule, OrdnanceRegistry};
 
-const RETAIL_TESTS: [&str; 2] = [
+const RETAIL_TESTS: [&str; 3] = [
     "accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures",
     "accept_t452_register_retail_a_registered_measured_component_launches",
+    "accept_t452_inherit_retail_the_measured_wep_04_ramps_through_the_session",
 ];
 
 /// Every id the measurement can express, in member order.
-const EXPECTED_REGISTERED: [&str; 10] = [
-    "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11", "wep_14", "wep_15",
-    "wep_24",
+const EXPECTED_REGISTERED: [&str; 13] = [
+    "wep_04", "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11", "wep_14",
+    "wep_15", "wep_24", "wep_25", "wep_27",
 ];
 
 /// The ids a measured value keeps out of the runtime registry, in member order.
-const EXPECTED_BLOCKED: [&str; 6] = ["wep_04", "wep_12", "wep_13", "wep_26", "wep_25", "wep_27"];
+const EXPECTED_BLOCKED: [&str; 3] = ["wep_12", "wep_13", "wep_26"];
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-registration.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): the sixteen hardpoint components T452.01's rules classify are read from the owner's weapons.zrd by read_original_component_table, read_original_weapon_records, read_original_weapon_media, read_original_ammo_declarations and read_original_weapons_provenance, then each is lowered by cs_app::ordnance::measured_ordnance_declaration and cs_app::ordnance::lower_ordnance and inserted into a real cs_sim::weapons::OrdnanceRegistry by cs_app::ordnance::register_measured_ordnance. Every value comes from a measurement: the family from the record's own keys (T452.01); the launch speed from VELOCITY, which T452-R.01 measured as metres per second along the launch direction, with Full inheritance for every record whose ACCELERATION is zero and the release delay measured as zero because T452-R.04 measured that the airframe row's refire interval delays the next release and never the current one; the per-slot stack from CLUSTER_SIZE (T452-R.03-B), cross-checked against the ammunition reader, one launch spending one unit (T452-R.02 section 5); the fuse from the record's own DETONATION_DISTANCE for a seeker, because T452-R.02 measured that the proximity path requires LOCK_ON, or from a declared DETONATION_TIME; the lost-target rule as coast-then-detonate at the end of RANGE, which T452-R.02 section 4 measured over LOCK_ON rather than over the ROCKET flag and T452-R.05 confirmed for the glidebomb wep_25; the lifetime as the record's own measured flight rule (RANGE over the flown speed, T452-R.04 section 2) evaluated at a stationary launcher and rounded up to the session's 30 Hz tick, because the runtime field is a fixed cap and the measured rule is range-bounded; the area as the record's IMPACT_PROXIMITY blast radius with the one-tick lifetime the runtime's bounded-area record needs for an instantaneous blast (T1318, T452-R.02 section 2); the damage channels from ARMOR_DAMAGE and HEALTH_DAMAGE; the marker status from BEEPER with its declared TIME (T452-R.02 section 1); and the media from the record's own FLYOUT MODEL and FIRE SOUND entry (T452-R.03-C). Two fields are designed vocabulary, not measured values, and say so: the mount key names the measured mount id (wep_05 -> weapon_mount_05) and the hardpoint kind is the project's own Underslung, because no record and no screen states where on the airframe a slot sits. The unit mass is the measured ABSENCE of a per-type term, recorded as zero: the airframe weight total adds a flat 480 weight per enabled rocket box and reads no weapon record field, so a loaded type contributes nothing to any weight total, and the flat 480/410 per box, charged per box rather than per round and in a weight unit whose conversion to kilograms is unmeasured, is kept as the named claim t452_register.limit.per_box_weight rather than converted into a kilogram figure. NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); that the registered components fly as the original's do in any observable way. NOT YET EXPRESSIBLE, and therefore not registered, with the claim and the resolving task named per id: the measured lateral-remainder launch inheritance and its ACCELERATION ramp (t452_register.limit.inheritance_ramp, task T452-REG-INHERITANCE-RAMP, wep_04, wep_25, wep_26, wep_27); the measured silent expiry at the end of RANGE with no detonation (t452_register.limit.silent_expiry, task T452-REG-SILENT-EXPIRY, wep_12, wep_13, wep_26); and a measured silent launch, a record with no declared FIRE SOUND (t452_register.limit.silent_launch, task T452-REG-MEDIA-SILENCE, wep_26). Nothing was defaulted to make an id register, and the two claims the runtime vocabulary cannot yet express for registered ids are kept on their catalogue entries: the SONIC/FLASH pilot incapacitation (t452_r02.limit.status_incapacitation, follow-up T452-R05-STATUS-KIND) and the BEEPER_SEEKER retargeting (t452_r02.limit.beeper_seeker_guidance). The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated structurally with tools/validate_evidence.py - not with --require-pass, because the report's `unknowns` list carries every value this task could not express: the list is derived, not typed, from the registration report's own claims and blockers.";
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-registration.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): the sixteen hardpoint components T452.01's rules classify are read from the owner's weapons.zrd by read_original_component_table, read_original_weapon_records, read_original_weapon_media, read_original_ammo_declarations and read_original_weapons_provenance, then each is lowered by cs_app::ordnance::measured_ordnance_declaration and cs_app::ordnance::lower_ordnance and inserted into a real cs_sim::weapons::OrdnanceRegistry by cs_app::ordnance::register_measured_ordnance. Every value comes from a measurement: the family from the record's own keys (T452.01); the launch speed from VELOCITY, which T452-R.01 measured as metres per second along the launch direction, with Full inheritance for every record whose ACCELERATION is zero, and for a record whose ACCELERATION is non-zero the measured lateral-remainder ramp (T452-R.01): the speed scalar opens at |launcher| + 1e-4, its target is VELOCITY + |launcher|, every tick it gains dt*ACCELERATION clamped at the target, the launcher's velocity minus its launch-direction part is retained as the lateral remainder, and the recomposed velocity displaces the item by dt each step; the release delay measured as zero because T452-R.04 measured that the airframe row's refire interval delays the next release and never the current one; the per-slot stack from CLUSTER_SIZE (T452-R.03-B), cross-checked against the ammunition reader, one launch spending one unit (T452-R.02 section 5); the fuse from the record's own DETONATION_DISTANCE for a seeker, because T452-R.02 measured that the proximity path requires LOCK_ON, or from a declared DETONATION_TIME; the lost-target rule as coast-then-detonate at the end of RANGE, which T452-R.02 section 4 measured over LOCK_ON rather than over the ROCKET flag and T452-R.05 confirmed for the glidebomb wep_25; the lifetime as the record's own measured flight rule (RANGE over the flown speed, T452-R.04 section 2) evaluated at a stationary launcher and rounded up to the session's 30 Hz tick, because the runtime field is a fixed cap and the measured rule is range-bounded; the area as the record's IMPACT_PROXIMITY blast radius with the one-tick lifetime the runtime's bounded-area record needs for an instantaneous blast (T1318, T452-R.02 section 2); the damage channels from ARMOR_DAMAGE and HEALTH_DAMAGE; the marker status from BEEPER with its declared TIME (T452-R.02 section 1); and the media from the record's own FLYOUT MODEL and FIRE SOUND entry (T452-R.03-C). Two fields are designed vocabulary, not measured values, and say so: the mount key names the measured mount id (wep_05 -> weapon_mount_05) and the hardpoint kind is the project's own Underslung, because no record and no screen states where on the airframe a slot sits. The unit mass is the measured ABSENCE of a per-type term, recorded as zero: the airframe weight total adds a flat 480 weight per enabled rocket box and reads no weapon record field, so a loaded type contributes nothing to any weight total, and the flat 480/410 per box, charged per box rather than per round and in a weight unit whose conversion to kilograms is unmeasured, is kept as the named claim t452_register.limit.per_box_weight rather than converted into a kilogram figure. NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); that the registered components fly as the original's do in any observable way. NOT YET EXPRESSIBLE, and therefore not registered, with the claim and the resolving task named per id: the measured silent expiry at the end of RANGE with no detonation (t452_register.limit.silent_expiry, task T452-REG-SILENT-EXPIRY, wep_12, wep_13, wep_26). Nothing was defaulted to make an id register, and every measured value the runtime vocabulary cannot yet express for a declared id — the kept claims and the blockers — is listed in this report's `unknowns` with the record it sits on and the task that resolves it. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated structurally with tools/validate_evidence.py - not with --require-pass, because the report's `unknowns` list carries every value this task could not express: the list is derived, not typed, from the registration report's own claims and blockers.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -145,7 +146,8 @@ fn evidence_report_t452_register_writes_the_acceptance_report() {
                 };
                 rows.push(format!(
                     "{{\"record\": {}, \"status\": \"registered\", \"family\": {}, \
-                     \"mount\": {}, \"launch_speed_mps\": {}, \"release_delay_ticks\": {}, \
+                     \"mount\": {}, \"launch_speed_mps\": {}, \"inheritance\": {}, \
+                     \"acceleration_mps2\": {}, \"release_delay_ticks\": {}, \
                      \"capacity_units\": {}, \"unit_mass_kg\": {}, \"arming\": {}, \
                      \"fuse\": {}, \"guidance\": {}, \"lifetime_ticks\": {}, \
                      \"area\": {}, \"armor_damage\": {}, \"internal_damage\": {}, \
@@ -154,6 +156,11 @@ fn evidence_report_t452_register_writes_the_acceptance_report() {
                     jstr(family.label()),
                     jstr(projectile.launch().mount().as_str()),
                     projectile.launch().launch_speed_mps(),
+                    jstr(projectile.launch().inheritance().label()),
+                    projectile
+                        .launch()
+                        .acceleration_mps2()
+                        .map_or_else(|| "null".to_owned(), |rate| rate.to_string()),
                     projectile.launch().release_delay_ticks(),
                     projectile.stack().capacity_units(),
                     projectile.stack().unit_mass_kg(),
@@ -447,7 +454,7 @@ fn parse_suite(log: &str) -> Suite {
                 .to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !name.starts_with("accept_t452_register_") {
+            if !name.starts_with("accept_t452_") {
                 continue;
             }
             match tail.split_whitespace().next() {

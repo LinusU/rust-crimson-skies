@@ -298,6 +298,7 @@ mod accept_t420_mesh_ccd;
 mod accept_t424_collider_on_body;
 mod accept_t446_ai_navigation_wiring;
 mod accept_t452_beeper;
+mod accept_t452_inherit;
 mod accept_t452_ordnance_catalogue;
 mod accept_t452_register;
 mod accept_t457_loop_route_ecs_binding;

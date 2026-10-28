@@ -24,9 +24,8 @@ use bevy::prelude::{ChildOf, Entity, GlobalTransform, Vec3, World};
 use cs_app::ordnance::{
     ORIGINAL_ORDNANCE_UNIT_MASS_KG, OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
-    OriginalRegistrationOutcome, OriginalRegistrationReport, T452_INHERITANCE_BLOCKED,
-    T452_MEASURED_BEHAVIOUR_CLAIM, T452_PER_BOX_WEIGHT_CLAIM, T452_REG_INHERITANCE_TASK,
-    T452_SILENT_EXPIRY_BLOCKED, T452_SILENT_EXPIRY_TASK, lower_ordnance,
+    OriginalRegistrationOutcome, OriginalRegistrationReport, T452_MEASURED_BEHAVIOUR_CLAIM,
+    T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED, T452_SILENT_EXPIRY_TASK, lower_ordnance,
     measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
     step_ordnance_session,
 };
@@ -42,7 +41,9 @@ use cs_content::ordnance::{
 };
 use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy, DamageResolver};
 use cs_sim::time::TickRate;
-use cs_sim::weapons::{AreaEffect, FuseRule, GuidanceRule, LostTargetBehavior, OrdnanceRegistry};
+use cs_sim::weapons::{
+    AreaEffect, FuseRule, GuidanceRule, InheritanceRule, LostTargetBehavior, OrdnanceRegistry,
+};
 use cs_types::Tick;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, Origin, Provenance};
@@ -176,65 +177,38 @@ pub(crate) fn guided_ammo() -> OriginalAmmoDeclaration {
     }
 }
 
-/// One measured record the runtime cannot express: `ACCELERATION` non-zero, so
-/// its launch inheritance is the measured lateral-remainder ramp.
-fn ramping_row() -> (OriginalComponentLaunch, OriginalWeaponRecord) {
-    let row = OriginalComponentLaunch {
-        record: "wep_04".to_owned(),
-        family: DeclaredOrdnanceFamily::GuidedRocket,
-        mount: OriginalMountDeclaration::RocketSlot { slots: 8 },
-        velocity: Some(450.0),
-        fire_rate: Some(1.0),
-        proximity_trigger_m: Some(30.0),
-        lifetime: OriginalLifetime::Undeclared,
-        area: OriginalAreaDeclaration {
-            radius_m: Some(25.0),
-            lifetime_s: None,
-        },
-        damage: OriginalDamageDeclaration {
-            armor: Some(25.0),
-            health: Some(25.0),
-            single: None,
-        },
-        statuses: Vec::new(),
-        cluster: OriginalClusterShape::Volley { munitions: 1 },
-        unknowns: Vec::new(),
+/// One measured record the runtime still cannot express: an unguided
+/// area-denial engine with no trigger the measured proximity path reaches,
+/// so its measured end of flight is the silent expiry at `RANGE`.
+fn blocked_row() -> OriginalComponentLaunch {
+    let mut row = guided_row();
+    row.record = "wep_12".to_owned();
+    row.family = DeclaredOrdnanceFamily::AreaDenialEngine;
+    row.proximity_trigger_m = Some(35.0);
+    row.damage = OriginalDamageDeclaration {
+        armor: Some(0.0),
+        health: Some(0.0),
+        single: None,
     };
-    let mut first_values = BTreeMap::new();
-    first_values.insert("VELOCITY".to_owned(), 450.0);
-    first_values.insert("ACCELERATION".to_owned(), 150.0);
-    first_values.insert("RANGE".to_owned(), 900.0);
-    first_values.insert("DETONATION_DISTANCE".to_owned(), 30.0);
-    first_values.insert("CLUSTER_SIZE".to_owned(), 1.0);
-    first_values.insert("LOCK_ON".to_owned(), 1.0);
-    let record = OriginalWeaponRecord {
-        record: "wep_04".to_owned(),
-        keys: first_values.keys().cloned().collect(),
-        first_values,
-        second_values: BTreeMap::new(),
-        first_texts: BTreeMap::new(),
-    };
-    (row, record)
+    row
 }
 
-fn ramping_media() -> OriginalWeaponMedia {
-    OriginalWeaponMedia {
-        record: "wep_04".to_owned(),
-        keys: BTreeSet::new(),
-        fire: guided_media().fire,
-        flyout: guided_media().flyout,
-        impact_rows: Vec::new(),
-        destroy_animation: None,
-        looped_sound_name: None,
-    }
+fn blocked_record() -> OriginalWeaponRecord {
+    let mut record = guided_record();
+    record.record = "wep_12".to_owned();
+    record
 }
 
-fn ramping_ammo() -> OriginalAmmoDeclaration {
-    OriginalAmmoDeclaration {
-        record: "wep_04".to_owned(),
-        ammo_limit: Some(100.0),
-        cluster_size: Some(1.0),
-    }
+fn blocked_media() -> OriginalWeaponMedia {
+    let mut media = guided_media();
+    media.record = "wep_12".to_owned();
+    media
+}
+
+fn blocked_ammo() -> OriginalAmmoDeclaration {
+    let mut ammo = guided_ammo();
+    ammo.record = "wep_12".to_owned();
+    ammo
 }
 
 pub(crate) fn session_id() -> SessionId {
@@ -484,46 +458,42 @@ fn accept_t452_register_lowering_refuses_a_field_no_measurement_states() {
         "the refusal names the field: {text}"
     );
 
-    // And the measured path itself refuses a record whose fuse the runtime
-    // cannot express, registering nothing and naming the claim and task.
-    let (row, record) = ramping_row();
+    // And the measured path itself refuses a record whose end of flight the
+    // runtime cannot express, registering nothing and naming the claim.
     let error = measured_ordnance_declaration(
-        &row,
-        &record,
-        &ramping_media(),
-        &ramping_ammo(),
+        &blocked_row(),
+        &blocked_record(),
+        &blocked_media(),
+        &blocked_ammo(),
         &provenance(),
         TICKS_PER_SECOND,
     )
-    .expect_err("the ramping record's inheritance is unexpressible");
+    .expect_err("the record's measured silent expiry is unexpressible");
     let blocker = error
         .iter()
-        .find(|blocker| blocker.claim == T452_INHERITANCE_BLOCKED)
-        .unwrap_or_else(|| panic!("the inheritance claim is named: {error:?}"));
-    assert_eq!(blocker.field, "launch.inheritance");
-    assert_eq!(blocker.resolving_task, T452_REG_INHERITANCE_TASK);
-    assert!(blocker.affects.contains("launch geometry"));
+        .find(|blocker| blocker.claim == T452_SILENT_EXPIRY_BLOCKED)
+        .unwrap_or_else(|| panic!("the silent-expiry claim is named: {error:?}"));
+    assert_eq!(blocker.field, "fuse");
 }
 
 /// Every declared id is either registered or blocked with a named claim, the
 /// content it affects and the task that resolves it — never silently dropped.
 #[test]
 fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
-    let (ramping, ramping_record) = ramping_row();
-    let table = table(vec![guided_row(), ramping]);
+    let table = table(vec![guided_row(), blocked_row()]);
     let mut registry = OrdnanceRegistry::new();
     let report: OriginalRegistrationReport = register_measured_ordnance(
         &table,
-        &[guided_record(), ramping_record],
-        &[guided_media(), ramping_media()],
-        &[guided_ammo(), ramping_ammo()],
+        &[guided_record(), blocked_record()],
+        &[guided_media(), blocked_media()],
+        &[guided_ammo(), blocked_ammo()],
         &provenance(),
         &mut registry,
         TICKS_PER_SECOND,
     );
     assert_eq!(report.declared, 2);
     assert_eq!(report.registered_records(), vec!["wep_05"]);
-    assert_eq!(report.blocked_records(), vec!["wep_04"]);
+    assert_eq!(report.blocked_records(), vec!["wep_12"]);
     assert!(!report.is_complete());
     for blocker in report.blockers() {
         assert!(!blocker.record.is_empty());
@@ -588,26 +558,11 @@ fn accept_t452_media_silence_a_record_without_fire_sound_registers_and_plays_not
 /// defaulted `Impact` or `Timed` fuse.
 #[test]
 fn accept_t452_register_a_silent_flight_end_is_a_claim_not_a_fuse() {
-    let mut row = guided_row();
-    row.record = "wep_12".to_owned();
-    row.family = DeclaredOrdnanceFamily::AreaDenialEngine;
-    row.proximity_trigger_m = Some(35.0);
-    row.damage = OriginalDamageDeclaration {
-        armor: Some(0.0),
-        health: Some(0.0),
-        single: None,
-    };
-    let mut record = guided_record();
-    record.record = "wep_12".to_owned();
-    let mut media = guided_media();
-    media.record = "wep_12".to_owned();
-    let mut ammo = guided_ammo();
-    ammo.record = "wep_12".to_owned();
     let error = measured_ordnance_declaration(
-        &row,
-        &record,
-        &media,
-        &ammo,
+        &blocked_row(),
+        &blocked_record(),
+        &blocked_media(),
+        &blocked_ammo(),
         &provenance(),
         TICKS_PER_SECOND,
     )
@@ -648,19 +603,23 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
     assert_eq!(report.declared, 16);
     assert_eq!(report.outcomes.len(), 16);
 
-    // The measurements this stage can express: ten ids register. They are the
-    // full-inheritance records plus the timer-fused flare and the torpedo.
+    // The measurements this stage can express: thirteen ids register. They
+    // are the full-inheritance records, the timer-fused flare, the torpedo,
+    // and the three `ACCELERATION` records whose lateral-remainder ramp is
+    // now expressible.
     assert_eq!(
         report.registered_records(),
         vec![
-            "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11", "wep_14",
-            "wep_15", "wep_24",
+            "wep_04", "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11",
+            "wep_14", "wep_15", "wep_24", "wep_25", "wep_27",
         ],
         "the ids whose measured values the runtime vocabulary expresses"
     );
 
-    // The six that cannot be expressed are blocked with the measured value's
-    // claim, its content and its resolving task — never defaulted.
+    // The three that cannot be expressed are blocked with the measured
+    // value's claim, its content and its resolving task — never defaulted.
+    // `wep_26`'s ramp lowered too; what still keeps it out is its silent end
+    // of flight.
     let mut blocked: Vec<(&str, Vec<&str>)> = Vec::new();
     for outcome in &report.outcomes {
         if let OriginalRegistrationOutcome::Blocked { record, blockers } = outcome {
@@ -674,12 +633,9 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
         }
     }
     let expected = [
-        ("wep_04", T452_INHERITANCE_BLOCKED),
         ("wep_12", T452_SILENT_EXPIRY_BLOCKED),
         ("wep_13", T452_SILENT_EXPIRY_BLOCKED),
-        ("wep_25", T452_INHERITANCE_BLOCKED),
-        ("wep_26", T452_INHERITANCE_BLOCKED),
-        ("wep_27", T452_INHERITANCE_BLOCKED),
+        ("wep_26", T452_SILENT_EXPIRY_BLOCKED),
     ];
     assert_eq!(blocked.len(), expected.len(), "{blocked:?}");
     for (record, claim) in expected {
@@ -692,8 +648,8 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
             "{record} must name {claim}, got {claims:?}"
         );
     }
-    // The flak record additionally has no declared launch sound, whose claim
-    // names its own task.
+    // The flak record's ramp expresses now; a missing launch sound is a
+    // measured silence, not a blocker.
     let (_, flak) = blocked
         .iter()
         .find(|(name, _)| *name == "wep_26")
@@ -721,6 +677,28 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
         panic!("wep_05's own DETONATION_DISTANCE is its fuse");
     };
     assert_eq!(fuse.trigger_radius_m(), 15.0);
+
+    // A registered `ACCELERATION` record carries the measured ramp: the
+    // lateral-remainder rule and its own `ACCELERATION` rate, not a share.
+    let wep_04 =
+        cs_types::content::ContentId::from_source(cs_types::content::ContentKind::Weapon, "wep_04")
+            .expect("a weapon id");
+    let id = cs_sim::weapons::OrdnanceId::try_new(wep_04).expect("the weapon namespace");
+    let ramping = registry
+        .get(&id)
+        .and_then(|component| component.as_projectile())
+        .expect("wep_04 registered as a flyable component");
+    assert_eq!(
+        ramping.launch().inheritance(),
+        InheritanceRule::LateralRemainder,
+        "wep_04's measured inheritance is the lateral remainder"
+    );
+    assert_eq!(
+        ramping.launch().acceleration_mps2(),
+        Some(150.0),
+        "wep_04's own ACCELERATION is the ramp's rate"
+    );
+    assert_eq!(ramping.launch().launch_speed_mps(), 450.0);
 
     // The live-marker record carries the measured `BEEPER` `TIME`.
     let wep_10 = cs_sim::weapons::OrdnanceId::try_new(
@@ -750,7 +728,7 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
     }
     assert!(
         !report.is_complete(),
-        "six measured values stay unexpressible"
+        "three measured values stay unexpressible"
     );
     for blocker in report.blockers() {
         assert!(

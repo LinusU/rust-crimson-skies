@@ -280,6 +280,8 @@ fn lower_launch(
         "launch.inheritance",
         &declared.inheritance,
     )?);
+    let acceleration_mps2 =
+        known_or_refuse("launch.acceleration_mps2", &declared.acceleration_mps2)?;
     let release_delay_ticks =
         known_or_refuse("launch.release_delay_ticks", &declared.release_delay_ticks)?;
     LaunchGeometry::try_new(
@@ -288,6 +290,7 @@ fn lower_launch(
         launch_speed_mps,
         inheritance,
         release_delay_ticks,
+        acceleration_mps2,
     )
     .map_err(OrdnanceLowerError::Definition)
 }
@@ -531,6 +534,7 @@ fn lower_inheritance(declared: DeclaredInheritanceRule) -> InheritanceRule {
         DeclaredInheritanceRule::Full => InheritanceRule::Full,
         DeclaredInheritanceRule::Fraction { share } => InheritanceRule::Fraction { share },
         DeclaredInheritanceRule::None => InheritanceRule::None,
+        DeclaredInheritanceRule::LateralRemainder => InheritanceRule::LateralRemainder,
     }
 }
 
@@ -3620,10 +3624,13 @@ pub const T452_MEASURED_STATUS_CLAIM: &str = "t452_register.status";
 /// vocabulary is not.
 pub const T452_DESIGNED_LAUNCH_NAMES_CLAIM: &str = "t452_register.designed_launch_names";
 
-/// Blocker: the measured launch inheritance is the lateral-remainder ramp,
-/// which the runtime has no rule for. Resolving task:
-/// [`T452_REG_INHERITANCE_TASK`].
-pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_ramp";
+/// Blocker: the measured `INSTANT` launch computes the lateral-remainder
+/// vector the runtime now expresses, but its measured first step displaces
+/// by `RANGE·launch_dir` in a single step — a one-step flight the runtime's
+/// per-tick advancement has no rule for. (The `ACCELERATION` ramp this claim
+/// family carried is resolved: [`T452_REG_INHERITANCE_TASK`] added the
+/// lateral-remainder rule and its acceleration field.)
+pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_instant";
 
 /// Blocker: the measured end of flight is a silent expiry at the record's
 /// `RANGE`, which the runtime fuse vocabulary has no variant for. Resolving
@@ -3967,27 +3974,38 @@ pub fn measured_ordnance_declaration(
             .expect("the record member's provenance carries its span"),
     };
 
-    // Launch geometry: the measured speed, inheritance and (measured) absence
-    // of a release delay. The refire interval the mount row states delays the
-    // *next* release, never the current one (T452-R.04 §1), so the component's
-    // own release delay is the measured zero.
+    // Launch geometry: the measured speed, inheritance, acceleration and
+    // (measured) absence of a release delay. The refire interval the mount
+    // row states delays the *next* release, never the current one
+    // (T452-R.04 §1), so the component's own release delay is the measured
+    // zero. The `ACCELERATION` field is carried only for the rule that runs
+    // it: for a `Full` or `INSTANT` record the parser's `+0x38` plays no
+    // part in the measured step, so `None` is the measured value, not a
+    // dropped declaration.
     let inheritance = match geometry.inheritance {
         cs_content::ordnance::OriginalInheritance::Full => {
             designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Full)
         }
-        cs_content::ordnance::OriginalInheritance::LateralRemainder
-        | cs_content::ordnance::OriginalInheritance::Instant => {
+        cs_content::ordnance::OriginalInheritance::LateralRemainder => designed_field(
+            T452_MEASURED_LAUNCH_CLAIM,
+            DeclaredInheritanceRule::LateralRemainder,
+        ),
+        cs_content::ordnance::OriginalInheritance::Instant => {
             blockers.push(OriginalRegistrationBlocker::new(
                 name,
                 "launch.inheritance",
                 T452_INHERITANCE_BLOCKED,
-                "the launch geometry of this record, which starts at the launcher's speed \
-                 and ramps to VELOCITY + |launcher| at its ACCELERATION",
-                T452_REG_INHERITANCE_TASK,
+                "the launch geometry of this INSTANT record: its measured first step \
+                 displaces by RANGE·launch_dir in a single step, which the runtime's \
+                 per-tick advancement cannot express",
+                "a follow-up that expresses the measured INSTANT one-step displacement",
             ));
             designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Full)
         }
     };
+    let acceleration_mps2 = geometry.acceleration_mps2.filter(|_| {
+        geometry.inheritance == cs_content::ordnance::OriginalInheritance::LateralRemainder
+    });
     let mount_id = cs_content::ordnance::original_mount_id(name);
     let mount = designed_field(
         T452_DESIGNED_LAUNCH_NAMES_CLAIM,
@@ -4009,6 +4027,11 @@ pub fn measured_ordnance_declaration(
             Resolved::Known(known) => Resolved::Known(known),
             Resolved::Unknown { claim_id, reason } => Resolved::Unknown { claim_id, reason },
         },
+        acceleration_mps2: measured_field(
+            provenance,
+            T452_MEASURED_LAUNCH_CLAIM,
+            acceleration_mps2,
+        ),
         release_delay_ticks: measured_field(provenance, T452_MEASURED_LAUNCH_CLAIM, 0),
     };
 

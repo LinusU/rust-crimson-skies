@@ -160,6 +160,12 @@ pub enum DeclaredInheritanceRule {
     },
     /// The item keeps none of the launcher's velocity.
     None,
+    /// The measured lateral-remainder rule
+    /// ([`OriginalInheritance::LateralRemainder`]): the launch-direction part
+    /// of the launcher's velocity is removed, a speed scalar carries it from
+    /// `|launcher|` and ramps toward `launch speed + |launcher|` at the
+    /// declared `acceleration_mps2`.
+    LateralRemainder,
 }
 
 impl fmt::Display for DeclaredInheritanceRule {
@@ -168,6 +174,7 @@ impl fmt::Display for DeclaredInheritanceRule {
             Self::Full => f.write_str("full"),
             Self::Fraction { share } => write!(f, "fraction({share})"),
             Self::None => f.write_str("none"),
+            Self::LateralRemainder => f.write_str("lateral_remainder"),
         }
     }
 }
@@ -189,6 +196,11 @@ pub struct DeclaredLaunchGeometry {
     pub launch_speed_mps: Resolved<f64>,
     /// The declared share of the launcher's velocity the item keeps.
     pub inheritance: Resolved<DeclaredInheritanceRule>,
+    /// The per-second gain the launch-direction scalar runs at for
+    /// [`DeclaredInheritanceRule::LateralRemainder`], in metres per second
+    /// squared — the record's `ACCELERATION` (`+0x38`). `None` for every
+    /// rule that runs no ramp.
+    pub acceleration_mps2: Resolved<Option<f64>>,
     /// Ticks between the launch intent and the actual release.
     pub release_delay_ticks: Resolved<u64>,
 }
@@ -833,6 +845,13 @@ pub enum OrdnanceSchemaError {
         /// The rejected share.
         share: f64,
     },
+    /// A known launch acceleration was NaN or infinite.
+    NonFiniteAcceleration,
+    /// A known launch acceleration was zero or negative.
+    NonPositiveAcceleration {
+        /// The rejected value.
+        acceleration_mps2: f64,
+    },
     /// A known stack capacity was zero, so the launcher can never be loaded.
     ZeroStackCapacity,
     /// A known unit mass was NaN or infinite.
@@ -926,6 +945,15 @@ impl fmt::Display for OrdnanceSchemaError {
                     "the inherited velocity share must be within [0, 1]: {share}"
                 )
             }
+            Self::NonFiniteAcceleration => {
+                write!(f, "the launch acceleration must be finite")
+            }
+            Self::NonPositiveAcceleration { acceleration_mps2 } => {
+                write!(
+                    f,
+                    "the launch acceleration must be positive: {acceleration_mps2}"
+                )
+            }
             Self::ZeroStackCapacity => {
                 write!(
                     f,
@@ -1008,6 +1036,16 @@ fn validate_projectile(projectile: &DeclaredProjectile) -> Result<(), OrdnanceSc
         && (!share.is_finite() || !(0.0..=1.0).contains(&share))
     {
         return Err(OrdnanceSchemaError::InvalidInheritanceShare { share });
+    }
+    if let Resolved::Known(known) = &projectile.launch.acceleration_mps2
+        && let Some(acceleration_mps2) = known.value
+    {
+        if !acceleration_mps2.is_finite() {
+            return Err(OrdnanceSchemaError::NonFiniteAcceleration);
+        }
+        if acceleration_mps2 <= 0.0 {
+            return Err(OrdnanceSchemaError::NonPositiveAcceleration { acceleration_mps2 });
+        }
     }
     if let Resolved::Known(known) = &projectile.stack.capacity_units
         && known.value == 0
@@ -2280,6 +2318,7 @@ pub fn declared_synthetic_launch() -> DeclaredLaunchGeometry {
         hardpoint: declared_known(DeclaredHardpointKind::WingLeft),
         launch_speed_mps: declared_known(210.0),
         inheritance: declared_known(DeclaredInheritanceRule::None),
+        acceleration_mps2: declared_known(None),
         release_delay_ticks: declared_known(0),
     }
 }

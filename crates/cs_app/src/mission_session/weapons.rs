@@ -440,6 +440,7 @@ pub fn designed_rocket_with_capacity(capacity_units: u64) -> DeclaredOrdnance {
             hardpoint: known(DeclaredHardpointKind::Underslung),
             launch_speed_mps: known(MISSION_ROCKET_LAUNCH_SPEED_MPS),
             inheritance: known(OrdnanceInheritanceRule::Full),
+            acceleration_mps2: known(None),
             release_delay_ticks: known(0),
         },
         stack: DeclaredStackLoad {

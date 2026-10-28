@@ -110,8 +110,8 @@ use crate::environment::{air_relative_velocity_m_s, world_velocity_from_air_m_s}
 use crate::flight::BoostParameters;
 use crate::time::TickRate;
 use crate::weapons::guns::{
-    InheritanceRule, MountTransform, ProjectileId, ProjectileSegment, SweptHit,
-    WEAPON_DAMAGE_CHANNELS, WeaponDamage,
+    InheritanceRule, MountTransform, ProjectileId, ProjectileSegment, RAMP_START_SPEED_MPS,
+    SweptHit, WEAPON_DAMAGE_CHANNELS, WeaponDamage,
 };
 
 // ---------------------------------------------------------------- identity ----
@@ -317,6 +317,11 @@ pub struct LaunchGeometry {
     launch_speed_mps: f64,
     inheritance: InheritanceRule,
     release_delay_ticks: u64,
+    /// The per-second rate the launch-direction speed scalar gains toward
+    /// its target for [`InheritanceRule::LateralRemainder`], in metres per
+    /// second squared — the record's `ACCELERATION` (`+0x38`). `None` for
+    /// every rule that runs no ramp.
+    acceleration_mps2: Option<f64>,
 }
 
 impl LaunchGeometry {
@@ -324,14 +329,20 @@ impl LaunchGeometry {
     ///
     /// # Errors
     ///
-    /// [`OrdnanceDefinitionError::NonFiniteLaunchSpeed`] or
-    /// [`OrdnanceDefinitionError::NonPositiveLaunchSpeed`].
+    /// [`OrdnanceDefinitionError::NonFiniteLaunchSpeed`],
+    /// [`OrdnanceDefinitionError::NonPositiveLaunchSpeed`],
+    /// [`OrdnanceDefinitionError::InvalidInheritanceShare`],
+    /// [`OrdnanceDefinitionError::NonFiniteAcceleration`],
+    /// [`OrdnanceDefinitionError::NonPositiveAcceleration`],
+    /// [`OrdnanceDefinitionError::MissingAcceleration`] or
+    /// [`OrdnanceDefinitionError::UnexpectedAcceleration`].
     pub fn try_new(
         mount: DamageNodeKey,
         hardpoint: HardpointKind,
         launch_speed_mps: f64,
         inheritance: InheritanceRule,
         release_delay_ticks: u64,
+        acceleration_mps2: Option<f64>,
     ) -> Result<Self, OrdnanceDefinitionError> {
         if !launch_speed_mps.is_finite() {
             return Err(OrdnanceDefinitionError::NonFiniteLaunchSpeed);
@@ -344,12 +355,28 @@ impl LaunchGeometry {
         {
             return Err(OrdnanceDefinitionError::InvalidInheritanceShare { share });
         }
+        match acceleration_mps2 {
+            Some(acceleration_mps2) if !acceleration_mps2.is_finite() => {
+                return Err(OrdnanceDefinitionError::NonFiniteAcceleration);
+            }
+            Some(acceleration_mps2) if acceleration_mps2 <= 0.0 => {
+                return Err(OrdnanceDefinitionError::NonPositiveAcceleration { acceleration_mps2 });
+            }
+            Some(acceleration_mps2) if inheritance != InheritanceRule::LateralRemainder => {
+                return Err(OrdnanceDefinitionError::UnexpectedAcceleration { acceleration_mps2 });
+            }
+            None if inheritance == InheritanceRule::LateralRemainder => {
+                return Err(OrdnanceDefinitionError::MissingAcceleration);
+            }
+            _ => {}
+        }
         Ok(Self {
             mount,
             hardpoint,
             launch_speed_mps,
             inheritance,
             release_delay_ticks,
+            acceleration_mps2,
         })
     }
 
@@ -383,13 +410,21 @@ impl LaunchGeometry {
         self.release_delay_ticks
     }
 
+    /// The per-second acceleration the launch-direction scalar gains for
+    /// [`InheritanceRule::LateralRemainder`], in metres per second squared,
+    /// or `None` when the declared rule runs no ramp.
+    #[must_use]
+    pub const fn acceleration_mps2(&self) -> Option<f64> {
+        self.acceleration_mps2
+    }
+
     /// The item's world velocity at release, composed from the supplied
     /// mount pose and this geometry's declared rule.
     ///
     /// The composition is F27's, not a second one: the declared inheritance
-    /// share of the launcher's world velocity plus the declared launch speed
+    /// rule of the launcher's world velocity plus the declared launch speed
     /// along the mount's forward axis. No drag, no gravity and no release
-    /// impulse beyond those two terms is applied here.
+    /// impulse beyond those terms is applied here.
     #[must_use]
     pub fn release_velocity_mps(&self, transform: &MountTransform) -> [f64; 3] {
         transform.world_velocity_mps(self.inheritance, self.launch_speed_mps)
@@ -1478,6 +1513,23 @@ pub enum OrdnanceDefinitionError {
         /// The rejected share.
         share: f64,
     },
+    /// A declared launch acceleration was NaN or infinite.
+    NonFiniteAcceleration,
+    /// A declared launch acceleration was zero or negative, so the ramp
+    /// would never gain toward its target.
+    NonPositiveAcceleration {
+        /// The rejected value.
+        acceleration_mps2: f64,
+    },
+    /// A lateral-remainder launch declared no acceleration, so nothing
+    /// would ever run its speed scalar toward the target.
+    MissingAcceleration,
+    /// A launch declared an acceleration its inheritance rule never
+    /// integrates — a value no code path reads is not carried.
+    UnexpectedAcceleration {
+        /// The rejected value.
+        acceleration_mps2: f64,
+    },
     /// A launcher declared no stack capacity, so it can never be loaded.
     ZeroStackCapacity,
     /// A unit mass was NaN or infinite.
@@ -1604,6 +1656,29 @@ impl fmt::Display for OrdnanceDefinitionError {
                 write!(
                     f,
                     "the inherited velocity share must be within [0, 1]: {share}"
+                )
+            }
+            Self::NonFiniteAcceleration => {
+                write!(f, "the launch acceleration must be finite")
+            }
+            Self::NonPositiveAcceleration { acceleration_mps2 } => {
+                write!(
+                    f,
+                    "the launch acceleration must be positive: {acceleration_mps2}"
+                )
+            }
+            Self::MissingAcceleration => {
+                write!(
+                    f,
+                    "a lateral-remainder launch must declare the acceleration its scalar \
+                     ramps at"
+                )
+            }
+            Self::UnexpectedAcceleration { acceleration_mps2 } => {
+                write!(
+                    f,
+                    "only a lateral-remainder launch declares an acceleration: \
+                     {acceleration_mps2}"
                 )
             }
             Self::ZeroStackCapacity => {
@@ -5133,6 +5208,108 @@ impl From<NitroError> for OrdnanceRuntimeError {
     }
 }
 
+/// One live item's measured `ACCELERATION` ramp: the constant part of its
+/// velocity plus the scalar that gains along the launch direction.
+///
+/// This is the runtime state [`InheritanceRule::LateralRemainder`] opens at
+/// release. The launch-direction part of the launcher's velocity was removed
+/// and the scalar carries it instead: `speed_m_s` starts at
+/// `|launcher| + 1e-4` (the spawn's measured `1e-4`, pinned as
+/// `launch.inheritance_remainder_head`) and gains `acceleration_mps2` per
+/// second until it is clamped at `target_m_s` (`launch speed + |launcher|`) —
+/// the projectile node's `+0x640`/`+0x644` pair and the `0x5afd70` step,
+/// pinned as `launch.accel_step`. Every advance recomposes the air-relative
+/// velocity as `remainder_m_s + direction·speed_m_s` — the machine's
+/// multiply-accumulate — *before* the tick's displacement runs, so the
+/// swept segment [`OrdnanceState::advance`] accounts is always the ramped
+/// velocity's own (`launch.dt_displacement`: `dt·velocity`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaunchRamp {
+    /// The launch-direction part of the launcher's velocity removed at
+    /// release, kept air-relative: `launcher − direction·|launcher|`.
+    remainder_m_s: [f64; 3],
+    /// The launch direction the scalar runs along, fixed at release.
+    direction: [f64; 3],
+    /// The speed scalar: `|launcher| + 1e-4` at release.
+    speed_m_s: f64,
+    /// The scalar's ceiling: `launch speed + |launcher|`.
+    target_m_s: f64,
+    /// The per-second gain, the record's `ACCELERATION`.
+    acceleration_mps2: f64,
+}
+
+impl LaunchRamp {
+    /// Opens the ramp a lateral-remainder release carries.
+    ///
+    /// `remainder_m_s` and `direction` are already in the item's air-relative
+    /// frame; `launcher_speed_m_s` is the launcher's world speed `|launcher|`
+    /// at release, which is what the scalar counts from.
+    fn new(
+        remainder_m_s: [f64; 3],
+        direction: [f64; 3],
+        launcher_speed_m_s: f64,
+        launch_speed_mps: f64,
+        acceleration_mps2: f64,
+    ) -> Self {
+        Self {
+            remainder_m_s,
+            direction,
+            speed_m_s: launcher_speed_m_s + RAMP_START_SPEED_MPS,
+            target_m_s: launch_speed_mps + launcher_speed_m_s,
+            acceleration_mps2,
+        }
+    }
+
+    /// The lateral remainder the item keeps: `launcher − direction·|launcher|`.
+    #[must_use]
+    pub const fn remainder_m_s(&self) -> [f64; 3] {
+        self.remainder_m_s
+    }
+
+    /// The launch direction the scalar runs along.
+    #[must_use]
+    pub const fn direction(&self) -> [f64; 3] {
+        self.direction
+    }
+
+    /// The current launch-direction speed scalar.
+    #[must_use]
+    pub const fn speed_m_s(&self) -> f64 {
+        self.speed_m_s
+    }
+
+    /// The scalar's ceiling: `launch speed + |launcher|`.
+    #[must_use]
+    pub const fn target_m_s(&self) -> f64 {
+        self.target_m_s
+    }
+
+    /// The per-second gain this ramp runs at.
+    #[must_use]
+    pub const fn acceleration_mps2(&self) -> f64 {
+        self.acceleration_mps2
+    }
+
+    /// Whether the scalar has reached its target.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.speed_m_s >= self.target_m_s
+    }
+
+    /// Runs one tick of the measured step: the scalar gains
+    /// `dt_s·acceleration`, clamped at its target, then the air-relative
+    /// velocity is recomposed as `remainder + direction·scalar` for the
+    /// displacement that follows.
+    fn advance(&mut self, dt_s: f64) -> [f64; 3] {
+        self.speed_m_s = (self.speed_m_s + self.acceleration_mps2 * dt_s).min(self.target_m_s);
+        [
+            self.remainder_m_s[0] + self.direction[0] * self.speed_m_s,
+            self.remainder_m_s[1] + self.direction[1] * self.speed_m_s,
+            self.remainder_m_s[2] + self.direction[2] * self.speed_m_s,
+        ]
+    }
+}
+
 /// One live ordnance item's authoritative motion and behavior state.
 ///
 /// The declared [`ProjectileOrdnance`] travels with the item so the runtime
@@ -5141,6 +5318,8 @@ impl From<NitroError> for OrdnanceRuntimeError {
 /// [`OrdnanceState`] keeps the fuse, arming and lifetime accounting F28-A
 /// defined. `previous` and `current` are the authoritative swept segment of
 /// the current tick; an ECS body is a mirror, never a second integrator.
+/// An item released under [`InheritanceRule::LateralRemainder`] also carries
+/// the [`LaunchRamp`] that recomposes its velocity each tick.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveOrdnance {
     projectile: ProjectileId,
@@ -5150,6 +5329,7 @@ pub struct LiveOrdnance {
     previous: WorldPosition,
     current: WorldPosition,
     air_velocity_m_s: [f64; 3],
+    ramp: Option<LaunchRamp>,
 }
 
 impl LiveOrdnance {
@@ -5189,10 +5369,19 @@ impl LiveOrdnance {
         self.current
     }
 
-    /// The constant air-relative velocity the item flies with.
+    /// The air-relative velocity the item flies with: constant for every
+    /// inheritance rule except [`InheritanceRule::LateralRemainder`], whose
+    /// [`LaunchRamp`] recomposes it each tick.
     #[must_use]
     pub const fn air_velocity_m_s(&self) -> [f64; 3] {
         self.air_velocity_m_s
+    }
+
+    /// The measured `ACCELERATION` ramp this item runs, when its launch
+    /// declared [`InheritanceRule::LateralRemainder`].
+    #[must_use]
+    pub const fn launch_ramp(&self) -> Option<&LaunchRamp> {
+        self.ramp.as_ref()
     }
 
     /// The swept segment the item covered over the current tick.
@@ -5206,7 +5395,7 @@ impl LiveOrdnance {
     }
 
     /// The world velocity the item has in `wind`: the shared conversion of
-    /// its constant air-relative velocity into the world frame. The wind is
+    /// its air-relative velocity into the world frame. The wind is
     /// subtracted exactly once, at launch, and added back here.
     #[must_use]
     pub fn world_velocity_m_s(&self, wind_velocity_m_s: [f64; 3]) -> [f64; 3] {
@@ -5597,6 +5786,34 @@ impl OrdnanceRuntime {
             }
         }
         let air_velocity_m_s = air_relative_velocity_m_s(release, wind_velocity_m_s);
+        // A lateral-remainder launch carries its measured ramp: the
+        // launch-direction part of the launcher's velocity is removed into
+        // the scalar, which the advance recomposes each tick (the spawn's
+        // `0x5af315` branch and the `0x5afd70` step, T452-R.01/R.04).
+        let ramp = if definition.launch().inheritance() == InheritanceRule::LateralRemainder {
+            let direction = transform.forward.to_array();
+            let launcher = transform.inherited_velocity_mps;
+            let launcher_speed_m_s =
+                (launcher[0] * launcher[0] + launcher[1] * launcher[1] + launcher[2] * launcher[2])
+                    .sqrt();
+            let remainder = [
+                launcher[0] - direction[0] * launcher_speed_m_s,
+                launcher[1] - direction[1] * launcher_speed_m_s,
+                launcher[2] - direction[2] * launcher_speed_m_s,
+            ];
+            Some(LaunchRamp::new(
+                air_relative_velocity_m_s(remainder, wind_velocity_m_s),
+                direction,
+                launcher_speed_m_s,
+                definition.launch().launch_speed_mps(),
+                definition
+                    .launch()
+                    .acceleration_mps2()
+                    .expect("a lateral-remainder launch declares its acceleration"),
+            ))
+        } else {
+            None
+        };
         let origin = transform.origin;
         self.live.insert(
             projectile,
@@ -5616,6 +5833,7 @@ impl OrdnanceRuntime {
                 previous: origin,
                 current: origin,
                 air_velocity_m_s,
+                ramp,
             },
         );
         if definition.guidance().is_targeted() {
@@ -5663,7 +5881,15 @@ impl OrdnanceRuntime {
         }
         check_finite_wind(wind_velocity_m_s)?;
         let mut moved = Vec::with_capacity(self.live.len());
-        for live in self.live.values() {
+        for live in self.live.values_mut() {
+            // The measured ramp runs first: the scalar gains dt·ACCELERATION,
+            // clamped at its target, then the velocity the displacement below
+            // integrates is recomposed as remainder + direction·scalar — the
+            // machine's own step order (`launch.accel_step`,
+            // `launch.dt_displacement`).
+            if let Some(ramp) = live.ramp.as_mut() {
+                live.air_velocity_m_s = ramp.advance(dt_s);
+            }
             let velocity = world_velocity_from_air_m_s(live.air_velocity_m_s, wind_velocity_m_s);
             let mut position = live.current.to_array();
             for axis in 0..3 {
@@ -6572,6 +6798,7 @@ pub fn synthetic_launch_geometry() -> LaunchGeometry {
         SYNTHETIC_LAUNCH_SPEED_MPS,
         InheritanceRule::None,
         0,
+        None,
     )
     .expect("the fixture launch geometry is valid")
 }

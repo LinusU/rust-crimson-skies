@@ -283,7 +283,25 @@ pub enum InheritanceRule {
     /// The round keeps none of the airframe's velocity: its world velocity is
     /// the muzzle velocity alone.
     None,
+    /// The launch-direction part of the airframe's velocity is removed and a
+    /// per-second speed scalar takes its place: the item keeps the lateral
+    /// remainder `airframe − forward·|airframe|` while the scalar — starting
+    /// at `|airframe|` — ramps along the mount's forward axis toward
+    /// `launch speed + |airframe|` at the component's declared acceleration.
+    ///
+    /// This is the *measured* original rule for ordnance records that declare
+    /// a non-zero `ACCELERATION` (the spawn's ramping branch at `0x5af315`,
+    /// its per-step gain at `0x5afd70`; T452-R.01 as corrected by T452-R.04).
+    /// A gun never declares it: the runtime [`crate::weapons::LaunchRamp`]
+    /// carries the scalar this variant removes from the release vector.
+    LateralRemainder,
 }
+
+/// The speed the measured ramping spawn adds to the airframe's speed when it
+/// opens the launch-direction scalar (`1e-4` written at `0x5af315`, pinned as
+/// `launch.inheritance_remainder_head` in
+/// `data/owner-static/engine-facts.toml`).
+pub const RAMP_START_SPEED_MPS: f64 = 1.0e-4;
 
 impl InheritanceRule {
     /// The stable label used in reports.
@@ -293,6 +311,7 @@ impl InheritanceRule {
             Self::Full => "full",
             Self::Fraction { .. } => "fraction",
             Self::None => "none",
+            Self::LateralRemainder => "lateral_remainder",
         }
     }
 }
@@ -1278,18 +1297,39 @@ impl MountTransform {
     /// [`InheritanceRule`] rather than an assumption. No drag, no
     /// convergence and no gravity are applied here — those are F27-B's
     /// ballistics and F27-D's measurements.
+    ///
+    /// [`InheritanceRule::LateralRemainder`] composes differently: the
+    /// release vector is the lateral remainder
+    /// `inherited − forward·|inherited|` plus the launch-direction scalar's
+    /// measured start `forward·(|inherited| + 1e-4)` — the airframe's own
+    /// velocity plus `1e-4` m/s along the forward axis. The declared muzzle
+    /// speed is the scalar's *target*, not a release term, so
+    /// `muzzle_velocity_mps` does not enter this rule's composition.
     #[must_use]
     pub fn world_velocity_mps(
         &self,
         inheritance: InheritanceRule,
         muzzle_velocity_mps: f64,
     ) -> [f64; 3] {
+        let forward = self.forward.to_array();
+        if inheritance == InheritanceRule::LateralRemainder {
+            let speed = (self.inherited_velocity_mps[0] * self.inherited_velocity_mps[0]
+                + self.inherited_velocity_mps[1] * self.inherited_velocity_mps[1]
+                + self.inherited_velocity_mps[2] * self.inherited_velocity_mps[2])
+                .sqrt();
+            let scalar = speed + RAMP_START_SPEED_MPS;
+            return [
+                self.inherited_velocity_mps[0] - forward[0] * speed + forward[0] * scalar,
+                self.inherited_velocity_mps[1] - forward[1] * speed + forward[1] * scalar,
+                self.inherited_velocity_mps[2] - forward[2] * speed + forward[2] * scalar,
+            ];
+        }
         let share = match inheritance {
             InheritanceRule::Full => 1.0,
             InheritanceRule::Fraction { share } => share,
             InheritanceRule::None => 0.0,
+            InheritanceRule::LateralRemainder => unreachable!("handled above"),
         };
-        let forward = self.forward.to_array();
         [
             self.inherited_velocity_mps[0] * share + forward[0] * muzzle_velocity_mps,
             self.inherited_velocity_mps[1] * share + forward[1] * muzzle_velocity_mps,
