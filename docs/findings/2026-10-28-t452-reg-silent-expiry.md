@@ -216,7 +216,7 @@ lifetime, and two session flights of it (stationary: consumed on tick 124 at
 500 m; launcher at 100 m/s along the launch line: consumed on tick 68 at 500 m),
 each with zero detonations, zero areas and zero damage events. Identifiers,
 numbers and digests only. The report's `candidate_tree` is
-`778ce8015c1cd794ad38b5570bb2c74d2320d8fa` (the code-and-test commit's tree);
+`dd66713c1200dcd8084ca53ba72f7f5b0e479d74` (the code-and-test commit's tree);
 this file and the committed copy are the documentation commit that follows it,
 and nothing the report measured changed.
 
