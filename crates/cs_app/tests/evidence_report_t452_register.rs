@@ -141,6 +141,7 @@ fn evidence_report_t452_register_writes_the_acceptance_report() {
                     GuidanceRule::Targeted { lost_target } => {
                         format!("targeted({})", lost_target.label())
                     }
+                    GuidanceRule::MarkerSeeker => "marker_seeker".to_owned(),
                 };
                 rows.push(format!(
                     "{{\"record\": {}, \"status\": \"registered\", \"family\": {}, \

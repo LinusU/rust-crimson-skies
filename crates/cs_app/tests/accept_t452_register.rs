@@ -51,14 +51,14 @@ use cs_types::net::SessionId;
 
 // ------------------------------------------------------------------ fixtures --
 
-const SESSION: u64 = 61;
-const PRODUCER: u32 = 71;
+pub(crate) const SESSION: u64 = 61;
+pub(crate) const PRODUCER: u32 = 71;
 const DAMAGE_PRODUCER: u32 = 72;
 const GENERATION: SceneGeneration = SceneGeneration(1);
 const DT_S: f64 = 1.0 / 30.0;
 const TICKS_PER_SECOND: u32 = 30;
 
-fn provenance() -> Provenance {
+pub(crate) fn provenance() -> Provenance {
     Provenance::new(
         EvidenceClaimId::new(cs_app::ordnance::T452_ORIGINAL_WEAPONS_CLAIM)
             .expect("a valid claim id"),
@@ -105,7 +105,7 @@ fn table(rows: Vec<OriginalComponentLaunch>) -> OriginalComponentTable {
 /// The measured shape of the guided `wep_05`: a full-inheritance seeker whose
 /// own `DETONATION_DISTANCE` is its proximity trigger and whose `CLUSTER_SIZE`
 /// is its per-slot stack.
-fn guided_row() -> OriginalComponentLaunch {
+pub(crate) fn guided_row() -> OriginalComponentLaunch {
     OriginalComponentLaunch {
         record: "wep_05".to_owned(),
         family: DeclaredOrdnanceFamily::GuidedRocket,
@@ -129,7 +129,7 @@ fn guided_row() -> OriginalComponentLaunch {
     }
 }
 
-fn guided_record() -> OriginalWeaponRecord {
+pub(crate) fn guided_record() -> OriginalWeaponRecord {
     let mut first_values = BTreeMap::new();
     first_values.insert("VELOCITY".to_owned(), 1200.0);
     first_values.insert("RANGE".to_owned(), 1000.0);
@@ -148,7 +148,7 @@ fn guided_record() -> OriginalWeaponRecord {
     }
 }
 
-fn guided_media() -> OriginalWeaponMedia {
+pub(crate) fn guided_media() -> OriginalWeaponMedia {
     OriginalWeaponMedia {
         record: "wep_05".to_owned(),
         keys: BTreeSet::new(),
@@ -168,7 +168,7 @@ fn guided_media() -> OriginalWeaponMedia {
     }
 }
 
-fn guided_ammo() -> OriginalAmmoDeclaration {
+pub(crate) fn guided_ammo() -> OriginalAmmoDeclaration {
     OriginalAmmoDeclaration {
         record: "wep_05".to_owned(),
         ammo_limit: None,
@@ -237,11 +237,11 @@ fn ramping_ammo() -> OriginalAmmoDeclaration {
     }
 }
 
-fn session_id() -> SessionId {
+pub(crate) fn session_id() -> SessionId {
     SessionId::new(SESSION).expect("the fixture session is nonzero")
 }
 
-fn actor(serial: u64) -> ActorId {
+pub(crate) fn actor(serial: u64) -> ActorId {
     ActorId {
         session: session_id(),
         serial,
@@ -252,7 +252,7 @@ fn key(name: &str) -> DamageNodeKey {
     DamageNodeKey::new(name).expect("the fixture node keys are valid")
 }
 
-fn rate() -> TickRate {
+pub(crate) fn rate() -> TickRate {
     TickRate::new(TICKS_PER_SECOND).expect("the fixture rate is nonzero")
 }
 

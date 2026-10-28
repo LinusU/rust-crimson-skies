@@ -517,7 +517,7 @@ fn accept_t452_r02_a_volley_launches_one_projectile_per_sub_munition() {
 }
 
 #[test]
-fn accept_t452_r02_a_beeper_seeker_is_a_named_guidance_claim() {
+fn accept_t452_r02_a_beeper_seeker_is_a_guidance_modifier_with_no_kept_claim() {
     let row = row(
         "wep_11",
         DeclaredOrdnanceFamily::GuidedRocket,
@@ -531,7 +531,8 @@ fn accept_t452_r02_a_beeper_seeker_is_a_named_guidance_claim() {
     assert_eq!(effect.action, MeasuredEffectAction::GuidanceModifier);
     assert_eq!(effect.duration, MeasuredEffectDuration::None);
     assert_eq!(effect.runtime_kind, None);
-    assert!(measured.names_claim(T452_R02_BEEPER_SEEKER));
+    assert!(!measured.names_claim(T452_R02_BEEPER_SEEKER));
+    assert_eq!(effect.claim, None);
 }
 
 /// The claim ids this measured layer is allowed to report as resolved. A
@@ -618,7 +619,7 @@ fn accept_t452_r02_retail_the_measured_facts_read_the_original_rows() {
     );
 
     let seeker = get("wep_11");
-    assert!(seeker.names_claim(T452_R02_BEEPER_SEEKER));
+    assert!(!seeker.names_claim(T452_R02_BEEPER_SEEKER));
 
     for (name, measured) in &measured {
         if let OriginalClusterShape::Volley { munitions } = table
