@@ -3184,6 +3184,111 @@ pub fn read_original_weapon_census(
     )?))
 }
 
+// ------------------- the rocket type -> weapon record table (T452-R.03-A) ----
+
+/// The virtual address of the engine function that turns a plane-record rocket
+/// id into a `weapons.zrd` record index (range check, then a jump through
+/// [`ORIGINAL_ROCKET_ID_JUMP_TABLE_VA`]).
+///
+/// **Measured, `static`** (never `verified_original`): the loadout binder
+/// calls it for each `record + 0xa8 + 4 * slot` rocket id.
+pub const ORIGINAL_ROCKET_ID_FUNCTION_VA: u64 = 0x44_40f0;
+
+/// The virtual address of the dword jump table [`ORIGINAL_ROCKET_ID_FUNCTION_VA`]
+/// indexes; each of its eleven targets is `mov eax, N; ret`.
+pub const ORIGINAL_ROCKET_ID_JUMP_TABLE_VA: u64 = 0x44_4148;
+
+/// The `weapons.zrd` record index each rocket id `0..=10` resolves to
+/// (`wep_05`..`wep_15`, in this non-monotonic order).
+///
+/// **Measured, `static`**, at [`ORIGINAL_ROCKET_ID_FUNCTION_VA`]: the `N` of
+/// each jump target. Any other id, the "none" id 11 included, answers -1 and
+/// selects no record.
+pub const ORIGINAL_ROCKET_ID_WEAPON_INDEX: [u32; 11] = [5, 6, 7, 8, 9, 15, 13, 12, 10, 11, 14];
+
+/// The `weapons.zrd` record name rocket `id` resolves to (`wep_05`), or `None`
+/// for an id the engine maps to no record (11 and above).
+#[must_use]
+pub fn original_rocket_weapon_record(id: u32) -> Option<String> {
+    let index = ORIGINAL_ROCKET_ID_WEAPON_INDEX.get(usize::try_from(id).ok()?)?;
+    Some(format!("wep_{index:02}"))
+}
+
+/// One selectable rocket type: its id, the record it resolves to and what that
+/// record declares as its short `NAME`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalRocketTypeRow {
+    /// The plane-record rocket id (`0..=10`).
+    pub rocket_id: u32,
+    /// The record index the engine maps the id to.
+    pub weapon_index: u32,
+    /// The record name (`wep_05`).
+    pub record: String,
+    /// The record's first declared `NAME` text, when it declares one.
+    pub short_name: Option<String>,
+}
+
+/// The selectable rocket types, resolved through `weapons.zrd`, and the
+/// catalogued records no rocket id reaches (T452-R.03-A).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalRocketTypeTable {
+    /// One row per rocket id, in id order.
+    pub rows: Vec<OriginalRocketTypeRow>,
+    /// Ids whose mapped record the member does not carry (empty for retail).
+    pub missing_records: Vec<String>,
+    /// The classified (T452.01) records no rocket id maps to, sorted by name:
+    /// spawn-only as far as the player's selection is concerned.
+    pub spawn_only: Vec<String>,
+}
+
+/// Resolves [`ORIGINAL_ROCKET_ID_WEAPON_INDEX`] against a read census.
+#[must_use]
+pub fn original_rocket_type_table(census: &OriginalWeaponCensus) -> OriginalRocketTypeTable {
+    let mut rows = Vec::new();
+    let mut missing_records = Vec::new();
+    for (id, index) in (0_u32..).zip(ORIGINAL_ROCKET_ID_WEAPON_INDEX) {
+        let record = format!("wep_{index:02}");
+        match census.record(&record) {
+            Some(found) => rows.push(OriginalRocketTypeRow {
+                rocket_id: id,
+                weapon_index: index,
+                short_name: found.first_texts.get("NAME").cloned(),
+                record,
+            }),
+            None => missing_records.push(record),
+        }
+    }
+    let mut spawn_only: Vec<String> = census
+        .rows
+        .iter()
+        .filter(|row| row.class.family().is_some())
+        .map(|row| row.record.record.clone())
+        .filter(|name| {
+            !rows.iter().any(|row| &row.record == name) && !missing_records.contains(name)
+        })
+        .collect();
+    spawn_only.sort();
+    OriginalRocketTypeTable {
+        rows,
+        missing_records,
+        spawn_only,
+    }
+}
+
+/// Reads the installation's `weapons.zrd` and resolves the rocket type table.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] as
+/// [`read_original_weapon_records`].
+pub fn read_original_rocket_type_table(
+    install_root: &std::path::Path,
+) -> Result<OriginalRocketTypeTable, crate::original_airframe::OriginalImportError> {
+    Ok(original_rocket_type_table(&read_original_weapon_census(
+        install_root,
+    )?))
+}
+
 // ------------------------------- the per-component launch table (T452.04) ----
 
 /// The retail container that holds the two ordnance screens (task T452.04).

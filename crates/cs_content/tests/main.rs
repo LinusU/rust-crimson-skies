@@ -105,6 +105,7 @@ mod accept_t452_01_weapon_census;
 mod accept_t452_02_proximity_fuse;
 mod accept_t452_03_nitro_rule;
 mod accept_t452_04_component_table;
+mod accept_t452_r03_a_rocket_type_table;
 mod accept_t454_guidance_loss;
 mod accept_t548_retail_blast;
 mod accept_t574_zeppelin_carrier;
