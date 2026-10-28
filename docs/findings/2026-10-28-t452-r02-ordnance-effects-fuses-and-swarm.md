@@ -212,8 +212,9 @@ So the range-end detonation is **gated on `LOCK_ON` (or the explicit
   no target the proximity branch at `0x5b0216` is skipped anyway. This resolves
   `t452.limit.fuse` for `wep_26`.
 - `wep_13` declares neither `RANGE`, `VELOCITY`, `LOCK_ON` nor any detonation
-  key. Its projectile reaches the range-end rule on its first step and is
-  consumed (`0x5b0318`) without detonating. The smoke it leaves is the emitter
+  key. No record key writes the `RANGE` field (`+0x1c`) it is compared with, so
+  there is no record-supplied bound to fly to; the projectile is consumed
+  (`0x5b0318`) without detonating. The smoke it leaves is the emitter
   created at fire time and lasts `TIME` = 8 s independently of the projectile.
   The task hint that `0x53e56d` (called from `0x5af98b`) is a smoke emitter is
   **wrong**: that call site is inside the guided-weapon lead/facing path gated
@@ -236,7 +237,7 @@ the same bit 15 before it reads `DETONATION_DISTANCE` and the target. The bit is
 the one `LOCK_ON` sets (`0x5addd5`), and nothing in either gate tests the
 `ROCKET` flag (`0x10` of the 0x38 object, `0x10` of the 0x214 record object).
 The rule is therefore **generic over `LOCK_ON`**, not over `ROCKET`-flagged
-records: `wep_25`, the ninth-tenth guided record with no `ROCKET` flag, inherits
+records: `wep_25`, the one `LOCK_ON` record with no `ROCKET` flag, inherits
 the measured coast-then-detonate-at-end-of-range rule. Its `RANGE` is 900, it
 declares `LOCK_ON` and no `EXPIRES`/`DETONATE_AT_RANGE`, so it detonates at the
 end of range. `t452.limit.lost_target` is resolved.
