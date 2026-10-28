@@ -7469,3 +7469,219 @@ name = "rocket_id.slot_count_source"
 va = 0x004bad90
 bytes = "8b44240483ec0c83f8ff750633c083c40cc3508d4424046894b3620050ff151002a2008d4c240c51e813120f0083c41085c0750483c40cc38b90100200008b420c83c40cc39090909090"
 fact = "0x4bad90(weapon index) returns the dword at (record + 0x210) + 0xc of the record named by format wep_%02d (format at 0x62b394); 0x4b2550 uses it as the slot count (halved only for gun slots without the flag byte), so rocket slot counts come from the weapon record, not from a per-type table"
+
+# The ordnance launch geometry (task T452-R.01 #2159, finding
+# docs/findings/2026-10-28-t452-r01-ordnance-launch-geometry.md): the weapon
+# record parser's stores and defaults, the spawn's inheritance and speed
+# paths, the per-step dt displacement, the mount refire arithmetic and the
+# range-end removal. `ebx` is the weapon record in the parser block, `esi`
+# the record and `edi` the spawned node in the spawn, `esi` the node and
+# `edi` the record in the step, `edi` the 0x30-byte mount entry in the
+# fire-control loop.
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.range_default"
+va = 0x005ad80b
+bytes = "c7431c0000fa43"
+fact = "the parser writes the RANGE field (+0x1c) with 500.0f (0x43fa0000) before any key is read; a record that declares no RANGE keeps the default (wep_13, wep_15)"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.velocity_default"
+va = 0x005ad812
+bytes = "c7432c0000f042"
+fact = "the parser writes the VELOCITY field (+0x2c) with 120.0f (0x42f00000) before any key is read; a record that declares no VELOCITY keeps the default (wep_13)"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.detonation_time_default"
+va = 0x005ad82a
+bytes = "c74348000080bf"
+fact = "the parser writes the DETONATION_TIME field (+0x48) with -1.0f (0xbf800000): no timed detonation unless the key declares seconds"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.fire_rate_reciprocal"
+va = 0x005adcc9
+bytes = "d905dc326000d8720cd95b14"
+fact = "FIRE_RATE: fld 1.0f (0x6032dc); fdiv [esp+0xc]; fstp [ebx+0x14] — record +0x14 holds 1/FIRE_RATE, an interval in seconds, not a rate"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.velocity_store_beam_gate"
+va = 0x005ae0ac
+bytes = "f643740275098b40048b480c894b2c"
+fact = "test byte [ebx+0x74],0x2; jnz +9 — the VELOCITY store to +0x2c is skipped when the BEAM flag bit is set"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.beam_flags"
+va = 0x005ad942
+bytes = "834b7406"
+fact = "or dword [ebx+0x74],6 — the BEAM key sets flag bits 0x2 and 0x4 of record +0x74"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.beam_speed_default"
+va = 0x005ad950
+bytes = "c7432c00401c46"
+fact = "inside the BEAM block +0x2c is prewritten with 10000.0f (0x461c4000), then TIME_TO_MAX_RANGE may overwrite it"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.beam_speed_gate"
+va = 0x005ad9e0
+bytes = "d9432cd81dc832600083c418dfe0f6c4417409"
+fact = "fld [ebx+0x2c]; fcomp 0; test ah,0x41; jz — when TIME_TO_MAX_RANGE is positive the reciprocal runs, otherwise +0x2c is restored to 10000.0f"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.beam_speed_reciprocal"
+va = 0x005ad9fc
+bytes = "d905dc326000d8732cd95b2c"
+fact = "fld 1.0f; fdiv [ebx+0x2c]; fstp [ebx+0x2c] — a BEAM record's +0x2c holds 1/TIME_TO_MAX_RANGE (or 1e-4 with the key absent), a rate not a speed"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.gravity_gate"
+va = 0x005ae4df
+bytes = "d94354d81dc8326000dfe0f6c4407534"
+fact = "fld [ebx+0x54]; fcomp 0; test ah,0x40; jnz +0x34 — the ballistic block runs only when GRAVITY (+0x54) is non-zero; every retail record declares GRAVITY 0"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.ballistic_climb"
+va = 0x005ae4ef
+bytes = "d9432cd9c0d8c9d94354dcc0def9d99b00020000"
+fact = "+0x200 = VELOCITY^2 / (2*GRAVITY): the climb height of the declared speed, computed before +0x2c is overwritten"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.ballistic_speed"
+va = 0x005ae505
+bytes = "d94354d84b1cdcc0d95de48b45e4d1f8050000c01f8945e0d945e0d95b2c"
+fact = "+0x2c = sqrt(2*GRAVITY*RANGE) via the bit-level square root (sar eax,1; add eax,0x1fc00000): a declared non-zero GRAVITY overwrites VELOCITY"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.spawn_target_speed"
+va = 0x005af0e7
+bytes = "8b562c899744060000"
+fact = "the spawn copies record +0x2c to the projectile node's +0x644, its target speed scalar"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.accel_instant_gate"
+va = 0x005af124
+bytes = "d94638d81dc8326000dfe0f6c4400f84dd0100008b4674f6c4080f85d101"
+fact = "the full-inheritance path runs only when ACCELERATION (+0x38) != 0 and record flag bit 0x800 (INSTANT) is clear; otherwise the lateral-remainder branch at 0x5af315 runs"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.inheritance_full"
+va = 0x005af144
+bytes = "8b4e2c898f400600008b462c8b4d1c8d5760525053"
+fact = "node +0x640 = record +0x2c, then 0x5389a0(base=[ebp+0x1c] shooter velocity, dir=[ebp+0x18] launch direction, scalar=+0x2c, out=&node[0x60]) computes +0x60 = shooter_velocity + dir*VELOCITY: full inheritance, fraction 1.0"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.inheritance_mac_call"
+va = 0x005af15a
+bytes = "e84198f8ff"
+fact = "call 0x5389a0 — the multiply-accumulate the spawn uses for the inheritance vector (the same helper renormalizes +0x60 to +0x640 during steering at 0x5afe1b)"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.inheritance_remainder_head"
+va = 0x005af315
+bytes = "8b551cc7874006000017b7d1388b0a8d476089088b4a048948048b520889"
+fact = "the non-accelerating/INSTANT spawn: node +0x640 = 1e-4f (0x38d1b717) and +0x60 starts from the shooter velocity vector [ebp+0x1c]"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.inheritance_remainder_sub"
+va = 0x005af3a3
+bytes = "d903d821d94304d86104d94308d86108d9cad91ad95a04d9"
+fact = "fsub each +0x60 component by dir[i]*|shooter|: the launch-direction part of the shooter's velocity is removed, not added — the remainder is lateral"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.accel_step"
+va = 0x005afd70
+bytes = "d98640060000d89e44060000dfe0f6c401744dd90544d79a00d84f38"
+fact = "while node +0x640 < +0x644 the speed scalar grows by dt*ACCELERATION (+0x38 of the record), clamped to the target +0x644"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.dt_displacement"
+va = 0x005afe3f
+bytes = "8b5d10d9c0d84e60d91bd9c0d84e64d95b04d84e68"
+fact = "the per-step displacement vector is dt * node+0x60..0x68 componentwise (fmul [esi+0x60/0x64/0x68]): +0x60 is a metres-per-second velocity against the frame dt"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.refire_interval"
+va = 0x004b6b2d
+bytes = "d90570c47100d84714d95710"
+fact = "fld [0x71c470]; fadd [edi+0x14]; fstp [edi+0x10] — a mount's next-fire timestamp is the shared clock plus its +0x14 interval"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.refire_stagger"
+va = 0x004b6d26
+bytes = "d94014d80de0326000d86810"
+fact = "fld [eax+0x14]; fmul 0.5f (0x6032e0); fsub [eax+0x10] — an alternating mount's next-fire is biased by half its interval"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.mount_find_stride"
+va = 0x004b2080
+bytes = "8b81680200008b896c0200003bc174108b542404395004740983c0303bc175"
+fact = "find_mount walks the mount vector at launcher+0x268..+0x26c in 0x30-byte entries matching the mount id at entry +0x4: mount entries carry next-fire +0x10, interval +0x14, enabled byte +0x2c"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.range_end"
+va = 0x005b01f9
+bytes = "f6c4807408a8800f84b4000000a9000000020f8407010000"
+fact = "at distance >= RANGE the step branches on record flags (test ah,0x80 = LOCK_ON 0x8000; test al,0x80 = EXPIRES 0x80; test eax,0x2000000 = DETONATE_AT_RANGE): LOCK_ON without EXPIRES, or DETONATE_AT_RANGE, detonates via 0x5ac3a0; otherwise the node is removed silently — task T2117's rule"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.state_clear"
+va = 0x005b0318
+bytes = "c7462000000000"
+fact = "the silent removal writes 0 to the node state word +0x20; the cleanup walk releases the node one frame later (task T2117)"
+
+[[ordnance_launch_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "launch.range_cmp"
+va = 0x005b01e6
+bytes = "d98664060000d85f1cdfe0"
+fact = "fld [esi+0x664]; fcomp [edi+0x1c] — the node's distance-flown scalar +0x664 is compared against the record's RANGE +0x1c each step"
