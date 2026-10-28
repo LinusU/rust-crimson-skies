@@ -7877,3 +7877,164 @@ name = "hardpoint_price.point_set"
 va = 0x0040ad4f
 bytes = "8b4508c1e0028d3c8520cc6400be040000008b450c85c07417e8d3841c0099b914000000f7f933c083fa0a0f9fc0eb05b80b0000008907"
 fact = "E 2245's set writes the box count at 0x64cbac/0x64cbb0 and fills the side's four draft rocket slots (0x64cc20 + 16 * point = the draft record's +0xa8 array) with random 0/1 (the two starting rocket ids) or 11 (the none id) when the count is 0 — the count is the number of enabled rocket boxes on that side"
+
+# The ordnance release-interval binding and flight-ending rules (task T452-R.04
+# #2169, finding docs/findings/2026-10-28-t452-r04-flight-duration-and-release-binding.md):
+# where a mount entry's +0x14 refire interval comes from (the vehicle
+# record's `weapons` row, not weapon record +0x14), what the interval delays,
+# who else reads record +0x14, and the step's path-length / age arithmetic
+# that ends a flight. `esi` is the vehicle `weapons` list in the mount builder
+# 0x4b59b0, the mount entry in the fire loop 0x4b6820; `esi` the node and
+# `edi` the weapon record in the step 0x5afd50.
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.vehicle_weapons_key"
+va = 0x004b59bb
+bytes = "6828b1620050e8ca460c00"
+fact = "the mount builder 0x4b59b0 looks up the key string 0x62b128 (`weapons`) in the record node passed to it (the vehicle record read at 0x47b08e..) by the key-lookup 0x57a090 and walks its rows (row count - 1 iterations, elements 8 bytes apart from +0x0c)"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.mount_id_from_name"
+va = 0x004b5a40
+bytes = "8b45000fbe48040fbe50058d0c898d844af0fdffff"
+fact = "each row's first element is the weapon record name; the mount id is the two digits of `wep_NN` (name[4]*10 + name[5] - 0x210) and the record pointer comes from the by-name lookup 0x5abfd0, so a mount is keyed by the record number"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.mount_count_from_row"
+va = 0x004b5a64
+bytes = "897c24148b108b4a14894c241c"
+fact = "mount entry +0x08 = the row's second element (value at row+0x14), the count the fire loop tests `> 0` (0x4b6aff)"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.mount_interval_from_row"
+va = 0x004b5a71
+bytes = "c7442424000000008b108b4a1c894c2428"
+fact = "mount entry +0x14 = the row's THIRD element (value at row+0x1c): the per-airframe refire interval, in seconds, that the fire loop adds to the shared clock (0x4b6b2d). It is not weapon record +0x14"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.mount_squares_from_row"
+va = 0x004b5a82
+bytes = "8b0883c124d901d9c0d8c9d95c242c8b0083c02cddd8d900d9c0d8c9d95c2430"
+fact = "mount entry +0x18 and +0x1c are the squares of the row's fourth and fifth elements (row+0x24, row+0x2c)"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.mount_stride"
+va = 0x004b5c6c
+bytes = "83460830"
+fact = "a built entry is appended to the vector the builder fills (its only caller 0x47b089 passes object+0x194) by advancing the vector's end pointer (+8) by 0x30, the entry size find_mount 0x4b2080 strides by"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.launcher_next_release"
+va = 0x004b6b2b
+bytes = "84dbd90570c47100d84714d957107558d99eec000000"
+fact = "on release: mount next-fire (+0x10) = shared clock 0x71c470 + mount +0x14; when the object-flag bit tested into bl is clear (`jne` skipped) the launcher-wide next-release time (esi+0xec) is set to the same value"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.launcher_gate"
+va = 0x004b6ad4
+bytes = "d90570c47100d89eec000000dfe0f6c4017404c6472c00"
+fact = "a bl-clear mount is disabled (+0x2c = 0) while the shared clock is below the launcher-wide next-release time (esi+0xec): the interval delays the launcher's NEXT release, not the current one"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.slot_timer_read"
+va = 0x004aab3f
+bytes = "8b0d98c2710057e83575000085c0740b8b50148996a0010000eb0ac786a00100000000803f8b86a00100008986a4010000"
+fact = "0x4aab00 reads the mount entry for a slot id (find_mount 0x4b2080 on the player launcher 0x71c298) and copies its +0x14 into the slot object's timers (+0x1a0, +0x1a4), defaulting to 1.0f when no mount is found"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.slot_timer_halve"
+va = 0x004aab70
+bytes = "8b44241c85c07424d986a0010000d80de0326000d99ea0010000d986a4010000d80de0326000d99ea4010000"
+fact = "when the second argument is non-zero both slot timers are multiplied by 0.5f (0x6032e0)"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.record_interval_reader"
+va = 0x005ae55e
+bytes = "f6437402751ed945f4d8732cd87314e8ee880400"
+fact = "the only reader of weapon record +0x14 in the weapon module: pool size += ftol(RANGE / VELOCITY(+0x2c) / (1/FIRE_RATE)) + 1 for every non-BEAM record (RANGE is the parsed value held at ebp-0xc); the interval sizes the projectile pool and binds no mount"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "release.pool_allocate"
+va = 0x005ae5a2
+bytes = "a190d7a100689406000050ff15b401a200"
+fact = "the pool is [0xa1d790] nodes of 0x694 bytes, allocated after every record has added its count"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.spawn_ramp_scalars"
+va = 0x005af350
+bytes = "d95d08d94508d887440600008d47608d4df0894d0cd99f44060000894514d94508d88740060000d99f40060000"
+fact = "ramping spawn: s = |shooter velocity|; +0x644 = VELOCITY + s and +0x640 = 1e-4 + s (the scalar starts at the launcher's speed and targets VELOCITY + s)"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.mine_flag_parse"
+va = 0x005ade58
+bytes = "8d4d08516870d0630056e869c7fcff83c40c85c074168b55088b437483e201c1e20e25ffbfffff0bd0895374"
+fact = "the MINE key (string 0x63d070) stores flag bit 0x4000 of the record word +0x74"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.mine_skips_ramp"
+va = 0x005afd66
+bytes = "8b477433c9f6c4407560"
+fact = "step: when record flag 0x4000 (MINE) is set the speed ramp and the renormalization are skipped"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.distance_accumulate"
+va = 0x005b0160
+bytes = "8b4d10d901d809d94104d84904d94108d84908d9c9dec2dec1d9fad95d0cd9450cd88664060000d95d108b4d10898e64060000"
+fact = "step: the path length flown (node +0x664) grows by |per-step displacement| = sqrt(dx^2+dy^2+dz^2) of dt * node +0x60, every step"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.mine_halves_distance"
+va = 0x005b01cc
+bytes = "8b4774f6c4407412d98664060000d80de0326000d99e64060000"
+fact = "step: with MINE (0x4000) the distance flown is halved every step before the RANGE compare, so it converges and never reaches RANGE for a step shorter than RANGE/2"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.detonation_timer"
+va = 0x005b029a
+bytes = "d94748d81dc8326000dfe0f6c4417575d98668060000d85f48dfe0f6c4417565"
+fact = "below RANGE: when DETONATION_TIME (+0x48) > 0 and the age (node +0x668) exceeds it the item detonates (0x5b02ba..0x5ac3a0); otherwise it keeps flying"
+
+[[ordnance_flight_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "flight.age_step"
+va = 0x005b0863
+bytes = "d90544d79a00d88668060000d99e68060000"
+fact = "the age (node +0x668) grows by the frame dt 0x9ad744 each step"
