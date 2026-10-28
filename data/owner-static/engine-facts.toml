@@ -7831,3 +7831,49 @@ name = "ordnance_media.looped_sound_parse"
 va = 0x004baa7b
 bytes = "6880b3620053e80af60b0083c4083bc7741f8b40048b480c6a1351e8a5220e0083c4045083c624"
 fact = "LOOPED_SOUND_NAME (string 0x62b380) is parsed in the weapon's mount-descriptor filler: the name resolves through 0x59cd40(0x13, name) and the registered callback lands on descriptor +0x24 — the gun's mount loop, not an ordnance field; no literal SOUND_NAME key exists in the image (the only occurrence is this string's tail)"
+
+# The hardpoint price: what the purchase surface charges for the two
+# hardpoint sides (task #2161 T452-R.03, finding
+# docs/findings/2026-10-28-t452-r03-hardpoint-price-and-gate-table.md).
+# Statically read; no original run. The purchase row handler 0x40b2b4 serves
+# E 2259..2261; the totals 0x405550/0x405680 sum the same terms. Neither path
+# reads the rocket slots (record + 0xa8): the loaded type adds nothing.
+[[hardpoint_price_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "hardpoint_price.row_count"
+va = 0x0040b2ba
+bytes = "8b3db0cb64008b35accb640033c985ff0f95c133d285f60f95c25f5e5d03ca890b33c05b81c420180000"
+fact = "the E 2259 count row counts the non-zero cells 0x64cbac and 0x64cbb0 (the draft record at 0x64cb78 + 0x34 / + 0x38), answering 0..2; E 2259(row) formats string 1176 over 0x64cbac or 1177 over 0x64cbb0 (0x40b32e)"
+
+[[hardpoint_price_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "hardpoint_price.weight_and_cost"
+va = 0x0040b2ff
+bytes = "85c98b0daccb640074068b0db0cb640033d23dd50800000f95c24a83e2ba81c2e00100000fafd1526897040000"
+fact = "E 2260/2261 pick the side's box count (0x64cbac or 0x64cbb0) then compute (480 - 70*(id==2261)) * count: 480 weight for E 2260, 410 cost for E 2261, formatted through string 1175; the weight and cost are per enabled box, never per rocket type"
+
+[[hardpoint_price_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "hardpoint_price.weight_total"
+va = 0x0040558e
+bytes = "8b463803c18d04408d14808b86800000008d0cd08b467c8b567803c88b467403ca83c40803c88d048f5f89463c"
+fact = "0x405550 (weight total): (record+0x34 + record+0x38) * 15 * 8 + record+0x80 + record+0x7c + record+0x78 + record+0x74, all times 4 = 480 * (box counts) + 4 * (the four +0x74..+0x80 counters, the armor zones), added to airframe+engine+gun terms and stored at record+0x3c; no read of record+0xa8 (rocket slots)"
+
+[[hardpoint_price_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "hardpoint_price.cost_total"
+va = 0x004056aa
+bytes = "8b4e7c8b567803f88b868000000003c18b4e7403c203c18d0c80c1e102b867666666f7e98b4e34d1fa8bc2c1e81f03d08b463803c18d0c808d04c803d783c4108d04808d04425f894628"
+fact = "0x405680 (cost total): the four +0x74..+0x80 counters * 20 / 5 = *4 (armor cost), plus (record+0x34 + record+0x38) * 41 * 5 * 2 = 410 * (box counts), added to airframe+engine+gun terms and stored at record+0x28; no read of record+0xa8 (rocket slots)"
+
+[[hardpoint_price_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "hardpoint_price.point_set"
+va = 0x0040ad4f
+bytes = "8b4508c1e0028d3c8520cc6400be040000008b450c85c07417e8d3841c0099b914000000f7f933c083fa0a0f9fc0eb05b80b0000008907"
+fact = "E 2245's set writes the box count at 0x64cbac/0x64cbb0 and fills the side's four draft rocket slots (0x64cc20 + 16 * point = the draft record's +0xa8 array) with random 0/1 (the two starting rocket ids) or 11 (the none id) when the count is 0 — the count is the number of enabled rocket boxes on that side"
