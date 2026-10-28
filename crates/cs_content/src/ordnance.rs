@@ -4184,17 +4184,21 @@ pub enum OriginalLaunchSpeed {
 /// T452-R.01): the spawn `0x5aef40` writes the projectile's `+0x60` vector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OriginalInheritance {
-    /// `ACCELERATION` (`+0x38`) non-zero and `INSTANT` clear: `+0x60 =
-    /// shooter_velocity + launch_dir·speed` (`0x5af144..0x5af15a`, via the
-    /// multiply-accumulate `0x5389a0`) — the launcher's whole velocity is
-    /// added, fraction 1.0, plus the launch-direction speed.
+    /// `ACCELERATION` (`+0x38`) zero or undeclared and `INSTANT` clear:
+    /// `+0x640 = +0x644 = VELOCITY` and `+0x60 = shooter_velocity +
+    /// launch_dir·VELOCITY` (`0x5af144..0x5af15a`, via the multiply-accumulate
+    /// `0x5389a0`) — the launcher's whole velocity is added, fraction 1.0, and
+    /// the item flies at that constant vector (no speed ramp runs, because
+    /// `+0x640 == +0x644`). Every gun and every unaccelerated rocket.
     Full,
-    /// `ACCELERATION` zero or undeclared and `INSTANT` clear: `+0x60 =
-    /// shooter_velocity − launch_dir·|shooter_velocity|` (`0x5af315..0x5af3a3`)
-    /// — the component of the launcher's velocity along the launch direction
-    /// is removed, not added; what is left is the remainder. For a
-    /// straight-ahead launch that is near zero. Most retail records take this
-    /// path: `ACCELERATION 0` is as common as the key being absent.
+    /// `ACCELERATION` non-zero and `INSTANT` clear (`0x5af315..0x5af3b5`):
+    /// `+0x640 = |shooter_velocity| + 1e-4`, `+0x644 = VELOCITY +
+    /// |shooter_velocity|`, and `+0x60 = shooter_velocity −
+    /// launch_dir·|shooter_velocity|` — the component of the launcher's
+    /// velocity along the launch direction is removed and the speed scalar
+    /// takes its place, then ramps toward `+0x644` at `ACCELERATION` per
+    /// second (`0x5afd70`). The item starts at the launcher's speed and
+    /// accelerates along the launch direction.
     LateralRemainder,
     /// `INSTANT` set: `+0x60` is computed as `LateralRemainder` but unused —
     /// the per-step displacement for the flag is `RANGE·launch_dir` instead.
@@ -4216,7 +4220,7 @@ pub struct OriginalLaunchGeometry {
     /// scalar `+0x640` gains per second toward its target `+0x644`
     /// (`0x5afd70..0x5afdaf`). `None` when undeclared — the zero-initialized
     /// field then means "no acceleration", which selects the
-    /// [`OriginalInheritance::LateralRemainder`] spawn path.
+    /// [`OriginalInheritance::Full`] spawn path.
     pub acceleration_mps2: Option<f64>,
     /// The `RANGE` bound the parser leaves in `+0x1c`.
     pub range: OriginalRangeBound,
@@ -4265,9 +4269,9 @@ pub fn original_launch_geometry(record: &OriginalWeaponRecord) -> OriginalLaunch
     let inheritance = if record.declares("INSTANT") {
         OriginalInheritance::Instant
     } else if acceleration_mps2.is_some_and(|a| a != 0.0) {
-        OriginalInheritance::Full
-    } else {
         OriginalInheritance::LateralRemainder
+    } else {
+        OriginalInheritance::Full
     };
     OriginalLaunchGeometry {
         speed,

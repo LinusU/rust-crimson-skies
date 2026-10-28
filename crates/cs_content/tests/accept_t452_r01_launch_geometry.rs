@@ -136,7 +136,7 @@ const IMAGE_PINS: [(u64, &[u8], &str); 21] = [
             0x0f, 0x84, 0xdd, 0x01, 0x00, 0x00, 0x8b, 0x46, 0x74, 0xf6, 0xc4, 0x08, 0x0f, 0x85,
             0xd1, 0x01,
         ],
-        "spawn gate: the acceleration path runs only when +0x38 (ACCELERATION) != 0 and flag bit 0x800 (INSTANT) is clear",
+        "spawn gate: fcomp +0x38 against 0.0 then `je` (taken when not equal) to 0x5af315; falls through to the full-inheritance path only when ACCELERATION == 0 and flag bit 0x800 (INSTANT) is clear",
     ),
     (
         0x5a_f144,
@@ -144,7 +144,7 @@ const IMAGE_PINS: [(u64, &[u8], &str); 21] = [
             0x8b, 0x4e, 0x2c, 0x89, 0x8f, 0x40, 0x06, 0x00, 0x00, 0x8b, 0x46, 0x2c, 0x8b, 0x4d,
             0x1c, 0x8d, 0x57, 0x60, 0x52, 0x50, 0x53, 0x51, 0xe8,
         ],
-        "accelerating launch: node +0x640 = VELOCITY, then 0x5389a0 computes +0x60 = shooter_vel + dir*VELOCITY (full inheritance)",
+        "unaccelerated launch: node +0x640 = VELOCITY, then 0x5389a0 computes +0x60 = shooter_vel + dir*VELOCITY (full inheritance)",
     ),
     (
         0x5a_f315,
@@ -153,7 +153,7 @@ const IMAGE_PINS: [(u64, &[u8], &str); 21] = [
             0x0a, 0x8d, 0x47, 0x60, 0x89, 0x08, 0x8b, 0x4a, 0x04, 0x89, 0x48, 0x04, 0x8b, 0x52,
             0x08,
         ],
-        "non-accelerating/INSTANT launch: +0x640 = 1e-4, node +0x60 = shooter velocity (before the direction term is subtracted)",
+        "accelerating/INSTANT launch: +0x640 = 1e-4 (then raised by |shooter|), node +0x60 = shooter velocity (before the direction term is subtracted)",
     ),
     (
         0x5a_f3a3,
@@ -161,7 +161,7 @@ const IMAGE_PINS: [(u64, &[u8], &str); 21] = [
             0xd9, 0x03, 0xd8, 0x21, 0xd9, 0x43, 0x04, 0xd8, 0x61, 0x04, 0xd9, 0x43, 0x08, 0xd8,
             0x61, 0x08, 0xd9, 0xca, 0xd9, 0x1a, 0xd9, 0x5a, 0x04, 0xd9,
         ],
-        "the else path subtracts dir*|shooter| from +0x60: the launch-direction part of the shooter velocity is removed, not added",
+        "the accelerating path subtracts dir*|shooter| from +0x60: the launch-direction part of the shooter velocity is removed, not added",
     ),
     (
         0x5a_fd70,
@@ -244,7 +244,11 @@ fn accept_t452_r01_declared_velocity_flies_verbatim() {
         OriginalLaunchSpeed::Declared { mps: 450.0 },
         "a declared VELOCITY with no GRAVITY and no BEAM is stored verbatim"
     );
-    assert_eq!(geometry.inheritance, OriginalInheritance::Full);
+    assert_eq!(
+        geometry.inheritance,
+        OriginalInheritance::LateralRemainder,
+        "a non-zero ACCELERATION selects the ramping spawn: shooter - dir*|shooter|"
+    );
     assert_eq!(geometry.acceleration_mps2, Some(150.0));
     assert_eq!(geometry.range, OriginalRangeBound::Declared { m: 1500.0 });
 }
@@ -271,8 +275,8 @@ fn accept_t452_r01_absent_velocity_and_range_take_the_parser_defaults() {
     assert_eq!(geometry.acceleration_mps2, None);
     assert_eq!(
         geometry.inheritance,
-        OriginalInheritance::LateralRemainder,
-        "no ACCELERATION selects the else spawn path: shooter - dir*|shooter|"
+        OriginalInheritance::Full,
+        "no ACCELERATION selects the full-inheritance spawn: shooter + dir*VELOCITY"
     );
     assert_eq!(geometry.refire_interval_s, Some(0.25));
 }
@@ -375,7 +379,7 @@ fn accept_t452_r01_instant_records_have_no_ballistic_velocity() {
     assert_eq!(
         geometry.inheritance,
         OriginalInheritance::Instant,
-        "INSTANT forces the else spawn path; the step displaces by RANGE*dir"
+        "INSTANT forces the ramping spawn vector, which the step ignores; it displaces by RANGE*dir"
     );
 }
 
@@ -437,7 +441,7 @@ fn accept_t452_r01_retail_launch_geometry() {
     assert_eq!(wep13.range, OriginalRangeBound::Defaulted);
     assert_eq!(wep13.range.metres(), 500.0);
     assert_eq!(wep13.acceleration_mps2, None);
-    assert_eq!(wep13.inheritance, OriginalInheritance::LateralRemainder);
+    assert_eq!(wep13.inheritance, OriginalInheritance::Full);
     assert_eq!(wep13.refire_interval_s, Some(1.0));
 
     // wep_15: VELOCITY 1, DETONATION_TIME 2, no RANGE, ACCELERATION 0 ->
@@ -447,24 +451,19 @@ fn accept_t452_r01_retail_launch_geometry() {
     assert_eq!(wep15.speed, OriginalLaunchSpeed::Declared { mps: 1.0 });
     assert_eq!(wep15.range, OriginalRangeBound::Defaulted);
     assert_eq!(wep15.acceleration_mps2, Some(0.0));
-    assert_eq!(wep15.inheritance, OriginalInheritance::LateralRemainder);
+    assert_eq!(wep15.inheritance, OriginalInheritance::Full);
 
     // Every record that declares GRAVITY declares GRAVITY 0, so the ballistic
     // overwrite never runs on retail data: the declared VELOCITY stands and
     // the step's gravity pull is zero. wep_04, wep_25, wep_26, wep_27
-    // declare ACCELERATION 150 and take the full-inheritance spawn; wep_28
-    // declares ACCELERATION 0 and takes the lateral-remainder path.
+    // declare ACCELERATION 150 and take the ramping (lateral-remainder) spawn;
+    // wep_28 declares ACCELERATION 0 and takes the full-inheritance path.
     for (name, mps, range_m, inheritance) in [
-        ("wep_04", 450.0, 900.0, OriginalInheritance::Full),
-        ("wep_25", 450.0, 900.0, OriginalInheritance::Full),
-        ("wep_26", 450.0, 900.0, OriginalInheritance::Full),
-        ("wep_27", 850.0, 900.0, OriginalInheritance::Full),
-        (
-            "wep_28",
-            350.0,
-            3500.0,
-            OriginalInheritance::LateralRemainder,
-        ),
+        ("wep_04", 450.0, 900.0, OriginalInheritance::LateralRemainder),
+        ("wep_25", 450.0, 900.0, OriginalInheritance::LateralRemainder),
+        ("wep_26", 450.0, 900.0, OriginalInheritance::LateralRemainder),
+        ("wep_27", 850.0, 900.0, OriginalInheritance::LateralRemainder),
+        ("wep_28", 350.0, 3500.0, OriginalInheritance::Full),
     ] {
         let row = &geometry[name];
         assert_eq!(row.speed, OriginalLaunchSpeed::Declared { mps }, "{name}");
@@ -476,12 +475,12 @@ fn accept_t452_r01_retail_launch_geometry() {
         assert_eq!(row.inheritance, inheritance, "{name}");
     }
 
-    // The full-inheritance census: the four ACCELERATION 150 records above,
-    // every other record on the lateral-remainder path, no INSTANT or BEAM
+    // The ramping census: exactly the four ACCELERATION 150 records above,
+    // every other record on the full-inheritance path, no INSTANT or BEAM
     // record anywhere in the retail table.
     let full: BTreeSet<&str> = geometry
         .iter()
-        .filter(|(_, row)| row.inheritance == OriginalInheritance::Full)
+        .filter(|(_, row)| row.inheritance == OriginalInheritance::LateralRemainder)
         .map(|(name, _)| name.as_str())
         .collect();
     assert_eq!(

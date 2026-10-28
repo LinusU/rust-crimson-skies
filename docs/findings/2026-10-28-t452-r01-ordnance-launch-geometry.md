@@ -74,20 +74,30 @@ The spawn `0x5aef40` (six direct callers, closed inventory in the pin test)
 takes the launcher's direction at `[arg5]+0x17c`, position `+0x188` and
 velocity `+0x194` and writes the node's `+0x60` velocity:
 
-- `ACCELERATION != 0` and `INSTANT` clear (gate `0x5af124`): `+0x640 =
-  VELOCITY`, `+0x644 = VELOCITY`, then `0x5389a0(base, dir, scalar, out)` —
-  the multiply-accumulate `out = base + dir·scalar` — computes `+0x60 =
-  shooter_velocity + dir·VELOCITY` (`0x5af144..0x5af15a`). **Full
-  inheritance, fraction 1.0.** Retail: `wep_04`, `wep_25`, `wep_26`, `wep_27`
-  (`ACCELERATION 150`).
-- `ACCELERATION == 0` or `INSTANT` set (`0x5af315..0x5af3a3`): `+0x640 =
-  1e-4`, `+0x60 = shooter_velocity`, then each component is reduced by
-  `dir·|shooter|` — the launch-direction part of the launcher's velocity is
-  **removed**, not added; a straight-ahead launch keeps only the lateral
-  remainder and accelerates to `+0x644` from near zero. `INSTANT` computes
-  the same vector but the step ignores it, displacing by `RANGE·dir`. Most
-  retail records take this path: `ACCELERATION 0` is as common as the key
-  being absent (`wep_13` declares no `ACCELERATION` at all).
+- `ACCELERATION == 0` (or absent) and `INSTANT` clear (gate `0x5af124`:
+  `fcomp` of `+0x38` against `0.0`, then `je 0x5af315`, which is taken when
+  the two **differ**): `+0x640 = VELOCITY`, `+0x644 = VELOCITY`, then
+  `0x5389a0(base, dir, scalar, out)` — the multiply-accumulate `out = base +
+  dir·scalar` — computes `+0x60 = shooter_velocity + dir·VELOCITY`
+  (`0x5af144..0x5af15a`). **Full inheritance, fraction 1.0**, constant for the
+  whole flight (`+0x640 == +0x644`, so no ramp runs). Every gun and every
+  unaccelerated rocket: `wep_05`–`wep_14`, `wep_28` (`ACCELERATION 0`) and
+  `wep_13` (key absent).
+- `ACCELERATION != 0` or `INSTANT` set (`0x5af315..0x5af3b5`): `+0x640 =
+  1e-4`, `+0x60 = shooter_velocity`, `s = |shooter_velocity|` is added to both
+  `+0x644` and `+0x640`, and `s·dir` is subtracted from each `+0x60`
+  component — the launch-direction part of the launcher's velocity is
+  **removed** and the scalar carries it instead. The item starts at the
+  launcher's speed and ramps to `VELOCITY + s` at `ACCELERATION`. Retail:
+  `wep_04`, `wep_25`, `wep_26`, `wep_27` (`ACCELERATION 150`). `INSTANT`
+  computes the same vector but the step ignores it, displacing by `RANGE·dir`.
+
+**Correction (T452-R.04, #2169).** T452-R.01 first published these two bullets
+swapped (full inheritance for `ACCELERATION != 0`). The gate is a `je` on
+"not equal", so equal falls through; the swapped reading would leave every
+gun at `1e-4` m/s forever, since the ramp only runs with a non-zero
+`ACCELERATION`. `OriginalInheritance` and the tests are corrected; see
+`2026-10-28-t452-r04-flight-duration-and-release-binding.md`.
 
 During flight `+0x640` approaches `+0x644` at `dt·ACCELERATION` (`0x5afd70`),
 and the steering path renormalizes `+0x60` to the scalar through the same

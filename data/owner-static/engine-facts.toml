@@ -7588,7 +7588,7 @@ provenance = "static"
 name = "launch.accel_instant_gate"
 va = 0x005af124
 bytes = "d94638d81dc8326000dfe0f6c4400f84dd0100008b4674f6c4080f85d101"
-fact = "the full-inheritance path runs only when ACCELERATION (+0x38) != 0 and record flag bit 0x800 (INSTANT) is clear; otherwise the lateral-remainder branch at 0x5af315 runs"
+fact = "the spawn compares ACCELERATION (+0x38) with 0.0 and takes `je 0x5af315` when they differ: the full-inheritance path at 0x5af144 runs only when ACCELERATION == 0 (or absent) and record flag bit 0x800 (INSTANT) is clear; a non-zero ACCELERATION (or INSTANT) runs the ramping branch at 0x5af315"
 
 [[ordnance_launch_fact]]
 claim = "OWNER-STATIC-2026-10-28"
@@ -7612,7 +7612,7 @@ provenance = "static"
 name = "launch.inheritance_remainder_head"
 va = 0x005af315
 bytes = "8b551cc7874006000017b7d1388b0a8d476089088b4a048948048b520889"
-fact = "the non-accelerating/INSTANT spawn: node +0x640 = 1e-4f (0x38d1b717) and +0x60 starts from the shooter velocity vector [ebp+0x1c]"
+fact = "the accelerating/INSTANT spawn: node +0x640 = 1e-4f (0x38d1b717) and +0x60 starts from the shooter velocity vector [ebp+0x1c]; the following instructions add |shooter| to both +0x640 and +0x644"
 
 [[ordnance_launch_fact]]
 claim = "OWNER-STATIC-2026-10-28"
