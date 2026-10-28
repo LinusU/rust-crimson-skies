@@ -309,13 +309,13 @@ fn accept_t452_04_a_rocket_record_carries_its_declared_launch_values() {
 
     // The values no file states are named on the row, not defaulted. The
     // VELOCITY unit is measured since T452-R.01, so its claim is absent.
-    for claim in [
-        T452_04_RELEASE_DELAY,
-        T452_04_NO_EXPIRES,
-        T452_04_AREA_LIFETIME,
-    ] {
+    // The lifetime is derivable since T452-R.04 (the step's path-length and
+    // timer rules), so its claim is absent; with no airframe row supplied the
+    // release interval is still unstated.
+    for claim in [T452_04_RELEASE_DELAY, T452_04_AREA_LIFETIME] {
         assert!(row.names_claim(claim), "{claim} must be recorded");
     }
+    assert!(!row.names_claim(T452_04_NO_EXPIRES));
     assert!(!row.names_claim(T452_04_VELOCITY_UNIT));
     assert!(
         !row.names_claim(T452_04_CLUSTER),
@@ -464,7 +464,9 @@ fn accept_t452_04_a_lifetime_is_only_what_a_record_states() {
     let table = table_with(vec![incendiary()], &layout());
     let row = table.row("wep_04").expect("one row");
     assert_eq!(row.lifetime, OriginalLifetime::Undeclared);
-    assert!(row.names_claim(T452_04_NO_EXPIRES));
+    // No stated lifetime is not an unknown lifetime: the flight ends by the
+    // measured rule (T452-R.04), so the claim is not recorded either.
+    assert!(!row.names_claim(T452_04_NO_EXPIRES));
 }
 
 /// An ordnance-shaped record with no `ROCKET` flag states no slot; the same
@@ -745,6 +747,9 @@ fn accept_t452_04_retail_no_record_declares_a_lifetime_key() {
     }
 
     let table = read_original_component_table(&root).expect("the table reads");
+    let mounted = cs_content::ordnance::mounted_original_records(
+        &cs_content::ordnance::read_original_mount_rows(&root).expect("vehicle.zrd reads"),
+    );
     let declared: Vec<&str> = table
         .rows
         .iter()
@@ -761,8 +766,8 @@ fn accept_t452_04_retail_no_record_declares_a_lifetime_key() {
             continue;
         }
         assert!(
-            row.names_claim(T452_04_NO_EXPIRES),
-            "{} must record the absent lifetime",
+            !row.names_claim(T452_04_NO_EXPIRES),
+            "{}: the flight end is derivable (T452-R.04)",
             row.record
         );
         assert_eq!(row.lifetime, OriginalLifetime::Undeclared);
@@ -776,7 +781,7 @@ fn accept_t452_04_retail_no_record_declares_a_lifetime_key() {
         assert!(!row.names_claim(T452_04_VELOCITY_UNIT), "{}", row.record);
         assert_eq!(
             row.names_claim(T452_04_RELEASE_DELAY),
-            row.fire_rate.is_some(),
+            row.fire_rate.is_some() && !mounted.contains(&row.record),
             "{}",
             row.record
         );
@@ -890,9 +895,8 @@ fn accept_t452_04_retail_every_unknown_names_the_rows_it_affects() {
         [
             (T452_04_AREA_LIFETIME.to_owned(), 15),
             (T452_04_AREA_RADIUS.to_owned(), 2),
-            (T452_04_NO_EXPIRES.to_owned(), 15),
             (T452_04_PER_AIRFRAME.to_owned(), 0),
-            (T452_04_RELEASE_DELAY.to_owned(), 16),
+            (T452_04_RELEASE_DELAY.to_owned(), 2),
             (T452_04_MOUNT.to_owned(), 1),
             (T452_04_STATUS_DURATION.to_owned(), 4),
             (T452_04_STATUS_KIND.to_owned(), 7),

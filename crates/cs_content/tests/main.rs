@@ -112,6 +112,7 @@ mod accept_t452_r03_b_ammo_limit;
 mod accept_t452_r03_c_ordnance_media;
 mod accept_t452_r03_d_equipment_rules;
 mod accept_t452_r03_hardpoint_price;
+mod accept_t452_r04_flight_and_release;
 mod accept_t454_guidance_loss;
 mod accept_t548_retail_blast;
 mod accept_t574_zeppelin_carrier;

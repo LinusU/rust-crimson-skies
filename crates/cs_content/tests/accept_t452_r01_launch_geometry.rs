@@ -411,7 +411,7 @@ fn accept_t452_r01_component_table_drops_only_the_measured_claims() {
     let row = table.row("wep_97").expect("the record classified");
     // VELOCITY's unit is measured now: the claim is gone from the row.
     assert!(!row.names_claim(T452_04_VELOCITY_UNIT));
-    // FIRE_RATE's mount binding is not pinned: the claim stays.
+    // With no airframe row supplied the pure table cannot state the interval: the claim stays.
     assert!(row.names_claim(T452_04_RELEASE_DELAY));
     // The launch geometry of the same record comes from the same census.
     let geometry = original_launch_geometry_table(&census);
@@ -459,10 +459,30 @@ fn accept_t452_r01_retail_launch_geometry() {
     // declare ACCELERATION 150 and take the ramping (lateral-remainder) spawn;
     // wep_28 declares ACCELERATION 0 and takes the full-inheritance path.
     for (name, mps, range_m, inheritance) in [
-        ("wep_04", 450.0, 900.0, OriginalInheritance::LateralRemainder),
-        ("wep_25", 450.0, 900.0, OriginalInheritance::LateralRemainder),
-        ("wep_26", 450.0, 900.0, OriginalInheritance::LateralRemainder),
-        ("wep_27", 850.0, 900.0, OriginalInheritance::LateralRemainder),
+        (
+            "wep_04",
+            450.0,
+            900.0,
+            OriginalInheritance::LateralRemainder,
+        ),
+        (
+            "wep_25",
+            450.0,
+            900.0,
+            OriginalInheritance::LateralRemainder,
+        ),
+        (
+            "wep_26",
+            450.0,
+            900.0,
+            OriginalInheritance::LateralRemainder,
+        ),
+        (
+            "wep_27",
+            850.0,
+            900.0,
+            OriginalInheritance::LateralRemainder,
+        ),
         ("wep_28", 350.0, 3500.0, OriginalInheritance::Full),
     ] {
         let row = &geometry[name];

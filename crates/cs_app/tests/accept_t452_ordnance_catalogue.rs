@@ -636,9 +636,11 @@ fn accept_t452_retail_every_entry_names_the_values_it_does_not_measure() {
     }
     // The VELOCITY unit is measured since T452-R.01, so no entry carries
     // `t452_04.limit.velocity_unit` any more.
+    // The release interval is stated by an airframe row for every record but
+    // two, and the flight end is derivable from each record's own keys
+    // (T452-R.04): the lifetime claim is no longer carried by any entry.
     for claim in [
         cs_content::ordnance::T452_04_RELEASE_DELAY,
-        cs_content::ordnance::T452_04_NO_EXPIRES,
         T452_RUNTIME_LOWERING_CLAIM,
     ] {
         assert!(
@@ -646,6 +648,7 @@ fn accept_t452_retail_every_entry_names_the_values_it_does_not_measure() {
             "the catalogue must record {claim} against the components it affects"
         );
     }
+    assert!(!claims.contains(&cs_content::ordnance::T452_04_NO_EXPIRES));
     // The glidebomb is the one record with no stated slot.
     assert!(matches!(
         entry(&catalogue, "wep_25").mount(),

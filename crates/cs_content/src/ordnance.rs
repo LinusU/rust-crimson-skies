@@ -3656,12 +3656,16 @@ pub const ORIGINAL_AMMUNITION_SLOT_ARRAY: &str = "QKA";
 pub const T452_04_VELOCITY_UNIT: &str = "t452_04.limit.velocity_unit";
 
 /// The claim id for "what `FIRE_RATE` delays, and in which direction" —
-/// narrowed by T452-R.01: the parser stores `1/FIRE_RATE` at record `+0x14`
-/// and a mount adds an interval to a shared clock, but the field binding is
-/// not pinned.
+/// narrowed by T452-R.01 and resolved by T452-R.04 for every record some
+/// airframe's `weapons` row mounts: the interval a mount adds to the shared
+/// clock is that row's third element ([`OriginalMountRow`]), not record
+/// `+0x14`. It stays on a record no airframe row names.
 pub const T452_04_RELEASE_DELAY: &str = "t452_04.limit.release_delay";
 
-/// The claim id for "no record states a projectile lifetime".
+/// The claim id for "no record states a projectile lifetime" — resolved by
+/// T452-R.04: the step ends a flight by path length, a timer or never
+/// ([`OriginalLaunchGeometry::flight_duration`]); kept so older findings and
+/// the nitro row stay parseable.
 pub const T452_04_NO_EXPIRES: &str = "t452_04.limit.no_expires_key";
 
 /// The claim id for "a status effect's gameplay kind is not stated".
@@ -4180,6 +4184,20 @@ pub enum OriginalLaunchSpeed {
     },
 }
 
+impl OriginalLaunchSpeed {
+    /// The scalar the spawn copies to the node's target speed (`+0x644`).
+    /// For [`Self::Beam`] that is the stored rate, which the engine uses as
+    /// a speed all the same; no retail record declares `BEAM`.
+    #[must_use]
+    pub fn metres_per_second(&self) -> f64 {
+        match self {
+            Self::Declared { mps } | Self::Ballistic { mps, .. } => *mps,
+            Self::Defaulted => ORIGINAL_VELOCITY_DEFAULT_MPS,
+            Self::Beam { per_second } => *per_second,
+        }
+    }
+}
+
 /// How a spawned item's velocity relates to the launcher's velocity (task
 /// T452-R.01): the spawn `0x5aef40` writes the projectile's `+0x60` vector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4226,6 +4244,14 @@ pub struct OriginalLaunchGeometry {
     pub range: OriginalRangeBound,
     /// How the spawned item's velocity is formed from the launcher's.
     pub inheritance: OriginalInheritance,
+    /// `DETONATION_TIME` when positive: the step detonates the item once its
+    /// age exceeds it (`0x5b029a`). A zero, negative or absent value is no
+    /// timer (the parser default is `-1.0`).
+    pub detonation_timer_s: Option<f64>,
+    /// `MINE` (record flag `0x4000`): the speed ramp is skipped and the path
+    /// length flown is halved every step (`0x5b01cc`), so `RANGE` is never
+    /// reached by a step shorter than `RANGE/2`.
+    pub mine: bool,
 }
 
 /// Derives the launch geometry the parser leaves in one record (T452-R.01).
@@ -4279,7 +4305,127 @@ pub fn original_launch_geometry(record: &OriginalWeaponRecord) -> OriginalLaunch
         acceleration_mps2,
         range,
         inheritance,
+        detonation_timer_s: record
+            .first("DETONATION_TIME")
+            .filter(|seconds| *seconds > 0.0),
+        mine: record.declares("MINE"),
     }
+}
+
+/// What ends one item's flight and when (task T452-R.04).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OriginalFlightEnd {
+    /// The path length flown reaches `RANGE` (`0x5b01ec`).
+    Range,
+    /// The age exceeds `DETONATION_TIME` first (`0x5b02b0`).
+    Timer,
+    /// `INSTANT`: the first step displaces by `RANGE·dir`, so the flight is
+    /// over after one step.
+    Instant,
+    /// `MINE` with no timer: nothing in the step ends the flight.
+    Never,
+}
+
+/// How long one item flies, derived from the step's arithmetic (task
+/// T452-R.04). Continuous seconds; the original ends the flight on the first
+/// step at or after this time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OriginalFlightDuration {
+    /// Seconds from release; `None` when [`OriginalFlightEnd::Never`] or the
+    /// item does not move.
+    pub seconds: Option<f64>,
+    /// The rule that ends the flight.
+    pub end: OriginalFlightEnd,
+}
+
+impl OriginalLaunchGeometry {
+    /// The flight duration for an **unguided straight flight** released with
+    /// `shooter_velocity` (metres per second) along unit vector
+    /// `launch_direction` (task T452-R.04).
+    ///
+    /// The step adds `|dt·velocity|` to a path-length counter every step and
+    /// ends the flight when it reaches `RANGE` (`0x5b0160`, `0x5b01e6`) or
+    /// the age passes `DETONATION_TIME` (`0x5b029a`):
+    ///
+    /// - [`OriginalInheritance::Full`]: the velocity is the constant vector
+    ///   `shooter_velocity + launch_direction·VELOCITY`, so the time is
+    ///   `RANGE / |that|`.
+    /// - [`OriginalInheritance::LateralRemainder`]: the speed is `s + min(a·t,
+    ///   VELOCITY)` with `s = |shooter_velocity| + 1e-4` and `a =
+    ///   ACCELERATION` (`0x5af315`, `0x5afd70`), integrated to `RANGE`.
+    ///
+    /// `LOCK_ON` steering with a live target and `RANDOM_DEVIATION` change
+    /// direction, not modeled here. The result depends on the launcher's
+    /// velocity at release, a runtime input: the data states no duration, it
+    /// states the rule.
+    #[must_use]
+    pub fn flight_duration(
+        &self,
+        shooter_velocity: [f64; 3],
+        launch_direction: [f64; 3],
+    ) -> OriginalFlightDuration {
+        let timer = self.detonation_timer_s;
+        let finish = |range_s: Option<f64>| match (range_s, timer) {
+            (Some(range), Some(timer)) if range <= timer => OriginalFlightDuration {
+                seconds: Some(range),
+                end: OriginalFlightEnd::Range,
+            },
+            (_, Some(timer)) => OriginalFlightDuration {
+                seconds: Some(timer),
+                end: OriginalFlightEnd::Timer,
+            },
+            (Some(range), None) => OriginalFlightDuration {
+                seconds: Some(range),
+                end: OriginalFlightEnd::Range,
+            },
+            (None, None) => OriginalFlightDuration {
+                seconds: None,
+                end: OriginalFlightEnd::Never,
+            },
+        };
+        if self.inheritance == OriginalInheritance::Instant {
+            return OriginalFlightDuration {
+                seconds: Some(0.0),
+                end: OriginalFlightEnd::Instant,
+            };
+        }
+        if self.mine {
+            return finish(None);
+        }
+        let range_m = self.range.metres();
+        let speed = self.speed.metres_per_second();
+        let shooter_speed = norm(shooter_velocity);
+        match self.inheritance {
+            OriginalInheritance::Full => {
+                let flown = norm([
+                    shooter_velocity[0] + launch_direction[0] * speed,
+                    shooter_velocity[1] + launch_direction[1] * speed,
+                    shooter_velocity[2] + launch_direction[2] * speed,
+                ]);
+                finish((flown > 0.0).then(|| range_m / flown))
+            }
+            OriginalInheritance::LateralRemainder => {
+                let start = shooter_speed + RAMP_START_SPEED_MPS;
+                let accel = self.acceleration_mps2.unwrap_or(0.0);
+                let ramp_s = speed / accel;
+                let at_ramp_end = start * ramp_s + 0.5 * accel * ramp_s * ramp_s;
+                let seconds = if at_ramp_end >= range_m {
+                    (-start + (start * start + 2.0 * accel * range_m).sqrt()) / accel
+                } else {
+                    ramp_s + (range_m - at_ramp_end) / (start + speed)
+                };
+                finish(Some(seconds))
+            }
+            OriginalInheritance::Instant => unreachable!("handled above"),
+        }
+    }
+}
+
+/// The scalar a ramping spawn adds to the launcher's speed (`0x5af318`).
+const RAMP_START_SPEED_MPS: f64 = 1.0e-4;
+
+fn norm(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// The launch geometry of every record in a census, keyed by record name
@@ -4384,8 +4530,10 @@ pub struct OriginalComponentLaunch {
     pub velocity: Option<f64>,
     /// `FIRE_RATE`, the first value, exactly as stored. Task T452-R.01
     /// measured that the parser stores `1/FIRE_RATE` in record `+0x14` (an
-    /// interval, seconds); which mount field receives that interval is not
-    /// pinned, so the release-delay claim [`T452_04_RELEASE_DELAY`] stands.
+    /// interval, seconds). Task T452-R.04 measured that no mount takes it:
+    /// the mount's interval is the airframe `weapons` row's third element
+    /// ([`OriginalMountRow`]); the record's `+0x14` only sizes the projectile
+    /// pool. [`T452_04_RELEASE_DELAY`] stays only on a record no row names.
     pub fire_rate: Option<f64>,
     /// `DETONATION_DISTANCE`, metres: the proximity fuse's trigger radius, and
     /// the radius of the sphere around the target the fuse tests (task T452.02,
@@ -4475,6 +4623,23 @@ pub fn original_component_table(
     census: &OriginalWeaponCensus,
     layout: &OriginalMountLayout,
 ) -> OriginalComponentTable {
+    original_component_table_with_mounts(census, layout, &BTreeSet::new())
+}
+
+/// [`original_component_table`] with the set of record names some airframe's
+/// `weapons` row mounts (task T452-R.04, [`mounted_original_records`]).
+///
+/// A record in `mounted` has its refire interval stated by those rows, so the
+/// [`T452_04_RELEASE_DELAY`] claim is not recorded against it; a record no row
+/// names keeps the claim. The lifetime claim [`T452_04_NO_EXPIRES`] is never
+/// recorded: every record's flight end is derivable from its own keys
+/// ([`OriginalLaunchGeometry::flight_duration`]).
+#[must_use]
+pub fn original_component_table_with_mounts(
+    census: &OriginalWeaponCensus,
+    layout: &OriginalMountLayout,
+    mounted: &BTreeSet<String>,
+) -> OriginalComponentTable {
     let mut rows = Vec::new();
     let mut excluded = Vec::new();
     for row in &census.rows {
@@ -4482,7 +4647,7 @@ pub fn original_component_table(
             excluded.push(row.record.record.clone());
             continue;
         };
-        rows.push(component_launch(&row.record, family, layout));
+        rows.push(component_launch(&row.record, family, layout, mounted));
     }
     OriginalComponentTable {
         layout: layout.clone(),
@@ -4504,6 +4669,7 @@ fn component_launch(
     record: &OriginalWeaponRecord,
     family: DeclaredOrdnanceFamily,
     layout: &OriginalMountLayout,
+    mounted: &BTreeSet<String>,
 ) -> OriginalComponentLaunch {
     let velocity = record.first("VELOCITY");
     let fire_rate = record.first("FIRE_RATE");
@@ -4567,21 +4733,12 @@ fn component_launch(
     };
 
     let mut unknowns = Vec::new();
-    if fire_rate.is_some() {
+    if fire_rate.is_some() && !mounted.contains(&record.record) {
         unknowns.push(OriginalComponentUnknown::new(
             T452_04_RELEASE_DELAY,
-            "the parser stores 1/FIRE_RATE in record +0x14 and a mount adds an \
-             interval to a shared clock for its next-fire timestamp, but the \
-             write that binds the record field to a mount's interval is not \
-             pinned, so the mount-level semantics stay claimed",
-        ));
-    }
-    if lifetime == OriginalLifetime::Undeclared {
-        unknowns.push(OriginalComponentUnknown::new(
-            T452_04_NO_EXPIRES,
-            "the member carries no EXPIRES key and this record states no other \
-             duration; flight ends at RANGE (or the 500 m default) but the time \
-             that takes is not a stated lifetime",
+            "the mount's refire interval is the third element of an airframe's \
+             `weapons` row (0x4b5a79), not record +0x14, and no airframe row \
+             names this record, so no file states the interval its mount would use",
         ));
     }
     // An area-denial record's whole effect is an area, and it declares the
@@ -4681,7 +4838,132 @@ pub fn read_original_component_table(
     let census =
         read_original_weapon_census(install_root).map_err(OriginalComponentError::Records)?;
     let layout = read_original_mount_layout(install_root)?;
-    Ok(original_component_table(&census, &layout))
+    let rows = read_original_mount_rows(install_root).map_err(OriginalComponentError::Records)?;
+    Ok(original_component_table_with_mounts(
+        &census,
+        &layout,
+        &mounted_original_records(&rows),
+    ))
+}
+
+// ------------------- T452.R04: the weapon-to-mount release binding ------------
+//
+// Task #2169 measured where a mount entry's refire interval (`+0x14`) comes
+// from. The mount builder `0x4b59b0` walks the `weapons` key of an airframe's
+// vehicle record; each row is `(wep_NN count interval value value)`, and the
+// entry takes the row's third element as `+0x14` (`0x4b5a79`), not weapon
+// record `+0x14` (`1/FIRE_RATE`), whose only reader sizes the projectile pool
+// (`0x5ae564`). The fire loop adds `+0x14` to the shared clock to schedule the
+// mount's (and, for a flag-clear mount, the launcher's) next release.
+
+/// The vehicle-record key the mount builder walks (string `0x62b128`).
+pub const ORIGINAL_MOUNT_ROW_KEY: &str = "weapons";
+
+/// One `weapons` row of one airframe: a mount entry as the builder fills it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalMountRow {
+    /// The vehicle record the row resolves under (`kind_of` chain applied).
+    pub airframe: String,
+    /// The weapon record the row names (`wep_04`).
+    pub record: String,
+    /// The mount id the builder derives from the name: `name[4]*10 + name[5]
+    /// - 0x210` (`0x4b5a43..0x4b5a4e`), i.e. the two digits of `wep_NN` — so
+    /// `wep_130` is mount 13, the same id as `wep_13`.
+    pub mount_id: i32,
+    /// Row element 1 → entry `+0x08`, the count the fire loop tests `> 0`.
+    pub count: f64,
+    /// Row element 2 → entry `+0x14`: the seconds the fire loop adds to the
+    /// shared clock after a release (`0x4b6b2d`).
+    pub release_interval_s: f64,
+    /// Row element 3; the entry stores its square at `+0x18`. Its meaning is
+    /// not measured.
+    pub third_value: f64,
+    /// Row element 4; the entry stores its square at `+0x1c`. Its meaning is
+    /// not measured.
+    pub fourth_value: f64,
+}
+
+/// The mount id the builder derives from a record name (`0x4b5a43..0x4b5a4e`).
+#[must_use]
+pub fn original_mount_id(record: &str) -> i32 {
+    let bytes = record.as_bytes();
+    let digit = |index: usize| i32::from(bytes.get(index).copied().unwrap_or(0));
+    digit(4) * 10 + digit(5) - 0x210
+}
+
+/// Every `weapons` row of every airframe in a decoded `vehicle.zrd`, in file
+/// order, each airframe resolved through its `kind_of` chain.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] when the document is
+/// malformed or a row is not `(name count interval value value)`.
+pub fn original_mount_rows(
+    document: &crate::original_airframe::SpannedDocument,
+) -> Result<Vec<OriginalMountRow>, crate::original_airframe::OriginalImportError> {
+    use crate::original_airframe::{OriginalImportError, resolve_vehicle_record};
+    let shape = |detail: String| OriginalImportError::Shape { detail };
+    let outer = document
+        .root()
+        .as_list()
+        .and_then(|outer| outer.first())
+        .and_then(|inner| inner.as_list())
+        .ok_or_else(|| shape("the vehicle document has no record list".to_owned()))?;
+    let mut rows = Vec::new();
+    for pair in outer.chunks(2) {
+        let airframe = pair[0]
+            .as_text()
+            .ok_or_else(|| shape("a record name is not text".to_owned()))?;
+        let resolved = resolve_vehicle_record(document, airframe)?;
+        let Some(list) = resolved
+            .value(ORIGINAL_MOUNT_ROW_KEY)
+            .and_then(|v| v.as_list())
+        else {
+            continue;
+        };
+        for row in list {
+            let cell = |index: usize| {
+                row.element(index)
+                    .and_then(|node| node.as_scalar_f64())
+                    .ok_or_else(|| {
+                        shape(format!("{airframe}: a weapons row lacks element {index}"))
+                    })
+            };
+            let record = row
+                .element(0)
+                .and_then(|node| node.as_scalar_text())
+                .ok_or_else(|| shape(format!("{airframe}: a weapons row has no record name")))?;
+            rows.push(OriginalMountRow {
+                airframe: airframe.to_owned(),
+                record: record.to_owned(),
+                mount_id: original_mount_id(record),
+                count: cell(1)?,
+                release_interval_s: cell(2)?,
+                third_value: cell(3)?,
+                fourth_value: cell(4)?,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// Reads the installation's `vehicle.zrd` and returns its mount rows.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] when the archive, the
+/// member or a row cannot be read.
+pub fn read_original_mount_rows(
+    install_root: &std::path::Path,
+) -> Result<Vec<OriginalMountRow>, crate::original_airframe::OriginalImportError> {
+    let documents = crate::original_airframe::OriginalDocuments::read(install_root)?;
+    original_mount_rows(documents.vehicle())
+}
+
+/// The names of the weapon records some airframe row mounts.
+#[must_use]
+pub fn mounted_original_records(rows: &[OriginalMountRow]) -> BTreeSet<String> {
+    rows.iter().map(|row| row.record.clone()).collect()
 }
 
 // ------------------- T452.R02: measured effect, fuse and swarm behavior ------
