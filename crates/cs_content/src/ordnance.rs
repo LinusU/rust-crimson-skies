@@ -5020,3 +5020,490 @@ fn measured_area(
     }
     None
 }
+
+// ------------------- the measured effect-class media declarations (T452-R.03-C) ----
+
+/// The virtual address of the engine's shared effect-block reader.
+///
+/// **Measured, `static`** (never `verified_original`): it fills one `0x64`
+/// byte block from a keyed zrd list. The key-to-offset map it writes:
+///
+/// | block offset | zrd key | resolution |
+/// | --- | --- | --- |
+/// | `+0x00` bit 0 | `RANDOM_ROTATE` | flag |
+/// | `+0x00` bit 1 | an `int` child inside `ANIMATION` | flag |
+/// | `+0x04`, `+0x08` | `ANIMATION` | two name handles via `0x523820`, further entries dropped |
+/// | `+0x14` | `ANIMATION_ATTACHED` | name via `0x523820` |
+/// | `+0x18` | `MODEL_ANIMATION` | name via `0x523820` |
+/// | `+0x1c` | `SURFACE_ANIMATION` | name via `0x523820` |
+/// | `+0x20` | `ANIMATION_MIN_RANGE` | name via `0x523820` |
+/// | `+0x24` | `EFFECT` | name via the effect resolver `0x526160` |
+/// | `+0x28` | `MODEL` | name via the model-table lookup `0x5aec00` |
+/// | `+0x2c`, `+0x30`.. | `SOUND` | count, then names via `0x596120` |
+/// | `+0x40`, `+0x44`.. | `BOUNCE_SOUND` | count, then names via `0x596120` |
+///
+/// `weapons.zrd` declares no other key inside these blocks.
+pub const ORIGINAL_EFFECT_BLOCK_READER_VA: u64 = 0x5a_e990;
+
+/// The stride of one engine effect block: `0x64` bytes, used both for the
+/// `FIRE`/`FLYOUT` members and for every `IMPACT` surface row.
+pub const ORIGINAL_EFFECT_BLOCK_STRIDE: u64 = 0x64;
+
+/// The virtual address of the `FIRE` key parse site: the weapon parser pushes
+/// `"FIRE"` (`0x63cfd8`) and `weapon + 0x94`, then calls
+/// [`ORIGINAL_EFFECT_BLOCK_READER_VA`].
+pub const ORIGINAL_WEAPON_FIRE_BLOCK_VA: u64 = 0x5a_e0fc;
+
+/// The virtual address of the `FLYOUT` key parse site: the parser pushes
+/// `"FLYOUT"` (`0x63cfd0`) and `weapon + 0xf8`, then calls
+/// [`ORIGINAL_EFFECT_BLOCK_READER_VA`]. The spawned round attaches the
+/// block's `MODEL` (`weapon + 0x120`) — and starts `MODEL_ANIMATION`
+/// (`weapon + 0x110`) when present — at `0x5aecbf` in the round allocator.
+pub const ORIGINAL_WEAPON_FLYOUT_BLOCK_VA: u64 = 0x5a_e10e;
+
+/// The virtual address of the `IMPACT` key parse site: the parser looks up
+/// `"IMPACT"` (`0x63cf98`), parses its `default` child into row 0 at
+/// `weapon + 0x15c`, then walks the soil-name table (`0x637b10`, six
+/// registered names: `default`, `water`, `seafloor`, `quicksand`, `lava`,
+/// `fire`, plus any the mission appended) parsing each declared row at
+/// `row * 0x64`. An undeclared soil's row is a verbatim copy of row 0.
+pub const ORIGINAL_WEAPON_IMPACT_BLOCK_VA: u64 = 0x5a_e1cf;
+
+/// The virtual address of the `DESTROY_ANIMATION` key parse site: the parser
+/// resolves the name through `0x523820` into `weapon + 0x188`
+/// (`0x5adc33..0x5adc54`).
+pub const ORIGINAL_WEAPON_DESTROY_ANIMATION_VA: u64 = 0x5a_dc33;
+
+/// The virtual address where the fire routine reads `weapon + 0xe8`, the
+/// launch sound slot: `-1` plays nothing, otherwise
+/// `[weapon + 0xc4 + 4 * slot]` — entry `slot` of the `FIRE` block's `SOUND`
+/// array (`0x94 + 0x30`) — is played through `0x593b80` at `0x5af3de`. The
+/// `FIRE` block's `EFFECT` (`0x94 + 0x24` = `weapon + 0xb8`) then takes
+/// precedence over its `ANIMATION` slots (`0x5af3e6`); with no effect the
+/// slot `weapon + 0xec` selects among `ANIMATION` handles.
+pub const ORIGINAL_WEAPON_LAUNCH_SOUND_VA: u64 = 0x5a_f3c0;
+
+/// The virtual address of the launch-sound slot selector
+/// `(weapon, index) -> bool`: writes `weapon + 0xe8` when `index` is below
+/// the `FIRE` `SOUND` count (`weapon + 0xc0`); the callers observed pass `0`
+/// (first declared entry) or `-1` (silence — the compare is signed, so `-1`
+/// always writes). A slot at or above the count writes nothing and returns
+/// `0`.
+pub const ORIGINAL_WEAPON_LAUNCH_SLOT_VA: u64 = 0x5a_c120;
+
+/// The virtual address of the sound playback gate: it returns early on a
+/// null sound descriptor (`0x593ba4`), so a record with no declared sound
+/// plays **nothing** — there is no shared default and nothing
+/// mount-specific falls in.
+pub const ORIGINAL_SOUND_GATE_VA: u64 = 0x59_3b80;
+
+/// The virtual address of the `IMPACT` row sound picker `(weapon, position,
+/// flags, surface_row)`: a uniform `rand * count >> 15` index into the row's
+/// `SOUND` array (`+0x30`), played through `0x593b80`. The row's `EFFECT`
+/// (`+0x24`) plays via `0x525d90` at `0x5aca01`, its `ANIMATION` slots
+/// (`+0x04`/`+0x08`) at `0x5ac942`, and `SURFACE_ANIMATION` (`+0x1c`)
+/// surface-aligned at `0x5ac9eb`.
+pub const ORIGINAL_WEAPON_IMPACT_SOUND_VA: u64 = 0x5a_d100;
+
+/// The first of the two `DESTROY_ANIMATION` consumer sites: a round ending
+/// in flight plays `weapon + 0x188` (`0x5af78b`, through `0x4edda0` or
+/// `0x4edc10`); the second, `0x5b06b8`, selects it as the detonation
+/// animation when the surface row's `ANIMATION_MIN_RANGE` field is absent.
+pub const ORIGINAL_WEAPON_DESTROY_USE_VA: u64 = 0x5a_f78b;
+
+/// The virtual address where the round allocator attaches the `FLYOUT`
+/// block's `MODEL` (`weapon + 0x120` = block `+0x28`) to the round's scene
+/// node through `0x4d1390`; when `weapon + 0x110` (`MODEL_ANIMATION`,
+/// block `+0x18`) is nonzero the animated form is built first via
+/// `0x5ad290`.
+pub const ORIGINAL_WEAPON_FLYOUT_MODEL_ATTACH_VA: u64 = 0x5a_ecbf;
+
+/// The virtual address of the `LOOPED_SOUND_NAME` key parse site in the
+/// weapon's mount-descriptor filler: the name resolves through
+/// `0x59cd40(0x13, name)` and the registered callback lands on the
+/// descriptor's `+0x24` field. It is the gun loop — a mount-level sound,
+/// not an effect-block entry, and no `weapons.zrd` ordnance record declares
+/// it.
+pub const ORIGINAL_MOUNT_LOOPED_SOUND_VA: u64 = 0x4b_aa7b;
+
+/// The stride of one `wep_` record in the engine's weapon table, `0x214`
+/// bytes, confirmed at the table iteration `0x5ac108`.
+pub const ORIGINAL_WEAPON_RECORD_STRIDE: u64 = 0x214;
+
+/// The declared contents of one `FIRE`/`FLYOUT`/`IMPACT`-row effect block —
+/// the fields the engine's shared block reader at
+/// [`ORIGINAL_EFFECT_BLOCK_READER_VA`] fills, kept as the *names* the member
+/// declares rather than the engine's resolved handles.
+///
+/// Names absent from the record stay `None`/`empty`: the engine zeroes the
+/// block before filling it, so an absent key means "no resource" — and for
+/// sounds the gate at [`ORIGINAL_SOUND_GATE_VA`] turns that into silence,
+/// never a substitute.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginalEffectBlock {
+    /// Every key the block declares, sorted — including any the engine's
+    /// reader does not name, so nothing is silently dropped.
+    pub keys: BTreeSet<String>,
+    /// `ANIMATION` entries in declaration order. The engine resolves at
+    /// most two into block `+0x04`/`+0x08`; extra entries are dropped by
+    /// the engine but kept here.
+    pub animations: Vec<String>,
+    /// `ANIMATION_ATTACHED` (block `+0x14`).
+    pub animation_attached: Option<String>,
+    /// `MODEL_ANIMATION` (block `+0x18`) — the looping animation of the
+    /// `MODEL`, e.g. `torpedo_trail` for `a_torpedo`.
+    pub model_animation: Option<String>,
+    /// `SURFACE_ANIMATION` (block `+0x1c`) — played surface-aligned on
+    /// impact rows.
+    pub surface_animation: Option<String>,
+    /// `ANIMATION_MIN_RANGE` (block `+0x20`): the impact row's detonation
+    /// animation override; a row without one inherits row 0's, then the
+    /// weapon's `DESTROY_ANIMATION` (see
+    /// [`ORIGINAL_WEAPON_DESTROY_USE_VA`]).
+    pub animation_min_range: Option<String>,
+    /// `EFFECT` (block `+0x24`) — resolved through the engine's effect
+    /// resolver, not the animation one.
+    pub effect: Option<String>,
+    /// `MODEL` (block `+0x28`) — a model-table name; on `FLYOUT` it is the
+    /// projectile's own visual ([`ORIGINAL_WEAPON_FLYOUT_MODEL_ATTACH_VA`]).
+    pub model: Option<String>,
+    /// `SOUND` entries in declaration order (block `+0x2c` count, `+0x30`
+    /// array). Retail `weapons.zrd` declares at most one per `FIRE` block;
+    /// `IMPACT` rows declare several and the picker at
+    /// [`ORIGINAL_WEAPON_IMPACT_SOUND_VA`] chooses one at random.
+    pub sounds: Vec<String>,
+    /// `BOUNCE_SOUND` entries (block `+0x40` count, `+0x44` array).
+    pub bounce_sounds: Vec<String>,
+    /// The declared `RANDOM_ROTATE` flag value (block `+0x00` bit 0), when
+    /// the key is present.
+    pub random_rotate: Option<bool>,
+}
+
+impl OriginalEffectBlock {
+    /// Whether the block declares no key at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// One `IMPACT` row: the surface name the record declares and its block.
+///
+/// The engine keys rows by registered soil name (`default` is row 0 at
+/// `weapon + 0x15c`); `enemy`, `player` and `buildings` are soils the
+/// mission registers, so retail records can and do declare them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalImpactRow {
+    /// The surface name as declared (`default`, `water`, `enemy`, ...).
+    pub surface: String,
+    /// The row's block.
+    pub block: OriginalEffectBlock,
+}
+
+/// The measured effect-class declarations of one `wep_` record
+/// (task T452-R.03-C).
+///
+/// This is the member-level half of the ordnance media contract: the names
+/// each effect-class key declares, with the engine sites that consume them
+/// pinned on the constants above. `SOUND_NAME` exists only as the tail of
+/// `LOOPED_SOUND_NAME` — there is no literal `SOUND_NAME` key in the image;
+/// the launch one-shot is `FIRE`'s `SOUND` list, the flying loop is
+/// `FLYOUT`'s, and the mount loop is `LOOPED_SOUND_NAME`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginalWeaponMedia {
+    /// The record name (`wep_14`).
+    pub record: String,
+    /// Every top-level key the record declares, sorted.
+    pub keys: BTreeSet<String>,
+    /// The `FIRE` block at `weapon + 0x94` ([`ORIGINAL_WEAPON_FIRE_BLOCK_VA`]):
+    /// the muzzle presentation — `SOUND` is the launch one-shot, `EFFECT`
+    /// and `ANIMATION` the muzzle visual.
+    pub fire: Option<OriginalEffectBlock>,
+    /// The `FLYOUT` block at `weapon + 0xf8`
+    /// ([`ORIGINAL_WEAPON_FLYOUT_BLOCK_VA`]): the flying projectile's own
+    /// presentation — `MODEL`/`MODEL_ANIMATION` attach to the round at
+    /// spawn, `SOUND` is the declared flight loop.
+    pub flyout: Option<OriginalEffectBlock>,
+    /// The `IMPACT` rows ([`ORIGINAL_WEAPON_IMPACT_BLOCK_VA`]), in declared
+    /// order — the detonation presentation, keyed by surface.
+    pub impact_rows: Vec<OriginalImpactRow>,
+    /// `DESTROY_ANIMATION` (`weapon + 0x188`,
+    /// [`ORIGINAL_WEAPON_DESTROY_ANIMATION_VA`]): the end-of-life animation,
+    /// e.g. `torpedo_destroy_effect` on `wep_14`.
+    pub destroy_animation: Option<String>,
+    /// `LOOPED_SOUND_NAME` ([`ORIGINAL_MOUNT_LOOPED_SOUND_VA`]): the mount's
+    /// gun loop — declared by `CANNON` records, not by ordnance.
+    pub looped_sound_name: Option<String>,
+}
+
+impl OriginalWeaponMedia {
+    /// The launch one-shot this record declares: the first `FIRE` `SOUND`
+    /// entry, which is what the fire routine plays at the muzzle
+    /// ([`ORIGINAL_WEAPON_LAUNCH_SOUND_VA`]).
+    ///
+    /// `None` means the launch is silent — the slot selector at
+    /// [`ORIGINAL_WEAPON_LAUNCH_SLOT_VA`] writes the caller's index (`0`
+    /// selects the first declared entry, `-1` silence) and the playback
+    /// gate at [`ORIGINAL_SOUND_GATE_VA`] returns early on a missing
+    /// handle. There is **no** shared rocket sound and **no**
+    /// mount-specific fallback: absent means silent, which is what the
+    /// static callers prove — a firing caller must pick a declared slot or
+    /// explicitly pass `-1`.
+    #[must_use]
+    pub fn launch_sound(&self) -> Option<&str> {
+        self.fire
+            .as_ref()
+            .and_then(|block| block.sounds.first())
+            .map(String::as_str)
+    }
+
+    /// Every launch sound entry the record declares (retail: at most one).
+    #[must_use]
+    pub fn launch_sounds(&self) -> &[String] {
+        self.fire
+            .as_ref()
+            .map_or(&[], |block| block.sounds.as_slice())
+    }
+
+    /// The muzzle visual that takes precedence at launch: `FIRE`'s
+    /// `EFFECT`. When declared, the engine plays it and skips the
+    /// `ANIMATION` slots entirely (`0x5af3e6`).
+    #[must_use]
+    pub fn launch_effect(&self) -> Option<&str> {
+        self.fire.as_ref().and_then(|block| block.effect.as_deref())
+    }
+
+    /// The launch animation the engine plays when no `EFFECT` is declared:
+    /// the `FIRE` `ANIMATION` slot index `weapon + 0xec` selects — slot `0`
+    /// after every ordinary shot.
+    #[must_use]
+    pub fn launch_animation(&self) -> Option<&str> {
+        self.fire
+            .as_ref()
+            .and_then(|block| block.animations.first())
+            .map(String::as_str)
+    }
+
+    /// The projectile's own visual: `FLYOUT`'s `MODEL`, attached to the
+    /// spawned round's scene node at [`ORIGINAL_WEAPON_FLYOUT_MODEL_ATTACH_VA`].
+    #[must_use]
+    pub fn flyout_model(&self) -> Option<&str> {
+        self.flyout
+            .as_ref()
+            .and_then(|block| block.model.as_deref())
+    }
+
+    /// The looping animation of the `FLYOUT` `MODEL`
+    /// (`FLYOUT>MODEL_ANIMATION`, block `+0x18`).
+    #[must_use]
+    pub fn flyout_model_animation(&self) -> Option<&str> {
+        self.flyout
+            .as_ref()
+            .and_then(|block| block.model_animation.as_deref())
+    }
+
+    /// The declared flight loop: `FLYOUT`'s `SOUND` entries. They are
+    /// parsed into the block (`+0x124` count, `+0x128` array); the weapon
+    /// module's consumer for them was not located statically (measured gap,
+    /// recorded in the finding).
+    #[must_use]
+    pub fn flyout_sounds(&self) -> &[String] {
+        self.flyout
+            .as_ref()
+            .map_or(&[], |block| block.sounds.as_slice())
+    }
+
+    /// The mount's `LOOPED_SOUND_NAME` — the gun loop, which ordnance
+    /// records never declare.
+    #[must_use]
+    pub fn mount_looped_sound(&self) -> Option<&str> {
+        self.looped_sound_name.as_deref()
+    }
+
+    /// The `IMPACT` row for `surface`, or the `default` row when the
+    /// record declares none under that name — the engine copies row 0 into
+    /// undeclared soils verbatim ([`ORIGINAL_WEAPON_IMPACT_BLOCK_VA`]).
+    #[must_use]
+    pub fn impact_row(&self, surface: &str) -> Option<&OriginalImpactRow> {
+        self.impact_rows
+            .iter()
+            .find(|row| row.surface == surface)
+            .or_else(|| self.default_impact_row())
+    }
+
+    /// The `default` row of `IMPACT` — row 0 of the engine's table.
+    #[must_use]
+    pub fn default_impact_row(&self) -> Option<&OriginalImpactRow> {
+        self.impact_rows.iter().find(|row| row.surface == "default")
+    }
+
+    /// The measured launch-presentation ids for the runtime
+    /// [`cs_sim::weapons::ordnance::OrdnanceMedia`] contract: the declared
+    /// `FLYOUT` `MODEL` as the visual and the declared `FIRE` `SOUND`
+    /// entry as the sound.
+    ///
+    /// The ids are built from the declared names — measured, never
+    /// invented — at [`ObservedTool`] strength with `claim_id` as their
+    /// claim: `hardpoint_equipment/<model>` and `sound/<name>`. A record
+    /// that declares no `FLYOUT` `MODEL` or no `FIRE` `SOUND` entry keeps
+    /// the field `Unknown` with the reason — the boundary at
+    /// `cs_app::ordnance::lower_media` then refuses it rather than
+    /// fabricating a resource, which is the measured behavior anyway: no
+    /// `FIRE` `SOUND` means a silent launch.
+    #[must_use]
+    pub fn measured_ordnance_media(&self, claim_id: &ClaimId) -> DeclaredOrdnanceMedia {
+        let known = |kind: ContentKind, name: &str| {
+            Resolved::Known(Known::new(
+                ContentId::from_source(kind, name)
+                    .expect("a declared media name is a valid content key"),
+                Provenance::new(claim_id.clone(), ClaimStatus::ObservedTool, None)
+                    .expect("an ObservedTool provenance needs no source span"),
+            ))
+        };
+        let visual = match self.flyout_model() {
+            Some(model) => known(ContentKind::HardpointEquipment, model),
+            None => Resolved::unknown(
+                claim_id.clone(),
+                "the record declares no FLYOUT MODEL, so the spawned round                  carries no visual of its own",
+            )
+            .expect("the reason is non-empty"),
+        };
+        let sound = match self.launch_sound() {
+            Some(name) => known(ContentKind::Sound, name),
+            None => Resolved::unknown(
+                claim_id.clone(),
+                "the record declares no FIRE SOUND entry: the launch is                  silent (playback gate 0x593b80 early-outs on a missing                  handle), not defaulted",
+            )
+            .expect("the reason is non-empty"),
+        };
+        DeclaredOrdnanceMedia {
+            visual,
+            sound,
+            particles: None,
+        }
+    }
+}
+
+/// Decodes one keyed effect block (`FIRE`, `FLYOUT`, or one `IMPACT` row)
+/// into its declared names.
+fn effect_block(children: &[crate::original_airframe::SpannedValue]) -> OriginalEffectBlock {
+    let mut block = OriginalEffectBlock::default();
+    for field in children.chunks(2) {
+        let [key, value] = field else { continue };
+        let Some(key) = key.as_text() else { continue };
+        block.keys.insert(key.to_owned());
+        let Some(list) = value.as_list() else {
+            continue;
+        };
+        let texts = || {
+            list.iter()
+                .filter_map(|child| child.as_text().map(str::to_owned))
+        };
+        match key {
+            "ANIMATION" => block.animations = texts().collect(),
+            "SOUND" => block.sounds = texts().collect(),
+            "BOUNCE_SOUND" => block.bounce_sounds = texts().collect(),
+            "ANIMATION_ATTACHED" => block.animation_attached = texts().next(),
+            "MODEL_ANIMATION" => block.model_animation = texts().next(),
+            "SURFACE_ANIMATION" => block.surface_animation = texts().next(),
+            "ANIMATION_MIN_RANGE" => block.animation_min_range = texts().next(),
+            "EFFECT" => block.effect = texts().next(),
+            "MODEL" => block.model = texts().next(),
+            "RANDOM_ROTATE" => {
+                block.random_rotate = list
+                    .first()
+                    .and_then(crate::original_airframe::SpannedValue::as_scalar_u32)
+                    .map(|value| value != 0);
+            }
+            _ => {}
+        }
+    }
+    block
+}
+
+/// One record's measured effect-class declarations — the pure half of the
+/// reader, callable on any decoded record body.
+#[must_use]
+pub fn weapon_media(
+    name: &str,
+    body: &[crate::original_airframe::SpannedValue],
+) -> OriginalWeaponMedia {
+    let mut media = OriginalWeaponMedia {
+        record: name.to_owned(),
+        ..OriginalWeaponMedia::default()
+    };
+    for field in body.chunks(2) {
+        let [key, value] = field else { continue };
+        let Some(key) = key.as_text() else { continue };
+        media.keys.insert(key.to_owned());
+        match key {
+            "FIRE" | "FLYOUT" => {
+                let block = value
+                    .as_list()
+                    .map_or_else(OriginalEffectBlock::default, effect_block);
+                if key == "FIRE" {
+                    media.fire = Some(block);
+                } else {
+                    media.flyout = Some(block);
+                }
+            }
+            "IMPACT" => {
+                let Some(rows) = value.as_list() else {
+                    continue;
+                };
+                for pair in rows.chunks(2) {
+                    let [surface, row] = pair else { continue };
+                    let Some(surface) = surface.as_text() else {
+                        continue;
+                    };
+                    media.impact_rows.push(OriginalImpactRow {
+                        surface: surface.to_owned(),
+                        block: row
+                            .as_list()
+                            .map_or_else(OriginalEffectBlock::default, effect_block),
+                    });
+                }
+            }
+            "DESTROY_ANIMATION" => {
+                media.destroy_animation = value
+                    .as_list()
+                    .and_then(|list| list.first())
+                    .and_then(crate::original_airframe::SpannedValue::as_text)
+                    .map(str::to_owned);
+            }
+            "LOOPED_SOUND_NAME" => {
+                media.looped_sound_name = value
+                    .as_list()
+                    .and_then(|list| list.first())
+                    .and_then(crate::original_airframe::SpannedValue::as_text)
+                    .map(str::to_owned);
+            }
+            _ => {}
+        }
+    }
+    media
+}
+
+/// Reads the measured effect-class declarations of every `wep_` record in
+/// the installation's `weapons.zrd` (task T452-R.03-C).
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] as
+/// [`read_original_weapon_records`].
+pub fn read_original_weapon_media(
+    install_root: &std::path::Path,
+) -> Result<Vec<OriginalWeaponMedia>, crate::original_airframe::OriginalImportError> {
+    let document = read_member_document(install_root, ORIGINAL_WEAPONS_MEMBER)?;
+    let mut found = Vec::new();
+    collect_wep_records(document.root(), &mut found);
+    if found.is_empty() {
+        return Err(crate::original_airframe::OriginalImportError::Shape {
+            detail: "no `wep_` record was found".to_owned(),
+        });
+    }
+    Ok(found
+        .into_iter()
+        .map(|(name, body)| weapon_media(name, body))
+        .collect())
+}
