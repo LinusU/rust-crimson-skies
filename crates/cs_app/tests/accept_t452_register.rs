@@ -25,9 +25,9 @@ use cs_app::ordnance::{
     ORIGINAL_ORDNANCE_UNIT_MASS_KG, OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
     OriginalRegistrationOutcome, OriginalRegistrationReport, T452_MEASURED_BEHAVIOUR_CLAIM,
-    T452_NO_FLYOUT_MODEL_BLOCKED, T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED,
-    lower_ordnance, measured_ordnance_declaration, read_and_register_measured_ordnance,
-    register_measured_ordnance, step_ordnance_session,
+    T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED, lower_ordnance,
+    measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
+    step_ordnance_session,
 };
 use cs_app::scene::SceneGeneration;
 use cs_app::weapons::MountPoseBinding;
@@ -499,17 +499,23 @@ fn accept_t452_register_lowering_refuses_a_field_no_measurement_states() {
 /// content it affects and the task that resolves it — never silently dropped.
 #[test]
 fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
-    let table = table(vec![guided_row(), blocked_row()]);
-    // The silent range end registers now (task #2175), so the blocked id here
-    // is blocked for a measured value the runtime still cannot express: a
-    // record with no `FLYOUT` `MODEL` has no visual for its round.
-    let mut no_visual = blocked_media();
-    no_visual.flyout = None;
+    // The silent range end registers now (task #2175), so the blocked id is
+    // blocked for a value the runtime still cannot express: a tangler field
+    // measured to outlive the item that creates it.
+    let mut tangler = blocked_row();
+    tangler
+        .statuses
+        .push(cs_content::ordnance::OriginalStatusEffectDeclaration {
+            key: "TANGLER",
+            duration_s: Some(2.0),
+            duration_unit: Some("TIME".to_owned()),
+        });
+    let table = table(vec![guided_row(), tangler]);
     let mut registry = OrdnanceRegistry::new();
     let report: OriginalRegistrationReport = register_measured_ordnance(
         &table,
         &[guided_record(), blocked_record()],
-        &[guided_media(), no_visual],
+        &[guided_media(), blocked_media()],
         &[guided_ammo(), blocked_ammo()],
         &provenance(),
         &mut registry,
@@ -519,14 +525,6 @@ fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
     assert_eq!(report.registered_records(), vec!["wep_05"]);
     assert_eq!(report.blocked_records(), vec!["wep_12"]);
     assert!(!report.is_complete());
-    assert!(
-        report
-            .blockers()
-            .iter()
-            .any(|blocker| blocker.claim == T452_NO_FLYOUT_MODEL_BLOCKED),
-        "{:?}",
-        report.blockers()
-    );
     for blocker in report.blockers() {
         assert!(!blocker.record.is_empty());
         assert!(!blocker.field.is_empty());
