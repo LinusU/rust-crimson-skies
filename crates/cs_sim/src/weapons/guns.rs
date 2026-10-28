@@ -490,6 +490,9 @@ impl GunDefinition {
         {
             return Err(GunDefinitionError::InvalidInheritanceShare { share });
         }
+        if inheritance == InheritanceRule::LateralRemainder {
+            return Err(GunDefinitionError::OrdnanceOnlyInheritance);
+        }
         if effect.kind() != ContentKind::HardpointEquipment {
             return Err(GunDefinitionError::EffectKindMismatch { id: effect });
         }
@@ -636,6 +639,11 @@ pub enum GunDefinitionError {
         /// The rejected share.
         share: f64,
     },
+    /// The inheritance rule is [`InheritanceRule::LateralRemainder`], the
+    /// measured ordnance spawn's ramp: a gun has no speed scalar to drive it
+    /// and its release would silently drop the launch-direction part of the
+    /// airframe's velocity with no ramp to carry it.
+    OrdnanceOnlyInheritance,
     /// The effect id is not in the `hardpoint_equipment` namespace.
     EffectKindMismatch {
         /// The offending id.
@@ -680,6 +688,13 @@ impl fmt::Display for GunDefinitionError {
                 write!(
                     f,
                     "an inherited-velocity share must be finite and within [0, 1], got {share}"
+                )
+            }
+            Self::OrdnanceOnlyInheritance => {
+                write!(
+                    f,
+                    "the lateral-remainder inheritance is the ordnance ramp's: a gun has no \
+                     speed scalar for it"
                 )
             }
             Self::EffectKindMismatch { id } => {

@@ -47,8 +47,10 @@ use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy, Dama
 use cs_sim::time::TickRate;
 use cs_sim::weapons::guns::RAMP_START_SPEED_MPS;
 use cs_sim::weapons::{
-    HardpointKind, InheritanceRule, LaunchGeometry, MountTransform, OrdnanceComponent,
-    OrdnanceDefinitionError, OrdnanceRegistry, OrdnanceRuntime, ProjectileId,
+    GunDefinition, GunDefinitionError, GunMountKind, GunRate, HardpointKind, InheritanceRule,
+    LaunchGeometry, MountTransform, OrdnanceComponent, OrdnanceDefinitionError, OrdnanceRegistry,
+    OrdnanceRuntime, ProjectileId, SpreadCone, WeaponDamage, synthetic_ammunition,
+    synthetic_effect, synthetic_mount, synthetic_sound,
 };
 use cs_types::Tick;
 use cs_types::asset_id::SourceSpan;
@@ -328,6 +330,28 @@ fn accept_t452_inherit_the_boundary_refuses_an_incoherent_ramp() {
             .expect("the measured pair is coherent")
             .acceleration_mps2(),
         Some(ACCELERATION_MPS2)
+    );
+
+    // And the rule is ordnance-only: a gun has no scalar for the ramp, so
+    // its own boundary refuses it rather than compose a release with no
+    // ramp to carry the launcher's launch-direction speed.
+    assert_eq!(
+        GunDefinition::try_new(
+            synthetic_mount(),
+            GunMountKind::Nose,
+            "20mm",
+            synthetic_ammunition(),
+            GunRate::try_new(4).expect("a valid rate"),
+            640.0,
+            90,
+            SpreadCone::try_new(0.004).expect("a valid spread"),
+            WeaponDamage::try_new(6.0, 3.0).expect("valid damage"),
+            InheritanceRule::LateralRemainder,
+            synthetic_effect(),
+            synthetic_sound(),
+        ),
+        Err(GunDefinitionError::OrdnanceOnlyInheritance),
+        "the lateral remainder without its ramp is not a gun rule"
     );
 }
 
