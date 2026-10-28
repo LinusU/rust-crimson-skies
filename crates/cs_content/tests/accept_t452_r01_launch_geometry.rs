@@ -340,6 +340,32 @@ fn accept_t452_r01_beam_records_take_the_reciprocal_rate() {
 }
 
 #[test]
+fn accept_t452_r01_gravity_overrides_beam_too() {
+    // The GRAVITY block is the post-parse tail (0x5ae4df): it runs after the
+    // whole key loop, so a declared non-zero GRAVITY overwrites even a BEAM
+    // record's rate — the parser order is BEAM, VELOCITY, then GRAVITY last.
+    let geometry = original_launch_geometry(&record(
+        "wep_98",
+        &["ROCKET", "BEAM", "GRAVITY", "RANGE", "TIME_TO_MAX_RANGE"],
+        &[
+            ("GRAVITY", 9.8),
+            ("RANGE", 1000.0),
+            ("TIME_TO_MAX_RANGE", 2.0),
+        ],
+    ));
+    let expected = (2.0 * 9.8 * 1000.0_f64).sqrt();
+    assert_eq!(
+        geometry.speed,
+        OriginalLaunchSpeed::Ballistic {
+            mps: expected,
+            gravity_mps2: 9.8,
+            range_m: 1000.0,
+        },
+        "the post-parse GRAVITY overwrite wins over the BEAM rate"
+    );
+}
+
+#[test]
 fn accept_t452_r01_instant_records_have_no_ballistic_velocity() {
     let geometry = original_launch_geometry(&record(
         "wep_96",

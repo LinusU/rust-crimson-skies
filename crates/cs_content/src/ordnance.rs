@@ -3799,8 +3799,9 @@ pub const ORIGINAL_VELOCITY_DEFAULT_MPS: f64 = 120.0;
 /// skipped when that bit is set (`0x5ae0ac`); then, only when `GRAVITY` parsed
 /// to a non-zero `+0x54` (`jne` at `0x5ae4ed` skips the block when it is `0`),
 /// `+0x2c` is overwritten with `sqrt(2·GRAVITY·RANGE)` (`0x5ae4ef..0x5ae520`,
-/// a bit-level square root). So a declared `VELOCITY` loses only to a declared
-/// non-zero `GRAVITY`.
+/// a bit-level square root). The `GRAVITY` block is the post-parse tail and
+/// runs unconditionally, so a declared non-zero `GRAVITY` loses to nothing —
+/// it overwrites a `BEAM` rate just as it overwrites a declared `VELOCITY`.
 ///
 /// Every retail record that declares `GRAVITY` at all declares `GRAVITY 0`
 /// (`wep_04`, `wep_25`–`wep_28`): the override is engine-real but unexercised
@@ -3831,6 +3832,7 @@ pub enum OriginalLaunchSpeed {
     /// key is present and not positive; with the key absent the reciprocal
     /// runs on the `10000.0` default and yields `1e-4` — transcribed as
     /// measured, not "corrected". The value is a rate, not metres per second.
+    /// A declared non-zero `GRAVITY` still overwrites it — see the enum doc.
     Beam {
         /// The value `+0x2c` holds, per second.
         per_second: f64,
@@ -3885,7 +3887,10 @@ pub struct OriginalLaunchGeometry {
 ///
 /// Pure: mirrors the parser's measured rule order — `BEAM` before `VELOCITY`
 /// before `GRAVITY`, the `BEAM` flag suppressing the `VELOCITY` store, and the
-/// ballistic overwrite using the effective (declared-or-default) `RANGE`.
+/// ballistic overwrite using the effective (declared-or-default) `RANGE`. The
+/// `GRAVITY` block is the post-parse tail (`0x5ae4df`), so it overwrites a
+/// `BEAM` rate too: the override precedence is `GRAVITY != 0` > `BEAM` >
+/// `VELOCITY` > the `120.0` default.
 #[must_use]
 pub fn original_launch_geometry(record: &OriginalWeaponRecord) -> OriginalLaunchGeometry {
     let range = record
@@ -3893,27 +3898,28 @@ pub fn original_launch_geometry(record: &OriginalWeaponRecord) -> OriginalLaunch
         .map_or(OriginalRangeBound::Defaulted, |m| {
             OriginalRangeBound::Declared { m }
         });
-    let speed = if record.declares("BEAM") {
-        let per_second = match record.first("TIME_TO_MAX_RANGE") {
-            Some(t) if t > 0.0 => 1.0 / t,
-            Some(_) => 10_000.0,
-            None => 1.0e-4,
+    let speed =
+        if let Some(gravity_mps2) = record.first("GRAVITY").filter(|gravity| *gravity != 0.0) {
+            let range_m = range.metres();
+            OriginalLaunchSpeed::Ballistic {
+                mps: (2.0 * gravity_mps2 * range_m).sqrt(),
+                gravity_mps2,
+                range_m,
+            }
+        } else if record.declares("BEAM") {
+            let per_second = match record.first("TIME_TO_MAX_RANGE") {
+                Some(t) if t > 0.0 => 1.0 / t,
+                Some(_) => 10_000.0,
+                None => 1.0e-4,
+            };
+            OriginalLaunchSpeed::Beam { per_second }
+        } else {
+            record
+                .first("VELOCITY")
+                .map_or(OriginalLaunchSpeed::Defaulted, |mps| {
+                    OriginalLaunchSpeed::Declared { mps }
+                })
         };
-        OriginalLaunchSpeed::Beam { per_second }
-    } else if let Some(gravity_mps2) = record.first("GRAVITY").filter(|gravity| *gravity != 0.0) {
-        let range_m = range.metres();
-        OriginalLaunchSpeed::Ballistic {
-            mps: (2.0 * gravity_mps2 * range_m).sqrt(),
-            gravity_mps2,
-            range_m,
-        }
-    } else {
-        record
-            .first("VELOCITY")
-            .map_or(OriginalLaunchSpeed::Defaulted, |mps| {
-                OriginalLaunchSpeed::Declared { mps }
-            })
-    };
     let acceleration_mps2 = record.first("ACCELERATION");
     let inheritance = if record.declares("INSTANT") {
         OriginalInheritance::Instant
