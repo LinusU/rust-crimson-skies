@@ -22,7 +22,7 @@ or human observation.
 - `crates/cs_app/src/ordnance.rs` (extend): `lower_fuse`, the measured fuse
   selection, `OrdnanceConsumption`, `OrdnanceSessionTick::consumed`,
   `OrdnanceEventKind::Consumed` and the session's consumption arm.
-- `crates/cs_sim/tests/accept_t452_silent_range_end.rs` (**new**, 5 tests) and
+- `crates/cs_sim/tests/accept_t452_silent_range_end.rs` (**new**, 7 tests) and
   `crates/cs_sim/tests/main.rs` (wiring: one `mod`).
 - `crates/cs_app/tests/accept_t452_silent_expiry.rs` (**new**, 6 tests: 4
   synthetic, 2 retail), `crates/cs_app/tests/evidence_report_t452_silent_expiry.rs`
@@ -31,7 +31,10 @@ or human observation.
 - `crates/cs_app/tests/accept_t452_register.rs` and
   `crates/cs_app/tests/evidence_report_t452_register.rs` (previous stage's
   fixtures: the `wep_12`-shaped record's silent end is now expressible, and the
-  retail expectation moves from ten registered / six blocked to eleven / five).
+  retail expectation moves from the thirteen registered / three blocked of the
+  branch's base to fifteen / one once the rebase brings in the landed
+  lateral-remainder ramp; the refusal test now refuses an unknown `RANGE` bound
+  instead of an unexpressible end).
 - This file and `docs/findings/evidence/T452-REG-SILENT-EXPIRY.json`.
 
 No protected path, no `Cargo.toml`/`Cargo.lock` change, no original data, no
@@ -97,10 +100,12 @@ range-bounded item rather than being hidden behind the silent end.
 `OrdnanceRuntime::advance` leaves an item whose measured bound is due to the fuse
 decision instead of expiring it, because a measured record's designed lifetime
 cap is derived from the same `RANGE` and can fall on the same tick: without that
-deferral the report would name the cap and never the measured end. The item is
-removed on that tick either way (`session.runtime.remove`), so the deferral never
-extends a flight, and `OrdnanceState::reaches_range_end` is the single predicate
-both the runtime and the fuse decision answer, so they cannot disagree.
+deferral the report would name the cap and never the measured end. The deferral
+is **one tick** — the tick the cap first falls due — and only for an item that
+has not been retired, because a retired dud's fuse can never be consumed:
+`reaches_range_end` is the single predicate both the runtime and the fuse
+decision answer, so they cannot disagree, and an item whose fuse nobody asks, or
+a dud, still expires on the next tick (two acceptance tests).
 
 `step_ordnance_session` reports the end as `OrdnanceSessionTick::consumed`
 (`OrdnanceConsumption { projectile, range_m }`) and emits
@@ -134,23 +139,23 @@ that commit rather than a statement about this tree.
 
 ## What registers now, and what stays blocked
 
-Eleven of the sixteen declared ids register (`wep_13` is new); five stay blocked,
-each on its own measured gap, which this stage does not touch:
+The branch was rebased on the landed lateral-remainder ramp
+(`T452-REG-INHERITANCE-RAMP`, #2176) and the `INSTANT` follow-up, so the ramp is
+no longer a blocker here: **fifteen** of the sixteen declared ids register
+(`wep_13` and `wep_26` are the two the silent expiry alone still held back) and
+**one** stays blocked:
 
 | id | outcome | why |
 | --- | --- | --- |
-| `wep_05`, `wep_06`, `wep_07`, `wep_08`, `wep_09`, `wep_10`, `wep_11`, **`wep_13`**, `wep_14`, `wep_15`, `wep_24` | registered | the measured values are expressible; `wep_13`'s silent end is `ExpiresAtRange { 500 }` |
-| `wep_04`, `wep_25`, `wep_27` | blocked | `ACCELERATION 150`: the measured lateral-remainder ramp (`t452_register.limit.inheritance_ramp`, `T452-REG-INHERITANCE-RAMP`) |
-| `wep_12` | blocked | the tangler field outlives the item that creates it (`t452_r02.limit.tangler_flight_effect`, `T452-REG-TANGLER-EFFECT`) |
-| `wep_26` | blocked | the ramp (`t452_register.limit.inheritance_ramp`) — its measured silent launch became expressible in `T452-REG-MEDIA-SILENCE` |
+| `wep_04`, `wep_05`, `wep_06`, `wep_07`, `wep_08`, `wep_09`, `wep_10`, `wep_11`, **`wep_13`**, `wep_14`, `wep_15`, `wep_24`, `wep_25`, **`wep_26`**, `wep_27` | registered | the measured values are expressible; `wep_13`'s silent end is `ExpiresAtRange { 500 }`, and `wep_26`'s is `ExpiresAtRange { 900 }` via the same vocabulary |
+| `wep_12` | blocked | the tangler field outlives the item that creates it (`t452_r02.limit.tangler_flight_effect`, `T452-REG-TANGLER-EFFECT`) — a measured gap this stage does not touch |
 
-So the task's "then those ids register" is met for the id this claim alone held
-back (`wep_13`), and **not** for `wep_12` or `wep_26`: their names stay blocked by
-measured gaps with their own filed tasks, and this stage deliberately does not
-default anything to make them fly. The retail tests assert exactly that — no id
-names the silent-expiry claim, `wep_12` names only the tangler claim, and `wep_26`
-keeps the ramp claim (its measured silent launch is expressible now that
-`T452-REG-MEDIA-SILENCE` has landed).
+So the task's "then those ids register" is met for the ids this claim alone held
+back (`wep_13`, and `wep_26` once the ramp landed), and **not** for `wep_12`:
+its name stays blocked by a measured gap with its own filed task, and this stage
+deliberately does not default anything to make it fly. The retail tests assert
+exactly that — no id names the silent-expiry claim and `wep_12` names only the
+tangler claim.
 
 The catalogue keeps the claims T452-R.02 left on these records for effects this
 stage does not express: what `wep_13`'s smoke field does to the actors inside it
@@ -185,19 +190,22 @@ into this stage.
 
 ## Test sensitivity (measured, one mutation at a time)
 
-Each mutation was applied to the committed production file and the
+Each mutation was applied to the reviewed production file and the
 `accept_t452_silent_` selection re-run (the CI selection, without
 `--include-ignored`), then the file restored byte-identically
-(`shasum 0bc8e0a64034b258ae4d4e1c696175c4f67efff7` of
+(`shasum -a 256 70cc4978230aa38a35ff45dd2ae1b4d11ccc3d752934e4f4afb91a3239038a12` of
 `crates/cs_sim/src/weapons/ordnance.rs` and
-`c4d563be097c3a4fd1bdeff4f9e83c32f2225eb4` of `crates/cs_app/src/ordnance.rs`):
+`35919f0791a233902deb3d569369d4431ef7826c1a6c0e58c95a293fdebd2091` of
+`crates/cs_app/src/ordnance.rs`, both before and after every mutation):
 
 | mutation | result | caught by |
 | --- | --- | --- |
-| the runtime's lifetime cap preempts the measured end again (the `reaches_range_end` deferral in `OrdnanceRuntime::advance` disabled) | 1 failed, 4 passed (`cs_sim`) | `accept_t452_silent_the_range_end_is_reported_instead_of_the_lifetime_cap` |
-| the silent end lowered as a `Timed` clock at the lifetime cap instead of `ExpiresAtRange` | 3 failed, 1 passed (`cs_app`) | `..._a_measured_area_denial_record_lowers_to_its_range_end`, `..._a_registered_area_denial_record_is_consumed_at_its_range`, `..._the_consumption_follows_the_path_not_the_clock` |
-| the measured range end decided **before** the swept contact | 1 failed, 4 passed (`cs_sim`) | `accept_t452_silent_a_contact_still_detonates_a_range_bounded_item` |
-| the consumed item left in the live set (the session's `remove` dropped) | 1 failed, 3 passed (`cs_app`) | `..._a_registered_area_denial_record_is_consumed_at_its_range` |
+| the runtime's lifetime cap preempts the measured end again (the `reaches_range_end` deferral in `OrdnanceRuntime::advance` disabled) | 2 failed, 5 passed (`cs_sim`) | `accept_t452_silent_the_range_end_is_reported_instead_of_the_lifetime_cap`, `..._the_deferral_never_outlives_the_declared_lifetime` |
+| the silent end lowered as a `Timed` clock at the lifetime cap instead of `ExpiresAtRange` | 3 failed, 1 passed (`cs_app`, 2 retail ignored) | `..._a_measured_area_denial_record_lowers_to_its_range_end`, `..._a_registered_area_denial_record_is_consumed_at_its_range`, `..._the_consumption_follows_the_path_not_the_clock` |
+| the measured range end decided **before** the swept contact | 1 failed, 6 passed (`cs_sim`) | `accept_t452_silent_a_contact_still_detonates_a_range_bounded_item` |
+| the consumed item left in the live set (the session's `remove` dropped) | 1 failed, 3 passed (`cs_app`, 2 retail ignored) | `..._a_registered_area_denial_record_is_consumed_at_its_range` |
+| the retired guard dropped from `reaches_range_end` (mutation 5) | 1 failed, 6 passed (`cs_sim`) | `..._a_retired_range_bounded_dud_still_expires` |
+| the expiry deferral left unconditional instead of one tick (mutation 6) | 1 failed, 6 passed (`cs_sim`) | `..._the_deferral_never_outlives_the_declared_lifetime` |
 
 The retail tests are the second half: they re-read the owner's installation
 through the production readers on every run, so a changed `RANGE`, a changed
@@ -222,9 +230,15 @@ lifetime, and two session flights of it (stationary: consumed on tick 124 at
 500 m; launcher at 100 m/s along the launch line: consumed on tick 68 at 500 m),
 each with zero detonations, zero areas and zero damage events. Identifiers,
 numbers and digests only. The report's `candidate_tree` is
-`d60f88705cdf095e882784c9c3bdae083df54525` (the code-and-test commit's tree);
-this file and the committed copy are the documentation commit that follows it,
-and nothing the report measured changed.
+`ec8aa9eadee565e95d870b05a6bc3d88705a6060` (the reviewed code-and-test commit's
+tree, rebased on the landed inheritance ramp); this file and the committed copy
+are the documentation commit that follows it. It was re-recorded by the reviewer
+after the review fix and the rebase: `wep_13`'s two flights (ticks 124 and 68 at
+500 m, zero detonations, areas and damage) are identical to the implementer's
+run, and the per-id outcomes moved from eleven registered / five blocked to
+fifteen / one only because the branch now builds on the landed ramp (`wep_04`,
+`wep_25`, `wep_27` and, with its silent end, `wep_26` register; `wep_12` keeps
+its tangler claim).
 
 ## Not claimed
 
@@ -245,3 +259,25 @@ nothing above that, and no agent review replaces the owner's human approval.
 the handover is recorded in Rally and in the review notes of the merged commit.
 No agent review replaces the owner's human approval, and this stage records
 neither `verified_original` nor `release_approved`.
+
+**Reviewer:** `deepseek-1` again (same agent identity and model, a new session
+that read the branch, the task history and this finding — **not** an independent
+reviewer under the project's policy, which prefers a different agent instance for
+format and mission semantics; Rally does not currently enforce reviewer
+assignment). The review re-read the whole `origin/main...HEAD` diff against the
+task description and the acceptance criteria, confirmed no protected path,
+`Cargo.toml`/`Cargo.lock`, original data or binary is touched, re-ran the full
+check set on the reviewed tree (fmt, clippy `--workspace --all-targets
+--all-features`, `cargo test -p cs_sim -p cs_content -p cs_app`, the task
+selection with `--include-ignored` and `CS_GAME_DIR` set for both crates,
+`cs_xtask test-layout`) and re-recorded the evidence at the reviewed tree.
+
+It found and fixed one defect: the runtime's one-tick expiry deferral was
+unconditional on `reaches_range_end`, so a **retired** range-bounded dud (whose
+fuse can never be consumed) and an item whose fuse nobody asked would both be
+skipped by the lifetime expiry forever — a live item leaking past the declared
+lifetime the design guarantees. `reaches_range_end` now excludes a retired item,
+and the deferral holds only on the tick the cap first falls due. Two acceptance
+tests cover both, and each fails when its guard is removed (sensitivity table
+above). Nothing else in the acceptance path changed; the per-id registration
+outcomes and the two recorded `wep_13` flights are identical before and after.
