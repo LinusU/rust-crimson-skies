@@ -133,7 +133,7 @@ defaulted to make an id register.
 | `wep_05`, `wep_06`, `wep_07`, `wep_08`, `wep_09`, `wep_10`, `wep_11`, `wep_14`, `wep_15`, `wep_24` | **registered** | full-inheritance launch, `DETONATION_DISTANCE` or declared timer fuse, measured stack, damage and media |
 | `wep_04`, `wep_25`, `wep_27` | blocked | `ACCELERATION 150`: the measured lateral-remainder ramp (`t452_register.limit.inheritance_ramp`, `T452-REG-INHERITANCE-RAMP`) |
 | `wep_12`, `wep_13` | blocked | the measured end of flight is a silent expiry at the end of `RANGE`, and the runtime fuse vocabulary only detonates (`t452_register.limit.silent_expiry`, `T452-REG-SILENT-EXPIRY`) |
-| `wep_26` | blocked | the ramp (`t452_register.limit.inheritance_ramp`) and the silent expiry (`t452_register.limit.silent_expiry`); its missing `FIRE` `SOUND` is a measured silence the media record expresses, not a blocker |
+| `wep_26` | blocked | the silent expiry (`t452_register.limit.silent_expiry`; the ramp is expressed since `T452-REG-INHERITANCE-RAMP`); its missing `FIRE` `SOUND` is a measured silence the media record expresses, not a blocker |
 
 **Why these are blockers and not defaults.** `InheritanceRule` is
 `Full`/`Fraction`/`None` and lives in `crates/cs_sim/src/weapons/guns.rs`, and
