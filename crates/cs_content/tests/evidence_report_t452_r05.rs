@@ -10,7 +10,7 @@
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 //!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_content --test cs_content_tests accept_t452_r05_ -- --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-//!      cargo test --locked -p cs_content --test cs_content_tests evidence_report_t452_r05 -- --ignored
+//!      cargo test --locked -p cs_content --test cs_content_tests evidence_report_t452_r05:: -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py private/evidence/T452-R05/acceptance.json
 //!    --artifact-root private/evidence/T452-R05 --require-pass`
