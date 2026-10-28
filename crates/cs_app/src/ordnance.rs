@@ -47,9 +47,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy::ecs::component::Component;
 use cs_content::ordnance::{
     DeclaredAreaEffect, DeclaredArmingRule, DeclaredEquipmentRules, DeclaredFuseRule,
-    DeclaredGuidanceRule, DeclaredHardpointKind, DeclaredInheritanceRule,
+    DeclaredGuidanceRule, DeclaredHardpointKind, DeclaredInheritanceRule, DeclaredLaunchGeometry,
     DeclaredLostTargetBehavior, DeclaredNitroActivationRule, DeclaredNitroParameters,
-    DeclaredNitroRefusedRecovery, DeclaredOrdnance, DeclaredProximityFuse, DeclaredStatusEffect,
+    DeclaredNitroRefusedRecovery, DeclaredOrdnance, DeclaredOrdnanceDetails,
+    DeclaredOrdnanceFamily, DeclaredProjectile, DeclaredProximityFuse, DeclaredStackLoad,
+    DeclaredStatusEffect,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
@@ -63,7 +65,7 @@ use cs_sim::weapons::{
     ProximitySampling, ProximityShape, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
     WeaponDamage,
 };
-use cs_types::content::{ContentId, ContentKind, Known, Resolved};
+use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
 use avian3d::prelude::LinearVelocity;
@@ -3541,4 +3543,977 @@ pub fn original_catalogue_coverage(
         families,
         claims: catalogue.claims(),
     }
+}
+
+// ------------------- T452-RUNTIME-REGISTER: the measured lowerings ----------
+//
+// Task #2156/#2171. The catalogue above answers *which* components the
+// installation declares and *what* their data states; this layer performs the
+// step it deliberately left open, `t452.limit.runtime_lowering`: it maps the
+// measured values of each catalogued record into a
+// [`DeclaredOrdnance`] and lowers that through [`lower_ordnance`] into the
+// runtime [`OrdnanceComponent`] a session registers.
+//
+// Every value comes from a measurement, and where a measurement cannot be
+// expressed by the runtime vocabulary the record is **blocked** with a named
+// claim, its affected content and the task that resolves it — never defaulted.
+// The measurements this layer reads are tasks T452-R.01 (launch geometry),
+// T452-R.02 (effects, fuses, swarm), T452-R.03 (stack, media, equipment,
+// per-box weight), T452-R.04 (flight duration, release binding) and T452-R.05
+// (slot reach, incapacitation); every one of them is `static` analysis of the
+// owner-supplied engine image or a read of the owner's installation, never
+// `verified_original`.
+
+/// The claim id of the `weapons.zrd` member every declared record comes from:
+/// the provenance of a field read out of the owner's installation.
+pub const T452_ORIGINAL_WEAPONS_CLAIM: &str = "t452_register.original_weapons_member";
+
+/// Claim: the launch speed, inheritance and range are T452-R.01's measurement.
+pub const T452_MEASURED_LAUNCH_CLAIM: &str = "t452_register.launch_geometry";
+
+/// Claim: the per-slot stack capacity is the record's `CLUSTER_SIZE`
+/// (T452-R.03-B) and the named item counts one unit per launch (T452-R.02).
+pub const T452_MEASURED_STACK_CLAIM: &str = "t452_register.stack_load";
+
+/// Claim: the fuse, lost-target rule, area and swarm are T452-R.02's
+/// measurement.
+pub const T452_MEASURED_BEHAVIOUR_CLAIM: &str = "t452_register.behavior";
+
+/// Claim: the visual and launch sound are the record's own `FLYOUT` `MODEL`
+/// and `FIRE` `SOUND[0]` (T452-R.03-C).
+pub const T452_MEASURED_MEDIA_CLAIM: &str = "t452_register.media";
+
+/// Claim: the damage channels are the record's own `ARMOR_DAMAGE` /
+/// `HEALTH_DAMAGE` keys, and a `DAMAGE`-only record with no measured channel
+/// split is refused rather than assigned one.
+pub const T452_MEASURED_DAMAGE_CLAIM: &str = "t452_register.damage";
+
+/// Claim: a status effect's kind and `TIME` duration are T452-R.02's and
+/// T452-R.05's measurement.
+pub const T452_MEASURED_STATUS_CLAIM: &str = "t452_register.status";
+
+/// Provenance class of the two **designed** fields this lowering has to fill:
+/// the hardpoint kind and the mount key. Both vocabularies are engine design
+/// (`cs_content::ordnance::DeclaredHardpointKind` is documented as designed,
+/// and a `DamageNodeKey` is a project key, not an original name), so the
+/// *value* they carry — a measured mount id — is what is measured, and the
+/// vocabulary is not.
+pub const T452_DESIGNED_LAUNCH_NAMES_CLAIM: &str = "t452_register.designed_launch_names";
+
+/// Blocker: the measured launch inheritance is the lateral-remainder ramp,
+/// which the runtime has no rule for. Resolving task:
+/// [`T452_REG_INHERITANCE_TASK`].
+pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_ramp";
+
+/// Blocker: the measured end of flight is a silent expiry at the record's
+/// `RANGE`, which the runtime fuse vocabulary has no variant for. Resolving
+/// task: [`T452_SILENT_EXPIRY_TASK`].
+pub const T452_SILENT_EXPIRY_BLOCKED: &str = "t452_register.limit.silent_expiry";
+
+/// Blocker: the record declares no `FIRE` `SOUND`, and the measured behaviour
+/// is a silent launch, which the runtime media contract cannot express.
+/// Resolving task: [`T452_MEDIA_SILENCE_TASK`].
+pub const T452_SILENT_LAUNCH_BLOCKED: &str = "t452_register.limit.silent_launch";
+
+/// Recorded (not blocking): the measured per-box weight and cost have no
+/// runtime consumer, and the weight unit's conversion to kilograms is
+/// unmeasured. Resolving task: [`T452_PER_BOX_WEIGHT_TASK`].
+pub const T452_PER_BOX_WEIGHT_CLAIM: &str = "t452_register.limit.per_box_weight";
+
+/// The task that adds the measured lateral-remainder inheritance and its
+/// `ACCELERATION` ramp to the runtime vocabulary.
+pub const T452_REG_INHERITANCE_TASK: &str = "T452-REG-INHERITANCE-RAMP";
+
+/// The task that adds the measured silent range-end expiry to the runtime fuse
+/// vocabulary.
+pub const T452_SILENT_EXPIRY_TASK: &str = "T452-REG-SILENT-EXPIRY";
+
+/// The task that lets the runtime media contract express a measured silent
+/// launch.
+pub const T452_MEDIA_SILENCE_TASK: &str = "T452-REG-MEDIA-SILENCE";
+
+/// The task that gives the measured per-box weight and cost a consumer.
+pub const T452_PER_BOX_WEIGHT_TASK: &str = "T452-REG-PER-BOX-WEIGHT";
+
+/// The hardpoint kind this lowering assigns to every measured rocket-slot
+/// component.
+///
+/// **Designed, on purpose.** No `weapons.zrd` record and no screen states where
+/// on the airframe a slot sits: the measured layout is one eight-entry rocket
+/// slot array plus two hardpoint box counts
+/// (`cs_content::ordnance::OriginalMountLayout`, T452.04), which places nothing.
+/// `HardpointKind` is documented as designed vocabulary that F28-D maps onto,
+/// and the ordnance screen's rocket array is the airframe's underside rack, so
+/// every measured component gets the same kind rather than an invented
+/// per-record position.
+pub const ORIGINAL_ORDNANCE_HARDPOINT: DeclaredHardpointKind = DeclaredHardpointKind::Underslung;
+
+/// The unit mass a measured original component's stack carries.
+///
+/// **Measured as an absence**, which is why it is zero and not a tonnage: the
+/// airframe weight total adds a flat `480` weight per *enabled rocket box* and
+/// reads no weapon record field at all (`0x40558e`; T452-R.03,
+/// `docs/findings/2026-10-28-t452-r03-hardpoint-price-and-gate-table.md` §2), so
+/// a loaded type contributes **no** per-type mass term. The flat 480/410 is
+/// charged per box by the purchase surface, not per round, and the weight
+/// unit's conversion to kilograms is unmeasured — both are named by
+/// [`T452_PER_BOX_WEIGHT_CLAIM`] rather than converted into a kilogram figure
+/// here.
+pub const ORIGINAL_ORDNANCE_UNIT_MASS_KG: f64 = 0.0;
+
+/// The lifetime the runtime gives an instantaneous blast's area.
+///
+/// A blast applies its damage once, at detonation (T1318), and leaves no area
+/// behind (`MeasuredAreaSource::InstantaneousBlast`, T452-R.02 §2). The
+/// runtime's [`AreaEffect`] refuses a zero lifetime and applies its damage once
+/// when it opens, so the shortest bounded lifetime it has — one tick — is the
+/// faithful stand-in for "applied once, gone".
+pub const ORIGINAL_BLAST_AREA_TICKS: u64 = 1;
+
+/// One value that keeps a measured original id out of the runtime registry.
+///
+/// A blocker is *not* a failure of the reading: it names a measured value the
+/// runtime cannot express, the content it affects and the task that resolves
+/// it, so an unregistered id is never mistaken for a component nobody measured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalRegistrationBlocker {
+    /// The record (`wep_04`).
+    pub record: String,
+    /// The declared field the value would have filled.
+    pub field: &'static str,
+    /// The claim id the gap is recorded under.
+    pub claim: String,
+    /// The content the gap affects.
+    pub affects: String,
+    /// The task that resolves it.
+    pub resolving_task: &'static str,
+}
+
+impl OriginalRegistrationBlocker {
+    fn new(
+        record: &str,
+        field: &'static str,
+        claim: &str,
+        affects: &str,
+        resolving_task: &'static str,
+    ) -> Self {
+        Self {
+            record: record.to_owned(),
+            field,
+            claim: claim.to_owned(),
+            affects: affects.to_owned(),
+            resolving_task,
+        }
+    }
+}
+
+impl std::fmt::Display for OriginalRegistrationBlocker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {} is unexpressible ({}: {}) — resolving task {}",
+            self.record, self.field, self.claim, self.affects, self.resolving_task
+        )
+    }
+}
+
+/// The outcome of lowering and registering one measured original id.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OriginalRegistrationOutcome {
+    /// The measured record lowered into a runtime component and the registry
+    /// accepted it.
+    Registered {
+        /// The record (`wep_05`).
+        record: String,
+        /// The runtime id it was registered under.
+        ordnance: OrdnanceId,
+        /// The family it registered as.
+        family: OrdnanceFamily,
+    },
+    /// The record's measured values cannot be expressed yet: nothing was
+    /// registered and every reason is named.
+    Blocked {
+        /// The record (`wep_12`).
+        record: String,
+        /// One entry per unexpressible value.
+        blockers: Vec<OriginalRegistrationBlocker>,
+    },
+}
+
+impl OriginalRegistrationOutcome {
+    /// The record this outcome is about.
+    #[must_use]
+    pub fn record(&self) -> &str {
+        match self {
+            Self::Registered { record, .. } | Self::Blocked { record, .. } => record,
+        }
+    }
+
+    /// Whether the id reached the runtime registry.
+    #[must_use]
+    pub const fn is_registered(&self) -> bool {
+        matches!(self, Self::Registered { .. })
+    }
+}
+
+/// What one measured catalogue produced when it was lowered and registered.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalRegistrationReport {
+    /// How many ids the installation declares.
+    pub declared: usize,
+    /// One outcome per declared id, in member order.
+    pub outcomes: Vec<OriginalRegistrationOutcome>,
+    /// The claims this stage keeps, per record, because the runtime cannot
+    /// express the measured value behind them.
+    pub claims_kept: Vec<(String, Vec<String>)>,
+}
+
+impl OriginalRegistrationReport {
+    /// The records that reached the registry, in member order.
+    #[must_use]
+    pub fn registered_records(&self) -> Vec<&str> {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_registered())
+            .map(OriginalRegistrationOutcome::record)
+            .collect()
+    }
+
+    /// The records that did not, in member order.
+    #[must_use]
+    pub fn blocked_records(&self) -> Vec<&str> {
+        self.outcomes
+            .iter()
+            .filter(|outcome| !outcome.is_registered())
+            .map(OriginalRegistrationOutcome::record)
+            .collect()
+    }
+
+    /// Every blocker, in member order.
+    #[must_use]
+    pub fn blockers(&self) -> Vec<&OriginalRegistrationBlocker> {
+        self.outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                OriginalRegistrationOutcome::Blocked { blockers, .. } => Some(blockers.iter()),
+                OriginalRegistrationOutcome::Registered { .. } => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Whether every declared id reached the registry.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.outcomes.is_empty() && self.blocked_records().is_empty()
+    }
+}
+
+/// Why the measured catalogue could not be read for registration.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OriginalRegistrationError {
+    /// The component table failed to read.
+    Table {
+        /// The reader's own refusal.
+        detail: String,
+    },
+    /// The weapon records failed to read.
+    Records {
+        /// The reader's own refusal.
+        detail: String,
+    },
+    /// The media declarations failed to read.
+    Media {
+        /// The reader's own refusal.
+        detail: String,
+    },
+    /// The ammunition declarations failed to read.
+    Ammo {
+        /// The reader's own refusal.
+        detail: String,
+    },
+    /// The record member's provenance could not be measured.
+    Provenance {
+        /// The reader's own refusal.
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for OriginalRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table { detail } => write!(f, "the component table cannot be read: {detail}"),
+            Self::Records { detail } => write!(f, "the weapon records cannot be read: {detail}"),
+            Self::Media { detail } => write!(f, "the media declarations cannot be read: {detail}"),
+            Self::Ammo { detail } => {
+                write!(f, "the ammunition declarations cannot be read: {detail}")
+            }
+            Self::Provenance { detail } => {
+                write!(
+                    f,
+                    "the record member's provenance cannot be measured: {detail}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OriginalRegistrationError {}
+
+/// A measured field, stamped with the provenance of the record it was read
+/// from and the claim id of the measurement that read it.
+fn measured_field<T>(provenance: &Provenance, claim: &str, value: T) -> Resolved<T> {
+    let claim_id = ClaimId::new(claim).expect("an engine-authored claim id is valid");
+    Resolved::Known(Known::new(
+        value,
+        Provenance {
+            claim_id,
+            ..provenance.clone()
+        },
+    ))
+}
+
+/// A **designed** field, carrying the measured value it names under a designed
+/// provenance: the vocabulary is the project's, the value is not.
+fn designed_field<T>(claim: &str, value: T) -> Resolved<T> {
+    let claim_id = ClaimId::new(claim).expect("an engine-authored claim id is valid");
+    Resolved::Known(Known::new(value, Provenance::designed(claim_id)))
+}
+
+/// Whole ticks a measured duration covers, rounding up as the original's step
+/// does (T452-R.04: a flight ends on the first step at or after the continuous
+/// time).
+fn seconds_to_ticks(seconds: f64, ticks_per_second: u32) -> u64 {
+    let ticks = (seconds * f64::from(ticks_per_second)).ceil();
+    if ticks < 1.0 { 1 } else { ticks as u64 }
+}
+
+/// The damage channels a measured record states.
+///
+/// A record that declares `ARMOR_DAMAGE` and `HEALTH_DAMAGE` states both. One
+/// that declares only `DAMAGE` states a single channel whose split into the
+/// runtime's two is unmeasured: a **zero** value is therefore read as zero on
+/// both (the record declares no damage at all) and any other value is refused
+/// rather than halved, duplicated or assigned to a guessed channel.
+fn measured_damage(
+    row: &cs_content::ordnance::OriginalComponentLaunch,
+) -> Result<(f64, f64), &'static str> {
+    match (row.damage.armor, row.damage.health, row.damage.single) {
+        (Some(armor), Some(health), _) => Ok((armor, health)),
+        (None, None, Some(0.0)) => Ok((0.0, 0.0)),
+        (None, None, Some(_)) => {
+            Err("the record declares one DAMAGE amount and the measured channel split is unknown")
+        }
+        (None, None, None) => Ok((0.0, 0.0)),
+        (armor, health, _) => Ok((armor.unwrap_or(0.0), health.unwrap_or(0.0))),
+    }
+}
+
+/// Lowers **one** measured original record into a declared component.
+///
+/// The inputs are the production readers' outputs: the T452.04 component row,
+/// the record itself (for its launch geometry, T452-R.01/R.04), its media
+/// declarations (T452-R.03-C), its ammunition declaration (T452-R.03-B) and the
+/// provenance of the member they all came from. `ticks_per_second` converts the
+/// measurements' seconds into the runtime's whole ticks; it is the session's
+/// declared rate, not a constant.
+///
+/// Every field is filled from a measurement. Where the measured value cannot be
+/// expressed the record is refused with one [`OriginalRegistrationBlocker`] per
+/// such value, so a caller never sees a partially measured component.
+///
+/// # Errors
+///
+/// The blockers, one per unexpressible measured value.
+pub fn measured_ordnance_declaration(
+    row: &cs_content::ordnance::OriginalComponentLaunch,
+    record: &cs_content::ordnance::OriginalWeaponRecord,
+    media: &cs_content::ordnance::OriginalWeaponMedia,
+    ammo: &cs_content::ordnance::OriginalAmmoDeclaration,
+    provenance: &Provenance,
+    ticks_per_second: u32,
+) -> Result<DeclaredOrdnance, Vec<OriginalRegistrationBlocker>> {
+    let name = row.record.as_str();
+    let mut blockers = Vec::new();
+    let geometry = cs_content::ordnance::original_launch_geometry(record);
+    let behavior = cs_content::ordnance::measure_component_behavior(row);
+
+    let target = ContentId::from_source(ContentKind::Weapon, name)
+        .expect("a record name is a valid weapon key");
+    let origin = Origin::Installation {
+        source: provenance
+            .source
+            .clone()
+            .expect("the record member's provenance carries its span"),
+    };
+
+    // Launch geometry: the measured speed, inheritance and (measured) absence
+    // of a release delay. The refire interval the mount row states delays the
+    // *next* release, never the current one (T452-R.04 §1), so the component's
+    // own release delay is the measured zero.
+    let inheritance = match geometry.inheritance {
+        cs_content::ordnance::OriginalInheritance::Full => {
+            designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Full)
+        }
+        cs_content::ordnance::OriginalInheritance::LateralRemainder
+        | cs_content::ordnance::OriginalInheritance::Instant => {
+            blockers.push(OriginalRegistrationBlocker::new(
+                name,
+                "launch.inheritance",
+                T452_INHERITANCE_BLOCKED,
+                "the launch geometry of this record, which starts at the launcher's speed \
+                 and ramps to VELOCITY + |launcher| at its ACCELERATION",
+                T452_REG_INHERITANCE_TASK,
+            ));
+            designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Full)
+        }
+    };
+    let mount_id = cs_content::ordnance::original_mount_id(name);
+    let mount = designed_field(
+        T452_DESIGNED_LAUNCH_NAMES_CLAIM,
+        DamageNodeKey::new(&format!("weapon_mount_{mount_id:02}"))
+            .expect("the mount key shape is valid"),
+    );
+    let launch = DeclaredLaunchGeometry {
+        mount: known_or_refuse("launch.mount", &mount).expect("a designed mount key is known"),
+        hardpoint: designed_field(
+            T452_DESIGNED_LAUNCH_NAMES_CLAIM,
+            ORIGINAL_ORDNANCE_HARDPOINT,
+        ),
+        launch_speed_mps: measured_field(
+            provenance,
+            T452_MEASURED_LAUNCH_CLAIM,
+            geometry.speed.metres_per_second(),
+        ),
+        inheritance: match inheritance {
+            Resolved::Known(known) => Resolved::Known(known),
+            Resolved::Unknown { claim_id, reason } => Resolved::Unknown { claim_id, reason },
+        },
+        release_delay_ticks: measured_field(provenance, T452_MEASURED_LAUNCH_CLAIM, 0),
+    };
+
+    // Stack: the measured per-slot capacity is `CLUSTER_SIZE` (T452-R.03-B) and
+    // one launch spends one unit of it (T452-R.02 §5, one projectile per
+    // sub-munition).
+    let capacity = match row.cluster {
+        cs_content::ordnance::OriginalClusterShape::Volley { munitions } => {
+            // The ammunition declaration is a second reader of the same key:
+            // a disagreement means the two readings are not the same record.
+            if ammo.cluster_size != Some(f64::from(munitions)) {
+                blockers.push(OriginalRegistrationBlocker::new(
+                    name,
+                    "stack.capacity_units",
+                    T452_MEASURED_STACK_CLAIM,
+                    "the record's CLUSTER_SIZE: the table and the ammunition declaration \
+                     disagree about it",
+                    "a #2156 follow-up: two readings of one key disagree",
+                ));
+            }
+            u64::from(munitions)
+        }
+        cs_content::ordnance::OriginalClusterShape::AmmunitionCount { .. }
+        | cs_content::ordnance::OriginalClusterShape::Undeclared => {
+            blockers.push(OriginalRegistrationBlocker::new(
+                name,
+                "stack.capacity_units",
+                T452_MEASURED_STACK_CLAIM,
+                "the per-slot stack this record's launcher holds: the record states no \
+                 CLUSTER_SIZE, so no file states its slot count",
+                "a #2156 follow-up that measures the per-slot count of a record without \
+                 CLUSTER_SIZE",
+            ));
+            1
+        }
+    };
+    let stack = DeclaredStackLoad {
+        capacity_units: measured_field(provenance, T452_MEASURED_STACK_CLAIM, capacity),
+        // Measured as an absence: see `ORIGINAL_ORDNANCE_UNIT_MASS_KG`.
+        unit_mass_kg: measured_field(
+            provenance,
+            T452_MEASURED_STACK_CLAIM,
+            ORIGINAL_ORDNANCE_UNIT_MASS_KG,
+        ),
+    };
+
+    // Fuse: the record's own `DETONATION_DISTANCE` sphere for a seeker (the
+    // measured proximity path needs `LOCK_ON`, T452-R.02 §3), a declared
+    // `DETONATION_TIME` as a timed fuse, and otherwise the measured silent
+    // expiry, which the runtime cannot express.
+    let targeted = matches!(
+        row.family,
+        DeclaredOrdnanceFamily::GuidedRocket | DeclaredOrdnanceFamily::AerialTorpedo
+    );
+    let fuse = match row
+        .proximity_trigger_m
+        .filter(|radius| *radius > 0.0)
+        .filter(|_| targeted)
+    {
+        Some(radius) => DeclaredFuseRule::Proximity(DeclaredProximityFuse {
+            trigger_radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
+        }),
+        None => match row.lifetime {
+            cs_content::ordnance::OriginalLifetime::Declared { seconds, .. } => {
+                DeclaredFuseRule::Timed {
+                    ticks: measured_field(
+                        provenance,
+                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        seconds_to_ticks(seconds, ticks_per_second),
+                    ),
+                }
+            }
+            cs_content::ordnance::OriginalLifetime::Undeclared => {
+                blockers.push(OriginalRegistrationBlocker::new(
+                    name,
+                    "fuse",
+                    T452_SILENT_EXPIRY_BLOCKED,
+                    "how this record's flight ends: it states no trigger the measured \
+                     proximity path reaches, and the measured end is the silent removal at \
+                     the end of RANGE with no detonation",
+                    T452_SILENT_EXPIRY_TASK,
+                ));
+                DeclaredFuseRule::Timed {
+                    ticks: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, 1),
+                }
+            }
+        },
+    };
+
+    // Lifetime: the measured rule is `RANGE` over the flown speed (T452-R.04
+    // §2), which depends on the launcher's velocity at release. The runtime
+    // field is a fixed cap, so it carries the record's own rule evaluated at a
+    // stationary launcher, rounded up to a tick.
+    let duration = geometry.flight_duration([0.0; 3], [0.0, 0.0, 1.0]);
+    let lifetime_ticks = match duration.seconds {
+        Some(seconds) => measured_field(
+            provenance,
+            T452_MEASURED_BEHAVIOUR_CLAIM,
+            seconds_to_ticks(seconds, ticks_per_second),
+        ),
+        None => {
+            blockers.push(OriginalRegistrationBlocker::new(
+                name,
+                "lifetime_ticks",
+                T452_MEASURED_BEHAVIOUR_CLAIM,
+                "how long this record's item lives: its measured flight end never ends it",
+                T452_SILENT_EXPIRY_TASK,
+            ));
+            measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, 1)
+        }
+    };
+    let lifetime_value = match &lifetime_ticks {
+        Resolved::Known(known) => known.value,
+        Resolved::Unknown { .. } => 1,
+    };
+
+    // Guidance: measured, including the lost-target rule task T452-R.02 §4
+    // measured over every `LOCK_ON` record.
+    let guidance = match (targeted, behavior.lost_target) {
+        (true, Some(_)) => DeclaredGuidanceRule::Targeted {
+            lost_target: designed_field(
+                T452_MEASURED_BEHAVIOUR_CLAIM,
+                DeclaredLostTargetBehavior::CoastThenDetonate,
+            ),
+        },
+        (true, None) => {
+            blockers.push(OriginalRegistrationBlocker::new(
+                name,
+                "guidance.lost_target",
+                T452_LOST_TARGET_CLAIM,
+                "what this seeker does when it loses its target",
+                "a #454 follow-up that measures this record's lost-target behaviour",
+            ));
+            DeclaredGuidanceRule::Targeted {
+                lost_target: Resolved::unknown(
+                    ClaimId::new(T452_LOST_TARGET_CLAIM).expect("a valid claim id"),
+                    "no measurement states this record's behaviour after a lost target",
+                )
+                .expect("the reason is non-empty"),
+            }
+        }
+        (false, _) => DeclaredGuidanceRule::Unguided,
+    };
+
+    // Area: a measured radius with no measured lifetime is an instantaneous
+    // blast (T1318, T452-R.02 §2); a measured lifetime is the field's `TIME`.
+    let area_effect = match behavior.area {
+        None => None,
+        Some(area) => match (area.radius_m, area.lifetime_s) {
+            (Some(radius), None) => Some(DeclaredAreaEffect {
+                radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
+                lifetime_ticks: measured_field(
+                    provenance,
+                    T452_MEASURED_BEHAVIOUR_CLAIM,
+                    ORIGINAL_BLAST_AREA_TICKS,
+                ),
+            }),
+            (Some(radius), Some(seconds)) => {
+                let ticks = seconds_to_ticks(seconds, ticks_per_second);
+                if ticks > lifetime_value {
+                    blockers.push(OriginalRegistrationBlocker::new(
+                        name,
+                        "area_effect.lifetime_ticks",
+                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        "this record's bounded area: it is measured to last longer than the \
+                         item that creates it, which the runtime's area record refuses",
+                        T452_SILENT_EXPIRY_TASK,
+                    ));
+                }
+                Some(DeclaredAreaEffect {
+                    radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
+                    lifetime_ticks: measured_field(
+                        provenance,
+                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        ticks,
+                    ),
+                })
+            }
+            (None, _) => {
+                // A measured lifetime with no measured radius (the smoke
+                // emitter) cannot form a bounded area: the claim stays named on
+                // the catalogue entry and no area is asserted.
+                None
+            }
+        },
+    };
+
+    let (armor, internal) = match measured_damage(row) {
+        Ok(channels) => channels,
+        Err(reason) => {
+            blockers.push(OriginalRegistrationBlocker::new(
+                name,
+                "damage",
+                T452_MEASURED_DAMAGE_CLAIM,
+                reason,
+                "a #452 follow-up that measures the single DAMAGE channel's split",
+            ));
+            (0.0, 0.0)
+        }
+    };
+
+    // Status: only a measured effect whose runtime kind fits becomes one. A
+    // `SONIC`/`FLASH` exposure is measured pilot incapacitation and no
+    // `StatusEffectKind` expresses it, so it stays a claim on the catalogue
+    // entry (follow-up #2172) and the component carries no status for it.
+    let mut status = Vec::new();
+    for effect in &behavior.effects {
+        let Some(kind) = effect.runtime_kind else {
+            continue;
+        };
+        let seconds = match effect.duration {
+            cs_content::ordnance::MeasuredEffectDuration::RecordTime => row
+                .statuses
+                .iter()
+                .find(|status| status.key == effect.key)
+                .and_then(|status| status.duration_s),
+            cs_content::ordnance::MeasuredEffectDuration::ImageDefaultSeconds(seconds) => {
+                Some(seconds)
+            }
+            cs_content::ordnance::MeasuredEffectDuration::Exposure { .. }
+            | cs_content::ordnance::MeasuredEffectDuration::None => None,
+        };
+        let Some(seconds) = seconds else {
+            blockers.push(OriginalRegistrationBlocker::new(
+                name,
+                "status.duration_ticks",
+                T452_MEASURED_STATUS_CLAIM,
+                "the duration of this record's measured effect",
+                "a #452 follow-up that measures the effect's duration",
+            ));
+            continue;
+        };
+        status.push(DeclaredStatusEffect {
+            kind,
+            duration_ticks: measured_field(
+                provenance,
+                T452_MEASURED_STATUS_CLAIM,
+                seconds_to_ticks(seconds, ticks_per_second),
+            ),
+            // A marker's magnitude is ignored by its own kind, and the record
+            // states none (T452-R.02 §1).
+            strength: measured_field(provenance, T452_MEASURED_STATUS_CLAIM, 0.0),
+        });
+    }
+
+    // Media: the record's own `FLYOUT` model and `FIRE` sound. A record that
+    // declares no launch sound is measured silent, and the runtime media
+    // record cannot express that yet.
+    let media_claim = ClaimId::new(T452_MEASURED_MEDIA_CLAIM).expect("a valid claim id");
+    let declared_media = media.measured_ordnance_media(&media_claim);
+    if !declared_media.visual.is_known() || !declared_media.sound.is_known() {
+        blockers.push(OriginalRegistrationBlocker::new(
+            name,
+            "media",
+            T452_SILENT_LAUNCH_BLOCKED,
+            "the launch presentation: the record declares no FIRE SOUND, and a measured \
+             silent launch has no runtime representation",
+            T452_MEDIA_SILENCE_TASK,
+        ));
+    }
+
+    if !blockers.is_empty() {
+        return Err(blockers);
+    }
+
+    let projectile = DeclaredProjectile {
+        launch,
+        stack,
+        arming: DeclaredArmingRule::AfterTicks(measured_field(
+            provenance,
+            T452_MEASURED_BEHAVIOUR_CLAIM,
+            0,
+        )),
+        fuse,
+        guidance,
+        lifetime_ticks,
+        area_effect,
+        armor_damage: measured_field(provenance, T452_MEASURED_DAMAGE_CLAIM, armor),
+        internal_damage: measured_field(provenance, T452_MEASURED_DAMAGE_CLAIM, internal),
+        status,
+        media: declared_media,
+        // The measured equipment rule set is empty (T452-R.03-D).
+        equipment_rules: DeclaredEquipmentRules::default(),
+    };
+    DeclaredOrdnance::try_new(
+        target,
+        origin,
+        row.family,
+        DeclaredOrdnanceDetails::Projectile(Box::new(projectile)),
+        None,
+        provenance.clone(),
+    )
+    .map_err(|error| {
+        vec![OriginalRegistrationBlocker::new(
+            name,
+            "component",
+            T452_MEASURED_BEHAVIOUR_CLAIM,
+            &error.to_string(),
+            "a #2171 follow-up: the measured record contradicts its own family",
+        )]
+    })
+}
+
+/// Lowers and registers every measured original component the runtime
+/// vocabulary can express.
+///
+/// The table, the weapon records, the media declarations, the ammunition
+/// declarations and the member's provenance are all production readers'
+/// outputs. Each record is lowered by [`measured_ordnance_declaration`],
+/// converted by [`lower_ordnance`] and inserted with
+/// [`OrdnanceRegistry::register`]; a record whose measured values the runtime
+/// cannot express is reported as
+/// [`OriginalRegistrationOutcome::Blocked`] with its named claims and registers
+/// nothing.
+pub fn register_measured_ordnance(
+    table: &cs_content::ordnance::OriginalComponentTable,
+    records: &[cs_content::ordnance::OriginalWeaponRecord],
+    media: &[cs_content::ordnance::OriginalWeaponMedia],
+    ammo: &[cs_content::ordnance::OriginalAmmoDeclaration],
+    provenance: &Provenance,
+    registry: &mut OrdnanceRegistry,
+    ticks_per_second: u32,
+) -> OriginalRegistrationReport {
+    let mut outcomes = Vec::with_capacity(table.rows.len());
+    let mut claims_kept = Vec::new();
+    for row in &table.rows {
+        let name = row.record.as_str();
+        let Some(record) = records.iter().find(|record| record.record == name) else {
+            outcomes.push(OriginalRegistrationOutcome::Blocked {
+                record: row.record.clone(),
+                blockers: vec![OriginalRegistrationBlocker::new(
+                    name,
+                    "record",
+                    T452_MEASURED_LAUNCH_CLAIM,
+                    "the record itself: the installation's weapon member has no record by \
+                     this name",
+                    "a #2156 follow-up: the component table and the record list disagree",
+                )],
+            });
+            continue;
+        };
+        let Some(declared_media) = media.iter().find(|media| media.record == name) else {
+            outcomes.push(OriginalRegistrationOutcome::Blocked {
+                record: row.record.clone(),
+                blockers: vec![OriginalRegistrationBlocker::new(
+                    name,
+                    "media",
+                    T452_MEASURED_MEDIA_CLAIM,
+                    "the record's media declarations, which could not be read",
+                    "a #2156 follow-up: the media reader found no record by this name",
+                )],
+            });
+            continue;
+        };
+        let Some(declared_ammo) = ammo.iter().find(|ammo| ammo.record == name) else {
+            outcomes.push(OriginalRegistrationOutcome::Blocked {
+                record: row.record.clone(),
+                blockers: vec![OriginalRegistrationBlocker::new(
+                    name,
+                    "ammo",
+                    T452_MEASURED_STACK_CLAIM,
+                    "the record's ammunition declaration, which could not be read",
+                    "a #2156 follow-up: the ammunition reader found no record by this name",
+                )],
+            });
+            continue;
+        };
+
+        let behavior = cs_content::ordnance::measure_component_behavior(row);
+        let mut kept: Vec<String> = behavior
+            .claims
+            .iter()
+            .map(|claim| claim.claim.clone())
+            .collect();
+        for effect in &behavior.effects {
+            if let Some(claim) = effect.claim
+                && !kept.iter().any(|existing| existing == claim)
+            {
+                kept.push(claim.to_owned());
+            }
+        }
+        kept.push(T452_PER_BOX_WEIGHT_CLAIM.to_owned());
+
+        match measured_ordnance_declaration(
+            row,
+            record,
+            declared_media,
+            declared_ammo,
+            provenance,
+            ticks_per_second,
+        ) {
+            Ok(declared) => match lower_ordnance(&declared) {
+                Ok(component) => {
+                    let family = component.family();
+                    let ordnance = component.ordnance().clone();
+                    match registry.register(component) {
+                        Ok(()) => outcomes.push(OriginalRegistrationOutcome::Registered {
+                            record: row.record.clone(),
+                            ordnance,
+                            family,
+                        }),
+                        Err(error) => outcomes.push(OriginalRegistrationOutcome::Blocked {
+                            record: row.record.clone(),
+                            blockers: vec![OriginalRegistrationBlocker::new(
+                                name,
+                                "registry",
+                                T452_MEASURED_BEHAVIOUR_CLAIM,
+                                &error.to_string(),
+                                "a #2156 follow-up: the registry refused the measured id",
+                            )],
+                        }),
+                    }
+                }
+                Err(error) => outcomes.push(OriginalRegistrationOutcome::Blocked {
+                    record: row.record.clone(),
+                    blockers: vec![OriginalRegistrationBlocker::new(
+                        name,
+                        "lowering",
+                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        &error.to_string(),
+                        "a #2156 follow-up: the declared record did not lower",
+                    )],
+                }),
+            },
+            Err(blockers) => outcomes.push(OriginalRegistrationOutcome::Blocked {
+                record: row.record.clone(),
+                blockers,
+            }),
+        }
+        claims_kept.push((row.record.clone(), kept));
+    }
+
+    OriginalRegistrationReport {
+        declared: table.rows.len(),
+        outcomes,
+        claims_kept,
+    }
+}
+
+/// Reads the installation's measured catalogue and registers every component
+/// its measurements fully describe.
+///
+/// # Errors
+///
+/// [`OriginalRegistrationError`] when a production reader fails.
+pub fn read_and_register_measured_ordnance(
+    install_root: &std::path::Path,
+    registry: &mut OrdnanceRegistry,
+    ticks_per_second: u32,
+) -> Result<OriginalRegistrationReport, OriginalRegistrationError> {
+    let table =
+        cs_content::ordnance::read_original_component_table(install_root).map_err(|error| {
+            OriginalRegistrationError::Table {
+                detail: error.to_string(),
+            }
+        })?;
+    let records =
+        cs_content::ordnance::read_original_weapon_records(install_root).map_err(|error| {
+            OriginalRegistrationError::Records {
+                detail: error.to_string(),
+            }
+        })?;
+    let media =
+        cs_content::ordnance::read_original_weapon_media(install_root).map_err(|error| {
+            OriginalRegistrationError::Media {
+                detail: error.to_string(),
+            }
+        })?;
+    let ammo =
+        cs_content::ordnance::read_original_ammo_declarations(install_root).map_err(|error| {
+            OriginalRegistrationError::Ammo {
+                detail: error.to_string(),
+            }
+        })?;
+    let provenance = cs_content::ordnance::read_original_weapons_provenance(
+        install_root,
+        T452_ORIGINAL_WEAPONS_CLAIM,
+    )
+    .map_err(|error| OriginalRegistrationError::Provenance {
+        detail: error.to_string(),
+    })?;
+    Ok(register_measured_ordnance(
+        &table,
+        &records,
+        &media,
+        &ammo,
+        &provenance,
+        registry,
+        ticks_per_second,
+    ))
+}
+
+/// What a claim this stage keeps names, and the task that resolves it.
+///
+/// A registered component can still carry a measured value the runtime has no
+/// field for. This table is the one place that says, per claim id, what content
+/// the gap affects and which task removes it, so a reader of the registration
+/// report never has to guess. `None` for a claim this stage does not know.
+#[must_use]
+pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'static str)> {
+    let context = match claim {
+        cs_content::ordnance::T452_R02_STATUS_INCAPACITATION => (
+            "the pilot incapacitation this record's SONIC or FLASH effect applies to the \
+             actor it strikes",
+            cs_content::ordnance::T452_R05_STATUS_KIND_FOLLOW_UP,
+        ),
+        cs_content::ordnance::T452_R02_BEEPER_SEEKER => (
+            "the per-step retargeting this record's BEEPER_SEEKER installs onto the best live \
+             marker",
+            "T452-REG-BEEPER-SEEKER",
+        ),
+        cs_content::ordnance::T452_R02_TANGLER_EFFECT => (
+            "what this record's zero-damage TANGLER field does to a flight model",
+            "T452-REG-TANGLER-EFFECT",
+        ),
+        cs_content::ordnance::T452_R02_SMOKE_RADIUS => (
+            "the gameplay radius of this record's smoke emitter, of which no code reads one",
+            "T452-REG-SMOKE-RADIUS",
+        ),
+        T452_PER_BOX_WEIGHT_CLAIM => (
+            "the flat per-enabled-box weight and cost this component's purchase charges, \
+             which the runtime's per-unit mass has no field for",
+            T452_PER_BOX_WEIGHT_TASK,
+        ),
+        _ => return None,
+    };
+    Some(context)
 }

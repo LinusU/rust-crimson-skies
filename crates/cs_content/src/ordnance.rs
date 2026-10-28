@@ -2719,6 +2719,28 @@ fn read_member_document(
     )
 }
 
+/// The provenance of the member every `wep_` record is declared in.
+///
+/// The span is the installation's own record member — the reader archive
+/// `ZBD/zrdr.zbd`, member [`ORIGINAL_WEAPONS_MEMBER`] — with the installation
+/// and member digests the production reader measured, at
+/// [`ClaimStatus::ObservedTool`] strength. Task T452-RUNTIME-REGISTER's lowering
+/// needs a location for the declared records it registers; a component read
+/// from the owner's files must not be stamped `Origin::SyntheticFixture`.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] for an undiscoverable
+/// installation, an unreadable archive, a missing or undecodable member, or a
+/// claim id that cannot be formed.
+pub fn read_original_weapons_provenance(
+    install_root: &std::path::Path,
+    claim: &str,
+) -> Result<Provenance, crate::original_airframe::OriginalImportError> {
+    let document = read_member_document(install_root, ORIGINAL_WEAPONS_MEMBER)?;
+    document.provenance(document.root(), claim)
+}
+
 /// Reads every `ROCKET` record of the installation's `weapons.zrd`.
 ///
 /// # Errors
