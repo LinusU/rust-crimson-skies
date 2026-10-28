@@ -25,9 +25,9 @@ use bevy::prelude::{ChildOf, Entity, GlobalTransform, Vec3, World};
 use cs_app::ordnance::{
     OrdnanceConsumption, OrdnanceEngagement, OrdnanceEventKind, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
-    OriginalRegistrationOutcome, T452_SILENT_EXPIRY_BLOCKED, T452_SILENT_LAUNCH_BLOCKED,
-    lower_ordnance, measured_ordnance_declaration, read_and_register_measured_ordnance,
-    register_measured_ordnance, step_ordnance_session,
+    OriginalRegistrationOutcome, T452_SILENT_EXPIRY_BLOCKED, lower_ordnance,
+    measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
+    step_ordnance_session,
 };
 use cs_app::scene::SceneGeneration;
 use cs_app::weapons::MountPoseBinding;
@@ -36,7 +36,7 @@ use cs_content::ordnance::{
     OriginalClusterShape, OriginalComponentLaunch, OriginalComponentTable,
     OriginalDamageDeclaration, OriginalEffectBlock, OriginalLifetime, OriginalMountDeclaration,
     OriginalMountLayout, OriginalSlotArray, OriginalStatusEffectDeclaration, OriginalWeaponMedia,
-    OriginalWeaponRecord, T452_R02_SMOKE_RADIUS, T452_R02_TANGLER_EFFECT,
+    OriginalWeaponRecord, T452_R02_SMOKE_STUN_EFFECT, T452_R02_TANGLER_EFFECT,
 };
 use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy, DamageResolver};
 use cs_sim::time::TickRate;
@@ -269,7 +269,14 @@ fn accept_t452_silent_a_measured_area_denial_record_lowers_to_its_range_end() {
     assert_eq!(projectile.area_effect(), None);
     assert_eq!(projectile.stack().capacity_units(), 6);
     // The launch sound is the record's own.
-    assert_eq!(projectile.media().sound().key(), "snd_gotshot2");
+    assert_eq!(
+        projectile
+            .media()
+            .sound()
+            .expect("the record declares a FIRE SOUND")
+            .key(),
+        "snd_gotshot2"
+    );
 }
 
 /// A registered area-denial record flies to its measured `RANGE` through the
@@ -452,11 +459,15 @@ fn accept_t452_silent_the_silent_expiry_claim_is_no_longer_a_blocker() {
         "the measured end of flight is expressible: {:?}",
         report.blockers()
     );
-    // The measured silent launch of a record with no FIRE SOUND is still its own
-    // named claim, and this stage does not touch it.
-    assert_eq!(
-        T452_SILENT_LAUNCH_BLOCKED,
-        "t452_register.limit.silent_launch"
+    // A launched sound the record does not declare is a measured silence with
+    // its own runtime representation, so it blocks nothing here either.
+    assert!(
+        report
+            .blockers()
+            .iter()
+            .all(|blocker| !blocker.claim.contains("silent_launch")),
+        "{:?}",
+        report.blockers()
     );
 }
 
@@ -649,15 +660,15 @@ fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
         .expect("the installation declares wep_13");
     let behaviour = cs_content::ordnance::measure_component_behavior(smoke);
     assert!(
-        behaviour.names_claim(T452_R02_SMOKE_RADIUS),
-        "the smoke emitter's radius stays a named claim"
+        behaviour.names_claim(T452_R02_SMOKE_STUN_EFFECT),
+        "what the smoke emitter does to the actors inside it stays a named claim"
     );
     assert!(
         report
             .claims_kept
             .iter()
             .any(|(record, claims)| record == "wep_13"
-                && claims.iter().any(|c| c == T452_R02_SMOKE_RADIUS)),
+                && claims.iter().any(|c| c == T452_R02_SMOKE_STUN_EFFECT)),
         "the registration report keeps it too: {:?}",
         report.claims_kept
     );

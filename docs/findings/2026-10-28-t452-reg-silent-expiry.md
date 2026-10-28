@@ -58,8 +58,11 @@ stage registers that means:
 - `wep_13` (area denial, `SMOKE_SCREEN`): no `VELOCITY`, no `RANGE`, no
   `LOCK_ON`, no `DETONATE_AT_RANGE` — so the parser's defaults (T452-R.01:
   `VELOCITY 120.0`, `RANGE 500.0`) and the **silent** end at 500 m. Its smoke is
-  a separate emitter created at fire time (`0x4b8d50`) and its radius is
-  unmeasured (`t452_r02.limit.smoke_radius`), so the item itself opens no area.
+  a separate emitter created at fire time (`0x4b8d50`): no measured *gameplay
+  area radius* reaches it (the emitter's `smokescreen_stun_range` is a stun
+  range resolved by `T452-REG-SMOKE-RADIUS`, not the runtime's bounded area), so
+  the item itself opens no area. What the field does to the actors inside it
+  stays the named claim `t452_r02.limit.smoke_stun_effect`.
 - `wep_26` (flak, `ROCKET`, `IMPACT_PROXIMITY 100`, `RANGE 900`): the same silent
   end; its `IMPACT_PROXIMITY` is a blast radius, not a range-end trigger, and the
   proximity branch is gated on `LOCK_ON`, which the record lacks.
@@ -139,18 +142,21 @@ each on its own measured gap, which this stage does not touch:
 | `wep_05`, `wep_06`, `wep_07`, `wep_08`, `wep_09`, `wep_10`, `wep_11`, **`wep_13`**, `wep_14`, `wep_15`, `wep_24` | registered | the measured values are expressible; `wep_13`'s silent end is `ExpiresAtRange { 500 }` |
 | `wep_04`, `wep_25`, `wep_27` | blocked | `ACCELERATION 150`: the measured lateral-remainder ramp (`t452_register.limit.inheritance_ramp`, `T452-REG-INHERITANCE-RAMP`) |
 | `wep_12` | blocked | the tangler field outlives the item that creates it (`t452_r02.limit.tangler_flight_effect`, `T452-REG-TANGLER-EFFECT`) |
-| `wep_26` | blocked | the ramp **and** a measured silent launch (`t452_register.limit.silent_launch`, `T452-REG-MEDIA-SILENCE`) |
+| `wep_26` | blocked | the ramp (`t452_register.limit.inheritance_ramp`) — its measured silent launch became expressible in `T452-REG-MEDIA-SILENCE` |
 
 So the task's "then those ids register" is met for the id this claim alone held
 back (`wep_13`), and **not** for `wep_12` or `wep_26`: their names stay blocked by
 measured gaps with their own filed tasks, and this stage deliberately does not
 default anything to make them fly. The retail tests assert exactly that — no id
 names the silent-expiry claim, `wep_12` names only the tangler claim, and `wep_26`
-names the ramp and the silent launch.
+keeps the ramp claim (its measured silent launch is expressible now that
+`T452-REG-MEDIA-SILENCE` has landed).
 
-The catalogue keeps the claims T452-R.02 left on these records: the smoke
-emitter's unmeasured radius (`t452_r02.limit.smoke_radius`) and the tangler's
-flight effect. Neither is resolved, removed or folded into this stage.
+The catalogue keeps the claims T452-R.02 left on these records for effects this
+stage does not express: what `wep_13`'s smoke field does to the actors inside it
+(`t452_r02.limit.smoke_stun_effect`) and the tangler's flight effect
+(`t452_r02.limit.tangler_flight_effect`). Neither is resolved, removed or folded
+into this stage.
 
 ## The acceptance criteria, answered
 
