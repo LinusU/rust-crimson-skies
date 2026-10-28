@@ -13,7 +13,11 @@
 //!      cargo test --locked -p cs_app --test cs_app_tests_a evidence_report_t452_silent_expiry -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py private/evidence/T452-REG-SILENT-EXPIRY/acceptance.json
-//!    --artifact-root private/evidence/T452-REG-SILENT-EXPIRY --require-pass`
+//!    --artifact-root private/evidence/T452-REG-SILENT-EXPIRY`
+//!    (structurally: the report's `unknowns` carry the measured values the
+//!    registration still cannot express for *other* ids, so `--require-pass`
+//!    is not used — a limitation is never deleted to satisfy a validator,
+//!    AGENTS.md "Evidence-bound tasks")
 //! 4. Commit a copy as
 //!    `docs/findings/evidence/T452-REG-SILENT-EXPIRY.json`.
 //!
@@ -69,7 +73,7 @@ const DAMAGE_PRODUCER: u32 = 95;
 const TICKS_PER_SECOND: u32 = 30;
 const GENERATION: SceneGeneration = SceneGeneration(1);
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-consumption.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): the sixteen hardpoint components T452.01's rules classify are read from the owner's weapons.zrd by read_original_component_table, read_original_weapon_records, read_original_weapon_media, read_original_ammo_declarations and read_original_weapons_provenance and lowered by cs_app::ordnance::measured_ordnance_declaration; the end of flight this stage expresses is T452-R.02 section 3's static measurement of the projectile step at 0x5b01ec and 0x5b0318 - when neither LOCK_ON nor DETONATE_AT_RANGE is declared the step marks the projectile dead with no detonation - which FuseRule now carries as ExpiresAtRange with the record's own RANGE as its bound (the parser default 500.0 measured at 0x5ad80b for wep_13, which declares no RANGE). The acceptance suite shows a registered unguided area-denial record launched through step_ordnance_session and consumed at that bound with no detonation, no area and no damage, from a stationary launcher and, in fewer ticks, from a launcher flying along the launch line (the bound is a distance, not a clock); it also shows that a swept contact still detonates a range-bounded item, that a zero, negative or non-finite bound is refused by name, and that an AreaDenialEngine still may not be impact-fused. The registration outcome over the owner's installation is recorded per id: eleven ids register (wep_13 among them, the record the silent expiry alone held back) and five stay blocked, each on its own measured gap - the lateral-remainder launch inheritance ramp (t452_register.limit.inheritance_ramp, task T452-REG-INHERITANCE-RAMP, wep_04, wep_25, wep_26, wep_27), the tangler field that outlives the item that creates it (t452_r02.limit.tangler_flight_effect, task T452-REG-TANGLER-EFFECT, wep_12) and a measured silent launch (t452_register.limit.silent_launch, task T452-REG-MEDIA-SILENCE, wep_26). NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); that a consumed projectile is what the original's screen showed; what a collision does with these records (nothing measured says a contact cannot detonate them, so the runtime keeps the contact ahead of the range end). The kept claims T452-R.02 left on these records are untouched: the smoke emitter's unmeasured radius (t452_r02.limit.smoke_radius) and the tangler's flight effect are still named on their catalogue entries. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass.";
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-consumption.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): the sixteen hardpoint components T452.01's rules classify are read from the owner's weapons.zrd by read_original_component_table, read_original_weapon_records, read_original_weapon_media, read_original_ammo_declarations and read_original_weapons_provenance and lowered by cs_app::ordnance::measured_ordnance_declaration; the end of flight this stage expresses is T452-R.02 section 3's static measurement of the projectile step at 0x5b01ec and 0x5b0318 - when neither LOCK_ON nor DETONATE_AT_RANGE is declared the step marks the projectile dead with no detonation - which FuseRule now carries as ExpiresAtRange with the record's own RANGE as its bound (the parser default 500.0 measured at 0x5ad80b for wep_13, which declares no RANGE). The acceptance suite shows a registered unguided area-denial record launched through step_ordnance_session and consumed at that bound with no detonation, no area and no damage, from a stationary launcher and, in fewer ticks, from a launcher flying along the launch line (the bound is a distance, not a clock); it also shows that a swept contact still detonates a range-bounded item, that a zero, negative or non-finite bound is refused by name, and that an AreaDenialEngine still may not be impact-fused. The registration outcome over the owner's installation is recorded per id: eleven ids register (wep_13 among them, the record the silent expiry alone held back) and five stay blocked, each on its own measured gap - the lateral-remainder launch inheritance ramp (t452_register.limit.inheritance_ramp, task T452-REG-INHERITANCE-RAMP, wep_04, wep_25, wep_26, wep_27), the tangler field that outlives the item that creates it (t452_r02.limit.tangler_flight_effect, task T452-REG-TANGLER-EFFECT, wep_12) and a measured silent launch (t452_register.limit.silent_launch, task T452-REG-MEDIA-SILENCE, wep_26). NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); that a consumed projectile is what the original's screen showed; what a collision does with these records (nothing measured says a contact cannot detonate them, so the runtime keeps the contact ahead of the range end). The kept claims T452-R.02 left on these records are untouched: the smoke emitter's unmeasured radius (t452_r02.limit.smoke_radius) and the tangler's flight effect are still named on their catalogue entries. Nothing was defaulted to make an id register. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated structurally with tools/validate_evidence.py - not with --require-pass, because the report's `unknowns` list carries every measured value the registration still cannot express, derived (never typed) from the production report: the lateral-remainder ramp, the tangler field and the measured silent launch. None is deleted to satisfy a validator.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -183,9 +187,9 @@ fn evidence_report_t452_silent_expiry_writes_the_acceptance_report() {
     let observation = format!(
         "{{\"task\": \"T452-REG-SILENT-EXPIRY\", \"declared\": {}, \"registered\": {}, \
          \"blocked\": {}, \"wep_13_fuse\": {}, \"wep_13_lifetime_ticks\": {}, \
-         \"flights\": [{{\"launcher_velocity_m_s\": [0.0, 0.0, -0.0], \"consumed_at_tick\": {}, \
+         \"flights\": [{{\"launcher_velocity_m_s\": {}, \"consumed_at_tick\": {}, \
          \"range_m\": {}, \"detonations\": {}, \"areas\": {}, \"damage_events\": {}}}, \
-         {{\"launcher_velocity_m_s\": [0.0, 0.0, -100.0], \"consumed_at_tick\": {}, \
+         {{\"launcher_velocity_m_s\": {}, \"consumed_at_tick\": {}, \
          \"range_m\": {}, \"detonations\": {}, \"areas\": {}, \"damage_events\": {}}}], \
          \"components\": [{}]}}\n",
         report.declared,
@@ -193,11 +197,13 @@ fn evidence_report_t452_silent_expiry_writes_the_acceptance_report() {
         report.blocked_records().len(),
         jstr(&projectile.fuse().label()),
         projectile.lifetime_ticks(),
+        vec3_json(stationary.velocity),
         stationary.tick,
         stationary.range_m,
         stationary.detonations,
         stationary.areas,
         stationary.damage_events,
+        vec3_json(moving.velocity),
         moving.tick,
         moving.range_m,
         moving.detonations,
@@ -345,7 +351,10 @@ fn fly(velocity: Vec3) -> Flight {
         &tick_step(0),
     );
     let projectile = launch.launched[0];
-    let mut flight = Flight::default();
+    let mut flight = Flight {
+        velocity,
+        ..Flight::default()
+    };
     for at in 1..=200 {
         let recipients = [cs_sim::weapons::BlastRecipient::new(
             actor(2),
@@ -398,6 +407,7 @@ fn tick_step(at: u64) -> OrdnanceStep<'static> {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Flight {
+    velocity: Vec3,
     tick: u64,
     range_m: f64,
     detonations: usize,
@@ -457,6 +467,16 @@ fn launcher(world: &mut World, velocity: Vec3) {
         cs_app::scene::NodeVisualTransform(GlobalTransform::from_xyz(0.0, 0.0, 10.0)),
         ChildOf(root),
     ));
+}
+
+/// A `Vec3` as a JSON array of its three components.
+fn vec3_json(value: Vec3) -> String {
+    format!(
+        "[{}, {}, {}]",
+        jstr(&format!("{}", value.x)),
+        jstr(&format!("{}", value.y)),
+        jstr(&format!("{}", value.z))
+    )
 }
 
 /// Every value this stage could not express or could not carry, one
