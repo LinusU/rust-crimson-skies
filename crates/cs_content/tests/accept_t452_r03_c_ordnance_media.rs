@@ -507,10 +507,10 @@ fn accept_t452_r03_c_image_has_no_sound_name_key() {
         }
     }
     for index in found {
-        // A standalone key would be preceded by '_' or start the string;
-        // here every hit sits inside a longer identifier (LOOPED_, ...).
+        // A standalone key would start a string (preceded by NUL); here every
+        // hit sits inside a longer identifier (LOOPED_, ...).
         assert!(
-            index > 0 && image[index - 1] != 0 && image[index - 1] != b'\x00',
+            index > 0 && image[index - 1] != 0,
             "a standalone SOUND_NAME string at file offset {index:#x}"
         );
     }

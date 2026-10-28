@@ -5364,7 +5364,8 @@ impl OriginalWeaponMedia {
             Some(model) => known(ContentKind::HardpointEquipment, model),
             None => Resolved::unknown(
                 claim_id.clone(),
-                "the record declares no FLYOUT MODEL, so the spawned round                  carries no visual of its own",
+                "the record declares no FLYOUT MODEL, so the spawned round carries no \
+                 visual of its own",
             )
             .expect("the reason is non-empty"),
         };
@@ -5372,7 +5373,8 @@ impl OriginalWeaponMedia {
             Some(name) => known(ContentKind::Sound, name),
             None => Resolved::unknown(
                 claim_id.clone(),
-                "the record declares no FIRE SOUND entry: the launch is                  silent (playback gate 0x593b80 early-outs on a missing                  handle), not defaulted",
+                "the record declares no FIRE SOUND entry: the launch is silent \
+                 (playback gate 0x593b80 early-outs on a missing handle), not defaulted",
             )
             .expect("the reason is non-empty"),
         };
