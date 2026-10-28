@@ -34,11 +34,11 @@ original display text is reproduced.
   `MeasuredStatusKind`, `MeasuredStatusDuration`, `MeasuredPlayerExposure`,
   `MeasuredActorIncapacitation`, `MeasuredStatusVictims`,
   `OriginalStatusMeasurement`, `measure_status_effects`, and the claim ids.
-- `crates/cs_content/tests/accept_t452_r05_slot_and_status.rs` (new, 13 tests,
+- `crates/cs_content/tests/accept_t452_r05_slot_and_status.rs` (new, 15 tests,
   a module of `tests/main.rs`).
 - `crates/cs_content/tests/main.rs` (wiring: one `mod` declaration).
-- `data/owner-static/engine-facts.toml`: nine `[[ordnance_slot_fact]]` and
-  thirteen `[[exposure_fact]]` rows.
+- `data/owner-static/engine-facts.toml`: ten `[[ordnance_slot_fact]]` and
+  fourteen `[[exposure_fact]]` rows.
 - This file and `docs/findings/evidence/T452-R05.json`.
 
 No protected path, no `Cargo.toml`/`Cargo.lock` change, no original data, no
@@ -78,6 +78,19 @@ answers `-1` for any id above ten (the "none" id 11 included) and its jump table
 at `0x444148` answers one of `5, 6, 7, 8, 9, 15, 13, 12, 10, 11, 14`
 (`wep_05`..`wep_15`). So **the reachable slot contents are exactly the record
 indices 5..=15, or nothing.**
+
+### An index is the record's own name
+
+The slot's installer turns an index into a record through `0x4bad90`, which
+formats the engine's own `wep_%02d` string (`0x62b394`, pushed at `0x4bada7`,
+fact `slot.record_lookup`) with the index and answers the record from the global
+record list (`0x5abfd0`, `0x4badb8`). **The index a slot holds is therefore
+exactly the number in the record's `wep_` name** — `25` is `wep_25`, `5` is
+`wep_05` — so "no id maps to index 25" and "no slot can hold `wep_25`" are the
+same statement. The acceptance test
+`accept_t452_r05_a_slot_names_its_record_by_its_index` checks the round trip for
+every classified record, and the ignored image test reads both the lookup head
+and the format string.
 
 ### The other writers do not widen it
 
@@ -191,6 +204,7 @@ resolved for every SONIC/FLASH row (the formula above).
 | `ORIGINAL_GUN_SLOT_COUNT` / `ORIGINAL_ROCKET_SLOT_COUNT` | 4 / 8 |
 | `ORIGINAL_PLANE_RECORD_GUN_IDS_OFFSET` / `…_ROCKET_IDS_OFFSET` | `0x88` / `0xa8` |
 | `ORIGINAL_SLOT_INSTALL_FUNCTION_VA` | `0x4b24d0` |
+| `ORIGINAL_SLOT_RECORD_LOOKUP_VA` / `ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA` | `0x4bad90` / `0x62b394` (`wep_%02d`, so an index is the record's name number) |
 | `ORIGINAL_SCRIPT_AMMO_SLOT_WRITE_VA` / `…_ROCKET_FILL_VA` | `0x43e553` / `0x43e56a` |
 | `T452_R05_SCRIPT_AMMO_USE` | `t452_r05.limit.script_ammo_use` |
 | `T452_R05_STATUS_KIND_FOLLOW_UP` | `T452-R05-STATUS-KIND` |
@@ -201,20 +215,24 @@ resolved for every SONIC/FLASH row (the formula above).
 
 ## Test sensitivity (measured)
 
-Three mutations were applied to `crates/cs_content/src/ordnance.rs` one at a
+Four mutations were applied to `crates/cs_content/src/ordnance.rs` one at a
 time and the `accept_t452_r05_` selection re-run with `--include-ignored`
-(13 tests; the file was restored byte-identically each time — shasum
-`6696690efad87ac8fe64108d7518a7879c76b3a8`):
+(15 tests; the file was restored byte-identically each time — shasum
+`d70838e5ae165f5c988f6515d6590feb32be0bfa810d8250d8992f9a3ac0cbed`):
 
 | mutation | result | caught by |
 | --- | --- | --- |
-| an empty rocket-id set is given a synthetic id, so `wep_25` becomes selectable | 3 failed, 10 passed | `accept_t452_r05_wep_25_has_no_plane_record_slot`, `accept_t452_r05_exactly_the_five_spawn_only_records_have_no_slot`, `accept_t452_r05_retail_the_slot_map_and_the_status_match_the_records` |
-| the exposure's facing scale is set for both bits | 4 failed, 9 passed | `accept_t452_r05_flash_adds_the_facing_scale_and_sonic_does_not`, `accept_t452_r05_sonic_and_flash_are_a_pilot_incapacitation`, `accept_t452_r05_both_bits_measured_are_the_same_incapacitation`, the retail test |
-| the exposure's `runtime_kind` becomes `Some(Marker)` and the claim is dropped | 3 failed, 10 passed | `accept_t452_r05_sonic_and_flash_are_a_pilot_incapacitation`, `accept_t452_r05_both_bits_measured_are_the_same_incapacitation`, the retail test |
+| an empty rocket-id set is given a synthetic id, so `wep_25` becomes selectable | 5 failed, 10 passed | `accept_t452_r05_a_slot_holds_a_rocket_type_not_a_record`, `…_a_slot_names_its_record_by_its_index`, `…_exactly_the_five_spawn_only_records_have_no_slot`, `…_wep_25_has_no_plane_record_slot`, the retail test |
+| the exposure's facing scale is set for both bits | 4 failed, 11 passed | `accept_t452_r05_flash_adds_the_facing_scale_and_sonic_does_not`, `…_sonic_and_flash_are_a_pilot_incapacitation`, `…_both_bits_measured_are_the_same_incapacitation`, the retail test |
+| the exposure's `runtime_kind` becomes `Some(Marker)` and the claim is dropped | 3 failed, 12 passed | `accept_t452_r05_sonic_and_flash_are_a_pilot_incapacitation`, `…_both_bits_measured_are_the_same_incapacitation`, the retail test |
+| the record index is read as the last digit of the name (`wep_25` -> 5) | 6 failed, 9 passed | `accept_t452_r05_the_record_index_is_the_number_in_its_name`, `…_a_slot_names_its_record_by_its_index`, `…_a_selectable_record_names_the_ids_that_carry_it`, `…_exactly_the_five_spawn_only_records_have_no_slot`, `…_wep_25_has_no_plane_record_slot`, the retail test |
 
-The twenty-nine image pins are the second half: a changed VA, a changed
-constant or a moved store fails `accept_t452_r05_the_image_pins_the_loadout_map`
-or `…_the_image_pins_the_exposure` rather than passing, and
+The image pins are the second half: the two pin tables carry thirty-three byte
+windows (fourteen loadout, nineteen exposure), and the two image tests read the
+id mapper's head, the slot lookup's head, the `wep_%02d` format string, five
+constants and the recovery site besides, so a changed VA, a changed constant or
+a moved store fails `accept_t452_r05_the_image_pins_the_loadout_map` or
+`…_the_image_pins_the_exposure` rather than passing, and
 `accept_t452_r05_the_committed_rows_match_the_engine_image` re-reads every
 committed row from the image. The retail test re-reads the owner's
 `weapons.zrd` through the production table reader, so a record that gains an

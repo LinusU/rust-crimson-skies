@@ -5544,6 +5544,23 @@ pub const ORIGINAL_PLANE_RECORD_ROCKET_IDS_OFFSET: u32 = 0xa8;
 /// `cmp esi, 0xc`; `0x4b2571`: `cmp esi, 4` selects the rocket branch).
 pub const ORIGINAL_SLOT_INSTALL_FUNCTION_VA: u64 = 0x4b_24d0;
 
+/// The slot's record lookup `0x4bad90`, which turns a slot's weapon index into
+/// the `wep_` record it names.
+///
+/// **Measured, `static`** (task T452-R.05; T452-R.03 measured the lookup, this
+/// task pins it as the link between a slot index and a record name): given the
+/// index a slot holds, it formats the engine's own
+/// [`ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA`] with it (`0x4bada7`) and answers the
+/// record from the global record list through `0x5abfd0` (`0x4badb8`). A slot's
+/// weapon index `N` is therefore exactly the record named `wep_NN`, which is
+/// what [`original_weapon_record_index`] reads back from the name: `wep_25` is
+/// index 25, the index no rocket id produces.
+pub const ORIGINAL_SLOT_RECORD_LOOKUP_VA: u64 = 0x4b_ad90;
+
+/// The engine's `wep_%02d` record-name format, `0x62b394` (pushed at
+/// `0x4bada7`). Eight bytes, no NUL inside the cited window.
+pub const ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA: u64 = 0x62_b394;
+
 /// The one-slot script writer `0x43e553`, inside the command handler that also
 /// answers the engine's revive command.
 ///
@@ -5650,6 +5667,10 @@ impl OriginalSlotMeasurement {
 /// The `weapons.zrd` record index a `wep_` record name carries.
 ///
 /// `wep_25` -> `Some(25)`; a name outside the `wep_<number>` shape -> `None`.
+/// The number is the index the engine's slot table holds because the slot's own
+/// lookup [`ORIGINAL_SLOT_RECORD_LOOKUP_VA`] formats
+/// [`ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA`] with that index to find the record
+/// by name (`0x4bada7`), so name and index are two spellings of one value.
 #[must_use]
 pub fn original_weapon_record_index(record: &str) -> Option<u32> {
     record.strip_prefix("wep_")?.parse().ok()

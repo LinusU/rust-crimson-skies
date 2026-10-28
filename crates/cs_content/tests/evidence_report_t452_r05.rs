@@ -218,13 +218,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_content/tests/evidence_report_t452_r01.rs)"
+             (this file's module doc)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/T452-R01` written relative to the
+/// root, so a path like `private/evidence/T452-R05` written relative to the
 /// workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);

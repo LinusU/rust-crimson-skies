@@ -10,8 +10,12 @@
 //! `$CS_ENGINE_IMAGE` (static analysis, never original-run behavior).
 
 use cs_content::ordnance::{
-    DeclaredOrdnanceFamily, MeasuredStatusKind, ORIGINAL_ROCKET_ID_FUNCTION_VA,
-    ORIGINAL_ROCKET_SLOT_COUNT, OriginalAreaDeclaration, OriginalClusterShape,
+    DeclaredOrdnanceFamily, MeasuredStatusKind, ORIGINAL_GUN_SLOT_COUNT,
+    ORIGINAL_GUN_SLOT_TABLE_VA, ORIGINAL_PLANE_RECORD_GUN_IDS_OFFSET,
+    ORIGINAL_PLANE_RECORD_ROCKET_IDS_OFFSET, ORIGINAL_ROCKET_ID_FUNCTION_VA,
+    ORIGINAL_ROCKET_ID_WEAPON_INDEX, ORIGINAL_ROCKET_SLOT_COUNT, ORIGINAL_ROCKET_SLOT_TABLE_VA,
+    ORIGINAL_ROCKET_TYPE_COUNT, ORIGINAL_SLOT_FLAG_TABLE_VA, ORIGINAL_SLOT_RECORD_LOOKUP_VA,
+    ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA, OriginalAreaDeclaration, OriginalClusterShape,
     OriginalComponentLaunch, OriginalComponentTable, OriginalDamageDeclaration, OriginalLifetime,
     OriginalMountDeclaration, OriginalSlotReach, OriginalStatusEffectDeclaration, T452_04_MOUNT,
     T452_04_STATUS_DURATION, T452_R05_SCRIPT_AMMO_USE, T452_R05_STATUS_INCAPACITATION,
@@ -22,6 +26,30 @@ use cs_content::ordnance::{
 
 /// The image base the executable's virtual addresses are relative to.
 const IMAGE_BASE: u64 = 0x40_0000;
+
+/// The sixteen records T452.01 classifies, by family.
+const CLASSIFIED: [(&str, DeclaredOrdnanceFamily); 16] = [
+    ("wep_04", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_05", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_06", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_07", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_08", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_09", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_10", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_11", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_12", DeclaredOrdnanceFamily::AreaDenialEngine),
+    ("wep_13", DeclaredOrdnanceFamily::AreaDenialEngine),
+    ("wep_14", DeclaredOrdnanceFamily::AerialTorpedo),
+    ("wep_15", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_24", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_25", DeclaredOrdnanceFamily::GuidedRocket),
+    ("wep_26", DeclaredOrdnanceFamily::ProximityFlak),
+    ("wep_27", DeclaredOrdnanceFamily::GuidedRocket),
+];
+
+/// The five classified records no rocket type id selects: the record indices
+/// outside the id map's `5..=15`.
+const SPAWN_ONLY: [&str; 5] = ["wep_04", "wep_24", "wep_25", "wep_26", "wep_27"];
 
 fn rocket_slot() -> OriginalMountDeclaration {
     OriginalMountDeclaration::RocketSlot { slots: 8 }
@@ -149,28 +177,9 @@ fn accept_t452_r05_a_selectable_record_names_the_ids_that_carry_it() {
 
 #[test]
 fn accept_t452_r05_exactly_the_five_spawn_only_records_have_no_slot() {
-    // The sixteen records T452.01 classifies, by family.
-    let classified = [
-        ("wep_04", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_05", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_06", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_07", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_08", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_09", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_10", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_11", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_12", DeclaredOrdnanceFamily::AreaDenialEngine),
-        ("wep_13", DeclaredOrdnanceFamily::AreaDenialEngine),
-        ("wep_14", DeclaredOrdnanceFamily::AerialTorpedo),
-        ("wep_15", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_24", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_25", DeclaredOrdnanceFamily::GuidedRocket),
-        ("wep_26", DeclaredOrdnanceFamily::ProximityFlak),
-        ("wep_27", DeclaredOrdnanceFamily::GuidedRocket),
-    ];
     let mut selectable = Vec::new();
     let mut unselectable = Vec::new();
-    for (record, family) in classified {
+    for (record, family) in CLASSIFIED {
         let mount = if record == "wep_25" {
             unknown_slot()
         } else {
@@ -196,6 +205,32 @@ fn accept_t452_r05_exactly_the_five_spawn_only_records_have_no_slot() {
         unselectable,
         ["wep_04", "wep_24", "wep_25", "wep_26", "wep_27"]
     );
+}
+
+/// The engine names a slot's record by its index: the lookup `0x4bad90` builds
+/// the name with the engine's own `wep_%02d` format string and finds the record
+/// by it, so a `wep_NN` name and the index a slot holds are one value. The
+/// "no slot" answer for `wep_25` depends on this link, not on a naming
+/// convention of ours.
+#[test]
+fn accept_t452_r05_a_slot_names_its_record_by_its_index() {
+    for (record, _) in CLASSIFIED {
+        let index = original_weapon_record_index(record).expect("a wep_NN name");
+        assert_eq!(
+            format!("wep_{index:02}"),
+            record,
+            "{record} must be the name the engine's format builds from index {index}"
+        );
+        assert_eq!(
+            original_rocket_ids_for_weapon_index(index).is_empty(),
+            SPAWN_ONLY.contains(&record),
+            "{record}: selectable exactly when a rocket id maps to index {index}"
+        );
+    }
+    // The format pads to two digits, so every classified index is written out
+    // whole: nothing here is truncated to a different record.
+    assert_eq!(original_weapon_record_index("wep_25"), Some(25));
+    assert_ne!(original_weapon_record_index("wep_25"), Some(2));
 }
 
 // -------------------------------------------------- the effect status ---
@@ -318,7 +353,22 @@ fn at(image: &[u8], va: u64, len: usize) -> &[u8] {
 }
 
 /// `(virtual address, bytes, what the window carries)` of the loadout map.
-const SLOT_PINS: [(u64, &[u8], &str); 10] = [
+const SLOT_PINS: [(u64, &[u8], &str); 14] = [
+    (
+        0x0044_3e45,
+        &[0xbf, 0x28, 0xae, 0x62, 0x00],
+        "the binder targets the four gun slots 0x62ae28",
+    ),
+    (
+        0x0044_3e4a,
+        &[0x8d, 0x99, 0x88, 0x00, 0x00, 0x00],
+        "the binder reads the plane record's gun ids at +0x88",
+    ),
+    (
+        0x0044_3ef8,
+        &[0x81, 0xff, 0x38, 0xae, 0x62, 0x00],
+        "the gun loop ends at 0x62ae38: exactly four gun slots",
+    ),
     (
         0x0044_3f08,
         &[0xbe, 0x38, 0xae, 0x62, 0x00],
@@ -355,6 +405,14 @@ const SLOT_PINS: [(u64, &[u8], &str); 10] = [
         0x004b_250b,
         &[0x83, 0xfe, 0x0c, 0x7d, 0x24],
         "the installer's slot index runs 0..11: four gun slots then eight rocket slots",
+    ),
+    (
+        0x004b_ada7,
+        &[
+            0x68, 0x94, 0xb3, 0x62, 0x00, 0x50, 0xff, 0x15, 0x10, 0x02, 0xa2, 0x00,
+        ],
+        "the slot's index becomes the record name through the engine's own wep_%02d format \
+         string, so index 25 is the record named wep_25",
     ),
     (
         0x0043_e553,
@@ -515,6 +573,18 @@ fn accept_t452_r05_the_image_pins_the_loadout_map() {
         [0x8b, 0x4c, 0x24, 0x04],
         "the id mapper's head"
     );
+    assert_eq!(
+        at(&image, ORIGINAL_SLOT_RECORD_LOOKUP_VA, 6),
+        [0x8b, 0x44, 0x24, 0x04, 0x83, 0xec],
+        "the slot's record lookup head"
+    );
+    // The name the lookup builds is the record's `wep_` name, so a slot's index
+    // and the record's name are one value.
+    assert_eq!(
+        at(&image, ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA, 8),
+        *b"wep_%02d",
+        "the engine's slot record-name format"
+    );
 }
 
 #[test]
@@ -548,6 +618,68 @@ fn accept_t452_r05_the_image_pins_the_exposure() {
         at(&image, 0x0048_9ae9, 10),
         [0xc7, 0x86, 0x58, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         "the recovery site clears mode 4"
+    );
+}
+
+/// The declared constants are read out of the pinned instructions rather than
+/// restated beside them, so a changed address or offset breaks a test even when
+/// the image and the pins are untouched.
+#[test]
+fn accept_t452_r05_the_constants_are_the_pinned_operands() {
+    let pin = |va: u64| {
+        SLOT_PINS
+            .iter()
+            .find(|(at, _, _)| *at == va)
+            .map(|(_, bytes, _)| *bytes)
+            .unwrap_or_else(|| panic!("0x{va:x} is pinned"))
+    };
+    let imm32 = |bytes: &[u8], at: usize| {
+        u64::from(u32::from_le_bytes(
+            bytes[at..at + 4].try_into().expect("four bytes"),
+        ))
+    };
+    // The gun loop targets 0x62ae28 and ends at the rocket table 0x62ae38; the
+    // rocket loop targets that table and ends at the flag table 0x62ae58.
+    assert_eq!(imm32(pin(0x0044_3e45), 1), ORIGINAL_GUN_SLOT_TABLE_VA);
+    assert_eq!(imm32(pin(0x0044_3ef8), 2), ORIGINAL_ROCKET_SLOT_TABLE_VA);
+    assert_eq!(imm32(pin(0x0044_3f08), 1), ORIGINAL_ROCKET_SLOT_TABLE_VA);
+    assert_eq!(imm32(pin(0x0044_3f26), 2), ORIGINAL_SLOT_FLAG_TABLE_VA);
+    // The record lookup pushes the engine's own record-name format.
+    assert_eq!(
+        imm32(pin(0x004b_ada7), 1),
+        ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA
+    );
+    // The gun ids sit at +0x88 and the rocket ids at +0xa8 (`lea` displacement).
+    assert_eq!(
+        imm32(pin(0x0044_3e4a), 2),
+        u64::from(ORIGINAL_PLANE_RECORD_GUN_IDS_OFFSET)
+    );
+    assert_eq!(
+        imm32(pin(0x0044_3f0d), 2),
+        u64::from(ORIGINAL_PLANE_RECORD_ROCKET_IDS_OFFSET)
+    );
+    // The store calls the id mapper: `call rel32` at 0x443f16.
+    let store = pin(0x0044_3f13);
+    assert_eq!(store[3], 0xe8, "call rel32");
+    let rel = i64::from(i32::from_le_bytes(
+        store[4..8].try_into().expect("four bytes"),
+    ));
+    assert_eq!(0x0044_3f1b_i64 + rel, ORIGINAL_ROCKET_ID_FUNCTION_VA as i64);
+    // One dword per slot between the two table addresses.
+    assert_eq!(
+        (ORIGINAL_ROCKET_SLOT_TABLE_VA - ORIGINAL_GUN_SLOT_TABLE_VA) / 4,
+        u64::from(ORIGINAL_GUN_SLOT_COUNT)
+    );
+    assert_eq!(
+        (ORIGINAL_SLOT_FLAG_TABLE_VA - ORIGINAL_ROCKET_SLOT_TABLE_VA) / 4,
+        u64::from(ORIGINAL_ROCKET_SLOT_COUNT)
+    );
+    // `cmp ecx, 0xa` admits ids 0..=10: the eleven-entry type table.
+    assert_eq!(pin(0x0044_40f4)[5], 0x0a, "cmp ecx, 0xa");
+    assert_eq!(ORIGINAL_ROCKET_TYPE_COUNT, 11);
+    assert_eq!(
+        ORIGINAL_ROCKET_TYPE_COUNT as usize,
+        ORIGINAL_ROCKET_ID_WEAPON_INDEX.len()
     );
 }
 
@@ -703,6 +835,7 @@ fn accept_t452_r05_the_committed_rows_cover_the_measured_sites() {
             "slot.id_range",
             "slot.preset_ids",
             "slot.install_slot_count",
+            "slot.record_lookup",
             "slot.script_one_slot",
             "slot.script_all_rocket_slots",
         ]
@@ -751,7 +884,7 @@ fn accept_t452_r05_the_committed_rows_cover_the_measured_sites() {
 fn accept_t452_r05_the_committed_rows_match_the_engine_image() {
     let image = image();
     let rows = committed_rows("ordnance_slot_fact", "slot.");
-    assert_eq!(rows.len(), 9);
+    assert_eq!(rows.len(), 10);
     let exposure = committed_rows("exposure_fact", "exposure.");
     assert_eq!(exposure.len(), 14);
     for (name, va, bytes) in rows.into_iter().chain(exposure) {

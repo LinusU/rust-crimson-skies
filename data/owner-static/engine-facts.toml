@@ -8104,6 +8104,14 @@ fact = "the installer 0x4b24d0's slot index runs 0..11 over the one 12-entry tab
 [[ordnance_slot_fact]]
 claim = "OWNER-STATIC-2026-10-28"
 provenance = "static"
+name = "slot.record_lookup"
+va = 0x004bada7
+bytes = "6894b3620050ff151002a200"
+fact = "the slot's record lookup 0x4bad90 (already recorded in [[rocket_id_fact]]) builds the record's name with the engine's own `wep_%02d` format string: 0x4bada7 pushes 0x62b394 and the lookup then answers the record from the global list through 0x5abfd0 (0x4badb8); a slot index N is therefore the record wep_NN, so the index no rocket id produces, 25, is wep_25 — the name and the index are two spellings of one value"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
 name = "slot.script_one_slot"
 va = 0x0043e553
 bytes = "8904b528ae6200"
