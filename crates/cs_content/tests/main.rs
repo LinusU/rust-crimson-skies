@@ -109,6 +109,7 @@ mod accept_t452_r01_launch_geometry;
 mod accept_t452_r02_behavior;
 mod accept_t452_r03_a_rocket_type_table;
 mod accept_t452_r03_b_ammo_limit;
+mod accept_t452_r03_c_ordnance_media;
 mod accept_t452_r03_d_equipment_rules;
 mod accept_t454_guidance_loss;
 mod accept_t548_retail_blast;
