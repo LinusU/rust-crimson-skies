@@ -170,6 +170,7 @@ mod evidence_report_t452_r03_b;
 mod evidence_report_t452_r03_c;
 mod evidence_report_t452_r03_d;
 mod evidence_report_t452_r04;
+mod evidence_report_t452_r05;
 mod evidence_report_t452_r05ammo;
 mod evidence_report_t454;
 mod evidence_report_t548;

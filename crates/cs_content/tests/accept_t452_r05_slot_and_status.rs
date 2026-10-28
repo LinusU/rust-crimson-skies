@@ -259,6 +259,19 @@ fn accept_t452_r05_flash_adds_the_facing_scale_and_sonic_does_not() {
     assert_eq!(measured[0].key, "FLASH");
     assert!(measured[0].duration.facing_scaled);
 
+    let sonic = row(
+        "wep_08",
+        DeclaredOrdnanceFamily::GuidedRocket,
+        rocket_slot(),
+        vec![status("SONIC", None)],
+    );
+    let measured = measure_status_effects(&sonic);
+    assert_eq!(measured.len(), 1);
+    assert!(
+        !measured[0].duration.facing_scaled,
+        "SONIC is not scaled by the victim's facing"
+    );
+
     // A record that declares neither bit measures nothing: the layer never
     // invents an effect for a record whose keys do not state one.
     let plain = row(
@@ -299,7 +312,7 @@ fn image() -> Vec<u8> {
     std::fs::read(&path).expect("the engine image reads")
 }
 
-fn at<'a>(image: &'a [u8], va: u64, len: usize) -> &'a [u8] {
+fn at(image: &[u8], va: u64, len: usize) -> &[u8] {
     let offset = usize::try_from(va - IMAGE_BASE).expect("offset");
     &image[offset..offset + len]
 }
