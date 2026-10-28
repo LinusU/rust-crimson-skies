@@ -21,8 +21,8 @@ executable, any GPU, audio or human observation.
   — the span and provenance of the `weapons.zrd` member the declared records
   come from, so a registered component is `Origin::Installation` rather than a
   fixture.
-- `crates/cs_app/tests/accept_t452_register.rs` (**new**, 6 tests: 5 synthetic,
-  1 retail) and `crates/cs_app/tests/evidence_report_t452_register.rs`
+- `crates/cs_app/tests/accept_t452_register.rs` (**new**, 7 tests: 5 synthetic,
+  2 retail) and `crates/cs_app/tests/evidence_report_t452_register.rs`
   (**new**, evidence harness, not an acceptance test).
 - `crates/cs_app/tests/suite_a.rs` (wiring: two `mod` declarations).
 - This file and `docs/findings/evidence/T452-RUNTIME-REGISTER.json`.
@@ -61,7 +61,7 @@ Per field, the value and the measurement it came from:
 | `fuse` | the record's `DETONATION_DISTANCE` sphere for a seeker, or a declared `DETONATION_TIME` | T452-R.02 §3 (`0x5b0216` gates the proximity burst on `LOCK_ON`) |
 | `guidance` | `Unguided`, or `Targeted { CoastThenDetonate }` | T452-R.02 §4 (`0x5af7f4`), T452-R.05 (the gate tests `LOCK_ON`, not `ROCKET`) |
 | `lifetime_ticks` | the record's own flight rule at a stationary launcher, rounded up to the session tick | T452-R.04 §2 (`0x5b01ec`) |
-| `area_effect` | `IMPACT_PROXIMITY` with a one-tick lifetime | T1318 (blast applies once, no persistent area), T452-R.02 §2 |
+| `area_effect` | `IMPACT_PROXIMITY` with a one-tick lifetime | T1318 (blast applies once, no persistent area), T452-R.02 §2; a field measured to persist (`wep_12`'s `TANGLER`) is blocked, not flattened into a blast |
 | `armor_damage` / `internal_damage` | the record's `ARMOR_DAMAGE` / `HEALTH_DAMAGE` | the record's own keys; the record reader |
 | `status` | `BEEPER` as `Marker` with its declared `TIME` | T452-R.02 §1 (`0x4b8d50` is the emitter, `0x4ba779` the marker) |
 | `media` | the record's `FLYOUT` `MODEL` and `FIRE` `SOUND[0]` | T452-R.03-C (`0x5aecbf`, `0x5af3c0`) |
@@ -83,6 +83,21 @@ original data, and it says so rather than pretending otherwise:
   instead of an invented per-record position.
 
 Both carry `t452_register.designed_launch_names` at `ClaimStatus::Designed`.
+
+**Which records actually have a mount id.** The id is only realised through an
+airframe's `weapons` row (T452-R.04 §1), and T452-R.04 measured that **no row
+names `wep_24` and `wep_26`** — their `t452_04.limit.release_delay` claim stays
+on the catalogue row for exactly that reason. Their runtime mount key therefore
+names the id the measured name function would derive (24, 26), not a mount entry
+any measured airframe builds; `wep_24` is registered as a measured *component*
+and no airframe-based mount can reach it. `wep_26` is blocked for its own
+reasons. T452-R.05 measured a second, different fact — the *loadout slot* reach:
+`wep_04`, `wep_24`, `wep_25`, `wep_26` and `wep_27` are spawn-only, no plane
+record's rocket slot selects them, and no retail script uses the `ammo` writer
+that could install one (task #2173). That is a statement about the original's
+loadout screen, not about the mount table: `wep_04`, `wep_25` and `wep_27` do
+have airframe rows, so their mount ids are measured. Registering a spawn-only id
+is a component definition, not a claim that a retail loadout can select it.
 
 ### Unit mass: how the measured 480 maps, and why no kilogram is asserted
 
@@ -166,7 +181,11 @@ ids are now registered as well.
    `accept_t452_register_a_registered_measured_component_launches_in_a_session`
    registers the lowered `wep_05` shape in an `OrdnanceSession` and launches it
    through `step_ordnance_session` (one item live, the measured 1200 m/s and one
-   unit of the four-unit stack spent), and
+   unit of the four-unit stack spent);
+   `accept_t452_register_retail_a_registered_measured_component_launches` does
+   the same with the record the production readers return from the owner's
+   installation (the registry is filled by `register_measured_ordnance` over the
+   read table, and the session launches that registered id); and
    `accept_t452_register_lowering_refuses_a_field_no_measurement_states` shows
    `lower_ordnance` refusing `stack.unit_mass_kg` by name plus the measured path
    refusing a record whose inheritance is unexpressible.
@@ -184,8 +203,8 @@ of `crates/cs_app/src/ordnance.rs`):
 
 | mutation | result | caught by |
 | --- | --- | --- |
-| the stack capacity becomes a defaulted `1` instead of the record's `CLUSTER_SIZE` | 3 failed, 3 passed | `accept_t452_register_a_measured_component_registers_with_its_measured_values`, `…_a_registered_measured_component_launches_in_a_session`, the retail test |
-| the ramping inheritance silently takes the `Full` path instead of blocking | 3 failed, 3 passed | `accept_t452_register_every_id_is_registered_or_names_its_blocker`, `…_lowering_refuses_a_field_no_measurement_states`, the retail test |
+| the stack capacity becomes a defaulted `1` instead of the record's `CLUSTER_SIZE` | 4 failed, 3 passed (re-measured by the reviewer on the 7-test selection) | `accept_t452_register_a_measured_component_registers_with_its_measured_values`, `…_a_registered_measured_component_launches_in_a_session`, both retail tests |
+| the ramping inheritance silently takes the `Full` path instead of blocking | 3 failed, 3 passed | `accept_t452_register_every_id_is_registered_or_names_its_blocker`, `…_lowering_refuses_a_field_no_measurement_states`, the retail registration test |
 
 The retail test is the second half: it re-reads the owner's installation through
 the production readers on every run, so a changed record, a changed stack, a
@@ -197,17 +216,87 @@ changed fuse radius or a changed outcome fails rather than passes.
 `docs/findings/evidence/T452-RUNTIME-REGISTER.json`, validates with
 `python3 tools/validate_evidence.py private/evidence/T452-RUNTIME-REGISTER/acceptance.json
 --artifact-root private/evidence/T452-RUNTIME-REGISTER` (structurally: its
-`unknowns` carry the nine limitations, so `--require-pass` is not used and no
+`unknowns` carry the eight distinct limitations, so `--require-pass` is not used and no
 limitation was removed to satisfy a validator). It records `capabilities:
-["retail", "synthetic"]`, the `accept_t452_register_` selection — 6 tests, 6
+["retail", "synthetic"]`, the `accept_t452_register_` selection — 7 tests, 7
 passed, 0 failed, with `--include-ignored` and `CS_GAME_DIR` set — the
 installation digests measured by `cs_assets::install` discovery, and two hashed
 artifacts: the recorded `cargo-test.log` and `original-registration.json`, a
 second production pass listing every declared id with its outcome, its runtime
 family, its measured fields and every blocker with claim, content and task.
-Identifiers, numbers and digests only. The report's `candidate_tree` is the
-code-and-test commit `451e4a932`; this file and the committed copy are the
-documentation commit that follows it, and nothing the report measured changed.
+Identifiers, numbers and digests only. The report's `candidate_tree` is
+`cbd88aeae2d2433d88ed38b0ab6deb0df7f7653b` (the code-and-test commit's tree);
+this file and the committed copy are the documentation commit that follows it,
+and nothing the report measured changed.
+
+The report was regenerated by the reviewer on that tree after two fixes to the
+harness below; both artifacts are valid JSON (the first version wrote the arming
+label unquoted, which made `original-registration.json` unparseable) and every
+assertion cites the artifacts that exist (`original-registration.json`, not the
+catalogue report's name).
+
+## Review
+
+**Implementer:** `deepseek-1` (agent, model `deepseek-v4.1-flash`), session
+2026-10-28 07:00–07:35, which handed the branch over without reviewing it.
+**Reviewer:** `deepseek-1` (same agent name and model) in a **separate session
+with a fresh context**, which read the diff, the parent task #2156's criteria,
+the T452 closure and the R.01–R.05 findings, re-ran the checks and fixed what it
+found. The reviewer is not an independent model; F28-D is mission-semantics and
+fidelity territory where the project prefers a different agent instance or
+model, and that preference was not available in this rotation. This is recorded
+rather than glossed, and no agent review replaces the owner's human approval.
+
+What the review checked and changed:
+
+- **The evidence artifact was not JSON.** `original-registration.json` wrote the
+  arming label unquoted (`"arming": after_ticks(0)`), which made the hashed
+  artifact unparseable even though the validator only hashes it. Fixed in the
+  harness (`jstr`), and the report regenerated.
+- **The assertions cited an artifact that does not exist** —
+  `original-catalogue.json` (T452's report name) instead of the
+  `original-registration.json` this stage writes. Fixed and regenerated; both
+  fixes are pinned by the regenerated report itself.
+- **The harness's own reproduction command was wrong** (`--ignored` after the
+  test filter instead of `-- --ignored`); corrected in its module doc.
+- **The literal launch criterion needed the measured catalogue.** AC3 asks that
+  a component *registered from the measured catalogue* launch through the
+  production session path; the only launch test used a hand-built fixture shape.
+  Added
+  `accept_t452_register_retail_a_registered_measured_component_launches`, which
+  reads `wep_05` through the production readers, registers it with
+  `register_measured_ordnance` over the read table, and launches it with
+  `step_ordnance_session` (1200 m/s, four-unit stack, one unit spent). It is
+  listed in the harness's `RETAIL_TESTS`, so a report cannot be produced without
+  it passing.
+- **A mount statement was too broad.** The finding said the mount key's value is
+  measured for every component; T452-R.04 measured that no airframe `weapons`
+  row names `wep_24` or `wep_26`, so no mount entry is built for them, and
+  T452-R.05 measured the five spawn-only records (`wep_04`, `wep_24`, `wep_25`,
+  `wep_26`, `wep_27`). The finding now states both, separately, instead of
+  folding them into one claim. No registered value changed: the mount key stays
+  the designed `weapon_mount_NN` vocabulary carrying the measured name-derived
+  id.
+- **A blocker named the wrong claim and the wrong task.** `wep_12`'s area
+  outlives its item because the measured `TANGLER` field lives on its own; the
+  blocker attributed that to `t452_register.behavior` and to the silent-expiry
+  task instead of to the measured tangler gap (#2179). It now names
+  `t452_r02.limit.tangler_flight_effect` and `T452-REG-TANGLER-EFFECT` (the only
+  effect `measured_area` gives a timed radius), so the evidence's `unknowns` are
+  eight distinct claims, not nine.
+- **Re-ran the capacity mutation** on the 7-test selection: defaulting the volley
+  stack to `1` now fails 4 tests (the two synthetic ones and both retail tests);
+  the production file was restored byte-identically
+  (`shasum 5269e845170017b905814adaf66e072f356d557ad8ac847a7ecdfb43ee1fe436`).
+
+The unmet part of the acceptance criterion is unchanged and is the point of the
+branch: **six of sixteen ids are blocked, not registered**, because their
+measured values have no runtime field (the ramping inheritance, the silent
+range-end expiry and a measured silent launch), and guessing one is forbidden.
+The reviewer confirmed each blocker names its claim, its content and its
+resolving task, and that the follow-ups exist as #2174–#2180. "Every declared id
+is registered" is therefore met for ten ids; that gap is recorded here and in
+the evidence report rather than closed by a fabricated value.
 
 ## Not claimed
 
