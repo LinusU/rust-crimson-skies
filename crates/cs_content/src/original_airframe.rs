@@ -886,6 +886,26 @@ pub struct OriginalCrashParameters {
     pub damage_provenance: Provenance,
 }
 
+/// The three `smokescreen_stun_*` globals of the first `player.zrd` entry.
+///
+/// The smoke emitter's per-step update (`0x4b8fd0`) stuns every other live
+/// actor inside `range_m` of the emitter's owner and in front of it by the
+/// cone these keys give; the image loads the keys at `0x473e91..0x473f1b` and
+/// keeps its own default when a key is absent. Static reading, never
+/// `verified_original`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalSmokescreenStun {
+    /// `smokescreen_stun_range` in metres (image default 200.0).
+    pub range_m: f64,
+    /// `smokescreen_stun_angle` in degrees; the image tests the dot product
+    /// against `cos(angle * pi / 180 * 0.5)` (default cosine 0.8).
+    pub cone_angle_deg: f64,
+    /// `smokescreen_stun_interval` in seconds (image default 3.0).
+    pub interval_s: f64,
+    /// Where `range_m` was read from.
+    pub range_provenance: Provenance,
+}
+
 // --------------------------------------------------------------- importer ---
 
 /// The three members the flight law reads, decoded once with their spans.
@@ -1276,6 +1296,55 @@ impl OriginalDocuments {
             });
         }
         Ok(OriginalGlobalParameters { values, unused })
+    }
+
+    /// Imports the three `smokescreen_stun_*` globals of the first `player.zrd`
+    /// entry (claim ids under `t452_smoke`).
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalImportError`] for a missing key or a non-finite number. The
+    /// image defaults are never substituted.
+    pub fn smokescreen_stun(&self) -> Result<OriginalSmokescreenStun, OriginalImportError> {
+        let document = self
+            .player
+            .root()
+            .as_list()
+            .and_then(|outer| outer.first())
+            .ok_or_else(|| OriginalImportError::Shape {
+                detail: "player.zrd does not open with a list".to_owned(),
+            })?;
+        let number = |key: &str| {
+            let node =
+                document
+                    .value_of_key(key)
+                    .ok_or_else(|| OriginalImportError::KeyMissing {
+                        record: PLAYER_MEMBER.to_owned(),
+                        key: key.to_owned(),
+                    })?;
+            let element = node.element(0).unwrap_or(node);
+            let value = element
+                .as_scalar_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| OriginalImportError::NotFinite {
+                    record: PLAYER_MEMBER.to_owned(),
+                    key: key.to_owned(),
+                })?;
+            let provenance = self
+                .player
+                .provenance(element, &format!("t452_smoke.{key}"))
+                .expect("the member span is valid for its own nodes");
+            Ok::<_, OriginalImportError>((value, provenance))
+        };
+        let (range_m, range_provenance) = number("smokescreen_stun_range")?;
+        let (cone_angle_deg, _) = number("smokescreen_stun_angle")?;
+        let (interval_s, _) = number("smokescreen_stun_interval")?;
+        Ok(OriginalSmokescreenStun {
+            range_m,
+            cone_angle_deg,
+            interval_s,
+            range_provenance,
+        })
     }
 
     /// Imports the `crash` record of the first `player.zrd` entry: the contact

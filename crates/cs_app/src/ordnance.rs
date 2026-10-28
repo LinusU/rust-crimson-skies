@@ -4530,9 +4530,10 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
             "what this record's zero-damage TANGLER field does to a flight model",
             "T452-REG-TANGLER-EFFECT",
         ),
-        cs_content::ordnance::T452_R02_SMOKE_RADIUS => (
-            "the gameplay radius of this record's smoke emitter, of which no code reads one",
-            "T452-REG-SMOKE-RADIUS",
+        cs_content::ordnance::T452_R02_SMOKE_STUN_EFFECT => (
+            "what this record's smoke emitter does to the actors inside its smokescreen_stun \
+             range and cone: a stun for an AI actor and a screen effect for the player",
+            "T452-REG-SMOKE-STUN",
         ),
         T452_PER_BOX_WEIGHT_CLAIM => (
             "the flat per-enabled-box weight and cost this component's purchase charges, \

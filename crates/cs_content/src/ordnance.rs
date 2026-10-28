@@ -5103,8 +5103,16 @@ pub const T452_R02_STATUS_INCAPACITATION: &str = "t452_r02.limit.status_incapaci
 /// is not visible in the measured path.
 pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect";
 
-/// Claim: `SMOKE_SCREEN` is a visual emitter with no measured gameplay radius.
+/// Claim (T452.R02, resolved by T452-REG-SMOKE-RADIUS): `SMOKE_SCREEN` has no
+/// gameplay radius. It does: the emitter's per-step update (`0x4b8fd0`) reads
+/// the `smokescreen_stun_range` global, so the radius is measured as that key
+/// ([`MeasuredAreaSource::GlobalKey`]) and no measured record keeps this claim.
 pub const T452_R02_SMOKE_RADIUS: &str = "t452_r02.limit.smoke_radius";
+
+/// Claim: the smoke emitter stuns actors inside the `smokescreen_stun_*` cone
+/// (`0x4200d0` for an AI actor, `0x42e9d0` for the player), which the runtime's
+/// status vocabulary has no variant for.
+pub const T452_R02_SMOKE_STUN_EFFECT: &str = "t452_r02.limit.smoke_stun_effect";
 
 /// Claim: `BEEPER_SEEKER` retargets the projectile onto a live beeper each
 /// step, which `GuidanceRule::Targeted` cannot express (it names one target).
@@ -5214,6 +5222,16 @@ pub enum MeasuredAreaSource {
     ImageDefault {
         /// The default the image stores.
         value: f64,
+    },
+    /// The image reads the value from a named global key of `player.zrd`, not
+    /// from the record; the key's retail value is read by
+    /// `OriginalDocuments::smokescreen_stun`, and `image_default` is what the
+    /// image keeps when the key is absent.
+    GlobalKey {
+        /// The `player.zrd` key.
+        key: &'static str,
+        /// The image's own default for the key.
+        image_default: f64,
     },
     /// A blast is instantaneous: it has no area lifetime to measure (T1318).
     InstantaneousBlast,
@@ -5400,7 +5418,7 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                     action: MeasuredEffectAction::AreaField,
                     duration: measured_time(status.duration_s),
                     runtime_kind: None,
-                    claim: Some(T452_R02_SMOKE_RADIUS),
+                    claim: Some(T452_R02_SMOKE_STUN_EFFECT),
                     pin: StaticProvenance::new(0x004b_71b1, 5),
                 }
             }
@@ -5536,15 +5554,20 @@ fn measured_area(
     if let Some(smoke) = smoke {
         let lifetime_s = smoke.duration_s.unwrap_or(IMAGE_DEFAULT_TIME_S);
         claims.push(OriginalComponentUnknown::new(
-            T452_R02_SMOKE_RADIUS,
-            "SMOKE_SCREEN creates a scene emitter node (0x4b8d50) that lasts TIME; \
-             no code reads a gameplay radius for it, so area_radius stays unmeasured",
+            T452_R02_SMOKE_STUN_EFFECT,
+            "SMOKE_SCREEN creates a scene emitter node (0x4b8d50) whose per-step \
+             update (0x4b8fd0) stuns every other live actor inside \
+             smokescreen_stun_range and the smokescreen_stun_angle cone: 0x4200d0 \
+             for an AI actor, 0x42e9d0 for the player; the runtime has no status \
+             variant for either",
         ));
+        resolved.push(T452_04_AREA_RADIUS);
         resolved.push(T452_04_AREA_LIFETIME);
         return Some(MeasuredArea {
             radius_m: None,
-            radius_source: MeasuredAreaSource::Unmeasured {
-                claim: T452_R02_SMOKE_RADIUS,
+            radius_source: MeasuredAreaSource::GlobalKey {
+                key: "smokescreen_stun_range",
+                image_default: 200.0,
             },
             lifetime_s: Some(lifetime_s),
             lifetime_source: measured_time_source(smoke.duration_s),
