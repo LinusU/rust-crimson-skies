@@ -471,12 +471,7 @@ fn launcher(world: &mut World, velocity: Vec3) {
 
 /// A `Vec3` as a JSON array of its three components.
 fn vec3_json(value: Vec3) -> String {
-    format!(
-        "[{}, {}, {}]",
-        jstr(&format!("{}", value.x)),
-        jstr(&format!("{}", value.y)),
-        jstr(&format!("{}", value.z))
-    )
+    format!("[{}, {}, {}]", value.x, value.y, value.z)
 }
 
 /// Every value this stage could not express or could not carry, one
