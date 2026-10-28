@@ -4640,7 +4640,8 @@ pub struct MeasuredSwarm {
     pub munitions: u32,
     /// How many projectiles one launch step spawns: measured as one.
     pub projectiles_per_launch: u32,
-    /// The window the per-launch spawn and the countdown were read from.
+    /// The window the per-launch countdown was read from; the single spawn it
+    /// counts down to is pinned separately (`0x4b7289` calls `0x5aef40` once).
     pub pin: StaticProvenance,
 }
 
@@ -4677,6 +4678,32 @@ impl OriginalBehaviorMeasurement {
     }
 }
 
+/// The image's default for a `TIME` word a record does not state: `0x4ba869`
+/// (`TANGLER`) and `0x4ba779` (`BEEPER`) store `5.0` through the same parser,
+/// and `0x4ba806` does it for `SMOKE_SCREEN`.
+const IMAGE_DEFAULT_TIME_S: f64 = 5.0;
+
+/// How long an effect whose duration is the record's `TIME` lasts, and where
+/// that duration came from: the record when it states one, else the image's
+/// `5.0 s` default.
+fn measured_time(duration_s: Option<f64>) -> MeasuredEffectDuration {
+    match duration_s {
+        Some(_) => MeasuredEffectDuration::RecordTime,
+        None => MeasuredEffectDuration::ImageDefaultSeconds(IMAGE_DEFAULT_TIME_S),
+    }
+}
+
+/// Where an area lifetime came from: the record's `TIME` when it states one,
+/// else the image's `5.0 s` default.
+fn measured_time_source(duration_s: Option<f64>) -> MeasuredAreaSource {
+    match duration_s {
+        Some(_) => MeasuredAreaSource::RecordKey { key: "TIME" },
+        None => MeasuredAreaSource::ImageDefault {
+            value: IMAGE_DEFAULT_TIME_S,
+        },
+    }
+}
+
 /// Measures one component's effect, fuse, lost-target and swarm behavior from
 /// the values already measured in the image.
 ///
@@ -4698,7 +4725,7 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                 MeasuredEffect {
                     key: "BEEPER",
                     action: MeasuredEffectAction::TimedMarker,
-                    duration: MeasuredEffectDuration::RecordTime,
+                    duration: measured_time(status.duration_s),
                     runtime_kind: Some(DeclaredStatusEffectKind::Marker),
                     claim: None,
                     pin: StaticProvenance::new(0x004b_9d95, 14),
@@ -4717,7 +4744,7 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                 MeasuredEffect {
                     key: "TANGLER",
                     action: MeasuredEffectAction::AreaField,
-                    duration: MeasuredEffectDuration::RecordTime,
+                    duration: measured_time(status.duration_s),
                     runtime_kind: None,
                     claim: Some(T452_R02_TANGLER_EFFECT),
                     pin: StaticProvenance::new(0x004b_9482, 18),
@@ -4729,7 +4756,7 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                 MeasuredEffect {
                     key: "SMOKE_SCREEN",
                     action: MeasuredEffectAction::AreaField,
-                    duration: MeasuredEffectDuration::RecordTime,
+                    duration: measured_time(status.duration_s),
                     runtime_kind: None,
                     claim: Some(T452_R02_SMOKE_RADIUS),
                     pin: StaticProvenance::new(0x004b_71b1, 5),
@@ -4792,9 +4819,14 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
         range_end: if targeted {
             MeasuredRangeEnd::Detonates
         } else {
-            if row.proximity_trigger_m.is_none() {
-                resolved.push(T452_R02_FUSE_CLAIM);
-            }
+            // The range-end gate is now measured for every unguided record: a
+            // declared `DETONATION_DISTANCE` cannot reach the proximity branch
+            // without `LOCK_ON` (`0x5b0216`), and none of the fifteen `ROCKET`
+            // records declares `DETONATE_AT_RANGE` (T548's 41-key census), so
+            // the only measured end of flight is the silent removal at
+            // `0x5b0318`. That resolves the claim for every such row, not only
+            // the two the task named.
+            resolved.push(T452_R02_FUSE_CLAIM);
             MeasuredRangeEnd::ExpiresSilently
         },
         gate: "LOCK_ON without EXPIRES detonates at the end of RANGE; otherwise \
@@ -4853,20 +4885,20 @@ fn measured_area(
         // `RADIUS` defaults to 10 at 0x4ba870 and `TIME` to 5 at 0x4ba869;
         // wep_12 states TIME 2 and no RADIUS, so the default applies.
         let radius_m = 10.0;
-        let lifetime_s = tangler.duration_s.unwrap_or(5.0);
+        let lifetime_s = tangler.duration_s.unwrap_or(IMAGE_DEFAULT_TIME_S);
         resolved.push(T452_04_AREA_RADIUS);
         resolved.push(T452_04_AREA_LIFETIME);
         return Some(MeasuredArea {
             radius_m: Some(radius_m),
             radius_source: MeasuredAreaSource::ImageDefault { value: radius_m },
             lifetime_s: Some(lifetime_s),
-            lifetime_source: MeasuredAreaSource::RecordKey { key: "TIME" },
+            lifetime_source: measured_time_source(tangler.duration_s),
             pin: StaticProvenance::new(0x004b_950f, 26),
         });
     }
     let smoke = row.statuses.iter().find(|s| s.key == "SMOKE_SCREEN");
     if let Some(smoke) = smoke {
-        let lifetime_s = smoke.duration_s.unwrap_or(5.0);
+        let lifetime_s = smoke.duration_s.unwrap_or(IMAGE_DEFAULT_TIME_S);
         claims.push(OriginalComponentUnknown::new(
             T452_R02_SMOKE_RADIUS,
             "SMOKE_SCREEN creates a scene emitter node (0x4b8d50) that lasts TIME; \
@@ -4879,7 +4911,7 @@ fn measured_area(
                 claim: T452_R02_SMOKE_RADIUS,
             },
             lifetime_s: Some(lifetime_s),
-            lifetime_source: MeasuredAreaSource::RecordKey { key: "TIME" },
+            lifetime_source: measured_time_source(smoke.duration_s),
             pin: StaticProvenance::new(0x004b_71b1, 5),
         });
     }

@@ -24,7 +24,7 @@ use cs_content::ordnance::{
 const IMAGE_BASE: u64 = 0x40_0000;
 
 /// `(virtual address, bytes, what the window carries)`.
-const IMAGE_PINS: [(u64, &[u8], &str); 23] = [
+const IMAGE_PINS: [(u64, &[u8], &str); 24] = [
     (
         0x004b_a7f8,
         &[0x81, 0xc9, 0x00, 0x00, 0x01, 0x00],
@@ -127,6 +127,11 @@ const IMAGE_PINS: [(u64, &[u8], &str); 23] = [
         0x004b_72be,
         &[0xff, 0x4f, 0x0c],
         "each launch decrements the weapon object's +0x0c",
+    ),
+    (
+        0x004b_7289,
+        &[0xe8, 0xb2, 0x7c, 0x0f, 0x00],
+        "one launch pass calls the one-projectile builder 0x5aef40 exactly once",
     ),
     (
         0x004b_72e1,
@@ -287,6 +292,61 @@ fn accept_t452_r02_sonic_and_flash_are_an_exposure_with_no_runtime_kind() {
 }
 
 #[test]
+fn accept_t452_r02_a_time_the_record_does_not_state_is_the_image_default() {
+    let beeper = row(
+        "wep_10",
+        DeclaredOrdnanceFamily::GuidedRocket,
+        rocket_slot(),
+        vec![status("BEEPER", None)],
+        OriginalAreaDeclaration::default(),
+        OriginalClusterShape::Volley { munitions: 4 },
+    );
+    assert_eq!(
+        measure_component_behavior(&beeper).effects[0].duration,
+        MeasuredEffectDuration::ImageDefaultSeconds(5.0)
+    );
+
+    for (record, family, key) in [
+        (
+            "wep_12",
+            DeclaredOrdnanceFamily::AreaDenialEngine,
+            "TANGLER",
+        ),
+        (
+            "wep_13",
+            DeclaredOrdnanceFamily::AreaDenialEngine,
+            "SMOKE_SCREEN",
+        ),
+    ] {
+        let area_row = row(
+            record,
+            family,
+            rocket_slot(),
+            vec![status(key, None)],
+            OriginalAreaDeclaration::default(),
+            OriginalClusterShape::Volley { munitions: 2 },
+        );
+        let measured = measure_component_behavior(&area_row);
+        assert_eq!(
+            measured.effects[0].duration,
+            MeasuredEffectDuration::ImageDefaultSeconds(5.0),
+            "{record}"
+        );
+        let area = measured.area.expect("an area effect has an area");
+        assert_eq!(
+            area.lifetime_s,
+            Some(5.0),
+            "{record} states no TIME, so the image's 5.0 s applies"
+        );
+        assert_eq!(
+            area.lifetime_source,
+            MeasuredAreaSource::ImageDefault { value: 5.0 },
+            "{record} must not report a RecordKey for a value the record does not state"
+        );
+    }
+}
+
+#[test]
 fn accept_t452_r02_a_tangler_is_an_area_with_the_image_default_radius() {
     let row = row(
         "wep_12",
@@ -410,6 +470,22 @@ fn accept_t452_r02_a_locked_on_record_detonates_an_unguided_one_expires() {
     let measured = measure_component_behavior(&flak);
     assert_eq!(measured.fuse.range_end, MeasuredRangeEnd::ExpiresSilently);
     assert!(measured.lost_target.is_none());
+
+    // An unguided record that *does* declare `DETONATION_DISTANCE` has no
+    // measured end of flight other than the silent removal either: the
+    // proximity branch at 0x5b0216 requires `LOCK_ON`, which wep_12 lacks.
+    let mut area_denial = row(
+        "wep_12",
+        DeclaredOrdnanceFamily::AreaDenialEngine,
+        rocket_slot(),
+        Vec::new(),
+        OriginalAreaDeclaration::default(),
+        OriginalClusterShape::Volley { munitions: 2 },
+    );
+    area_denial.proximity_trigger_m = Some(30.0);
+    let measured = measure_component_behavior(&area_denial);
+    assert_eq!(measured.fuse.range_end, MeasuredRangeEnd::ExpiresSilently);
+    assert!(measured.resolves_claim(T452_R02_FUSE_CLAIM));
 }
 
 #[test]
@@ -486,6 +562,10 @@ fn accept_t452_r02_retail_the_measured_facts_read_the_original_rows() {
     assert!(tangler.resolves_claim(T452_04_AREA_RADIUS));
     assert!(tangler.resolves_claim(T452_04_AREA_LIFETIME));
     assert_eq!(tangler.fuse.range_end, MeasuredRangeEnd::ExpiresSilently);
+    assert!(
+        tangler.resolves_claim(T452_R02_FUSE_CLAIM),
+        "wep_12's DETONATION_DISTANCE cannot reach the LOCK_ON-gated proximity branch"
+    );
 
     let smoke = get("wep_13");
     let area = smoke.area.expect("wep_13 is an area");

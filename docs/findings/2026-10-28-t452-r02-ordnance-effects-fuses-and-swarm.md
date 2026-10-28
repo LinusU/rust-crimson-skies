@@ -27,7 +27,7 @@ records *declare*; nothing is `verified_original`.
   `MeasuredLostTarget`, `MeasuredSwarm`, `OriginalBehaviorMeasurement`,
   `measure_component_behavior`, `measured_area` and the
   `T452_R02_*` claim ids.
-- `crates/cs_content/tests/accept_t452_r02_behavior.rs` (new, 10 tests, module
+- `crates/cs_content/tests/accept_t452_r02_behavior.rs` (new, 11 tests, module
   of `tests/main.rs`).
 - `crates/cs_content/tests/main.rs` (wiring: one `mod` declaration).
 - This file and `docs/findings/evidence/T452-R02.json`.
@@ -52,7 +52,7 @@ Linear and targeted disassembly of the image with Capstone 5.0.7 (not
 committed), following each record key to the instruction that stores it and each
 stored word to the instruction that consumes it. Every measured fact cites a
 virtual address and a byte window; `accept_t452_r02_the_image_pins_every_measured_site`
-re-reads all 23 windows from `$CS_ENGINE_IMAGE` on every run, so a stale VA or a
+re-reads all 24 windows from `$CS_ENGINE_IMAGE` on every run, so a stale VA or a
 wrong instruction fails rather than passes. The record side is the existing
 production reader (`read_original_component_table`), so the retail test measures
 the owner's own installation through the same path the project already uses.
@@ -208,9 +208,20 @@ So the range-end detonation is **gated on `LOCK_ON` (or the explicit
 - `wep_26` declares `ROCKET`, `IMPACT_PROXIMITY` 100, `RANGE` 900, no
   `LOCK_ON`, no `EXPIRES`, no `DETONATE_AT_RANGE` and no
   `DETONATION_DISTANCE`. It **does not detonate at the end of range**: it is
-  consumed silently. Its `IMPACT_PROXIMITY` never reaches a trigger, and with
-  no target the proximity branch at `0x5b0216` is skipped anyway. This resolves
-  `t452.limit.fuse` for `wep_26`.
+  consumed silently. `IMPACT_PROXIMITY` is its blast radius, not a range-end
+  trigger, and the proximity branch at `0x5b0216` is gated on `LOCK_ON`, which
+  the record lacks. This resolves `t452.limit.fuse` for `wep_26` at the end of
+  flight; what a collision or another path does with the shell is not part of
+  this measurement.
+- `wep_12` declares `DETONATION_DISTANCE` and no `LOCK_ON`, so its proximity
+  trigger is unreachable for the same reason: its only measured end of flight
+  is the silent removal at `0x5b0318`. This resolves `t452.limit.fuse` for
+  `wep_12` too — the claim the catalogue closure left open precisely because
+  the trigger was unreachable, not absent.
+- No unguided record has another end: none of the fifteen `ROCKET` records
+  declares `DETONATE_AT_RANGE` (T548's 41-key census), so the measured rule
+  leaves every unguided row with the silent removal and the layer resolves
+  `t452.limit.fuse` for all of them.
 - `wep_13` declares neither `RANGE`, `VELOCITY`, `LOCK_ON` nor any detonation
   key. No record key writes the `RANGE` field (`+0x1c`) it is compared with, so
   there is no record-supplied bound to fly to; the projectile is consumed
@@ -266,9 +277,14 @@ per sub-munition.
 | `t452_04.limit.area_radius` (`wep_12`) | resolved (image default 10 m) |
 | `t452_04.limit.area_radius` (`wep_13`) | **kept**, as `t452_r02.limit.smoke_radius` |
 | `t452_04.limit.area_lifetime` | resolved (`wep_12`/`wep_13` `TIME`; blasts are instantaneous) |
-| `t452.limit.fuse` (`wep_13`, `wep_26`) | resolved (both expire silently at range end) |
+| `t452.limit.fuse` (`wep_12`, `wep_13`, `wep_26`, and every unguided row) | resolved (each expires silently at range end) |
 | `t452.limit.lost_target` (`wep_25`) | resolved (the gates test `LOCK_ON`) |
 | `t454.limit.swarm` | resolved (one projectile per sub-munition per launch) |
+
+A record that states **no** `TIME` for BEEPER, TANGLER or SMOKE_SCREEN reports
+the image's own `5.0 s` default (`MeasuredEffectDuration::ImageDefaultSeconds`,
+`MeasuredAreaSource::ImageDefault`), never the record's `TIME` source — the
+provenance label follows the value it actually used.
 
 **Why the T452.04 claim ids still appear in `OriginalComponentLaunch::unknowns`.**
 The T452.04 acceptance tests pin the exact claim set and per-claim row counts of
@@ -283,7 +299,7 @@ this task's owner paths.
 
 ## Test sensitivity (measured, one mutation at a time)
 
-Two mutations were applied to the production file, the `accept_t452_r02_`
+Three mutations were applied to the production file, the `accept_t452_r02_`
 selection re-run, and the file restored byte-identically each time
 (`shasum d2c127e8…`):
 
@@ -291,15 +307,16 @@ selection re-run, and the file restored byte-identically each time
 | --- | --- |
 | the tangler default radius becomes 9.0 m instead of the image's 10.0 | `accept_t452_r02_a_tangler_is_an_area_with_the_image_default_radius`, `accept_t452_r02_retail_the_measured_facts_read_the_original_rows` |
 | `projectiles_per_launch` becomes 2 (one projectile expands) | `accept_t452_r02_a_volley_launches_one_projectile_per_sub_munition`, the retail test |
+| an absent `TIME` is labelled `RecordTime`/`RecordKey { TIME }` instead of the image's 5.0 s default | `accept_t452_r02_a_time_the_record_does_not_state_is_the_image_default` |
 
-The 23 image pins are the second half: a changed VA, a changed constant or a
+The 24 image pins are the second half: a changed VA, a changed constant or a
 moved store fails `accept_t452_r02_the_image_pins_every_measured_site` rather
 than passes. The retail test re-reads the owner's installation through the
 production table reader, so a record that grows a `RADIUS`, loses `LOCK_ON` or
 changes `CLUSTER_SIZE` fails the measured expectations.
 
 The selection was run with `--include-ignored` and `CS_GAME_DIR` /
-`CS_ENGINE_IMAGE` set: 10 tests, 10 passed, 0 failed.
+`CS_ENGINE_IMAGE` set: 11 tests, 11 passed, 0 failed.
 
 ## Evidence
 
