@@ -49,15 +49,48 @@ by the engine dictionary (`ohardpointweight`, `ohardpointcost`) are therefore no
 part of these totals. The per-type weight and cost table, if it exists, is not
 where the purchase code reads.
 
-## Still unmeasured (rule 4), for the follow-up tasks
+## 4. The reader surface (T452-R.03-A, task #2164)
 
-- the per-row stack count issued per slot, the hardpoint weight and cost (not
-  found in 1-3 above; the plane-construction callbacks 2243/2245/2230 are the next
-  place to read);
-- the `AMMO_LIMIT` parser field, its default and its consumer;
-- the `FIRE`/`FLYOUT`/`IMPACT`/`SOUND_NAME` media mapping and the launch sound
-  of records without `SOUND_NAME`;
-- the equipment-rule census over the sixteen records;
-- which `weapons.zrd` short NAME each of `wep_05`..`wep_15` is (a retail read
-  through the production reader, then the reader surface in
-  `crates/cs_content/src/ordnance.rs`).
+`cs_content::ordnance` now carries the map as `ORIGINAL_ROCKET_ID_WEAPON_INDEX`
+(`[5, 6, 7, 8, 9, 15, 13, 12, 10, 11, 14]`, VAs `ORIGINAL_ROCKET_ID_FUNCTION_VA`
+0x4440f0 and `ORIGINAL_ROCKET_ID_JUMP_TABLE_VA` 0x444148, provenance `static`),
+`original_rocket_weapon_record(id)` and `read_original_rocket_type_table`, which
+resolves each of `wep_05`..`wep_15` through the production `weapons.zrd` reader.
+Retail result: all eleven records exist and each declares a non-empty `NAME`.
+The classified records no rocket id reaches (spawn-only for the player's
+selection) are exactly `wep_04`, `wep_24`, `wep_25`, `wep_26`, `wep_27`. The
+ignored image test re-measures the mapper's head bytes and every jump target.
+The rows are also in `data/owner-static/engine-facts.toml` (`[[rocket_id_fact]]`).
+
+## 5. Where the per-slot stack count comes from (static, partial)
+
+The loadout binder (`0x443de0`) fills two engine arrays, four gun weapon indices
+at `0x62ae28` and eight rocket weapon indices at `0x62ae38` (the eight rocket
+slots), plus four flag bytes at `0x62ae58`; `0x4b24d0` then installs every slot
+through `0x4b2550(entity, slot, weapon index, -1, flag)`. For a slot with an
+index, `0x4b2550` takes the slot's count from `0x4bad90(index)`: it formats
+`wep_%02d` (format string at `0x62b394`), looks the record up by name in the
+global record list (`0x5abfd0`, list `0xa1d78c`, stride 0x214) and returns the
+dword at `(record + 0x210) + 0xc`. Only for the four **gun** slots without the
+flag byte is that count scaled by 0.5 (`0x6032e0`) and rounded; the **rocket**
+slots (slot - 4, entity rows from `+0x544`, stride 0x18) store the unscaled
+count at row `+0xc` and again at `+0x10`. So:
+
+- there is **no per-type stack-count table, hardpoint weight or cost table** in
+  the plane-record or loadout path: a rocket slot's count is a field of the
+  `wep_` record's runtime object, and the same count applies whichever slot or
+  airframe holds the type;
+- the string `ohardpointweight`/`ohardpointcost` does not occur in the engine
+  image at all (searched as bytes), so those dictionary names are script-side;
+  no engine read of such a value was found.
+
+**Not established:** which key of the record fills `(record + 0x210) + 0xc`.
+The record parser reads `AMMO_LIMIT` at `0x5ad91f` into a field it defaults
+earlier (`0x5ad805`, 50.0), but the link from that field to `record + 0x210`
+(set by a per-type callback invoked at `0x5ae0f7`) was not followed, so equating
+the stack count with `AMMO_LIMIT` is a candidate, not a measurement. The
+callbacks 2243/2245/2230 and the 5058/2031/2037 handlers were not read in this
+slice; the purchase side (section 3) already shows no rocket weight or cost is
+summed. Remaining items stay with the follow-ups: `AMMO_LIMIT` default and
+consumer, the `FIRE`/`FLYOUT`/`IMPACT`/`SOUND_NAME` media mapping, the
+equipment-rule census.

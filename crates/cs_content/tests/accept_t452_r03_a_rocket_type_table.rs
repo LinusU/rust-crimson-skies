@@ -95,14 +95,28 @@ fn accept_t452_r03_a_image_pins_the_id_map() {
         ]
     );
     let table = at(&image, ORIGINAL_ROCKET_ID_JUMP_TABLE_VA, 44);
-    for (id, chunk) in table.chunks_exact(4).enumerate() {
-        let target = u64::from(u32::from_le_bytes(chunk.try_into().expect("4 bytes")));
+    for (id, chunk) in table.as_chunks::<4>().0.iter().enumerate() {
+        let target = u64::from(u32::from_le_bytes(*chunk));
         let body = at(&image, target, 6);
         assert_eq!(body[0], 0xb8, "id {id}: mov eax, imm32");
         let index = u32::from_le_bytes(body[1..5].try_into().expect("4 bytes"));
         assert_eq!(body[5], 0xc3, "id {id}: ret");
         assert_eq!(index, ORIGINAL_ROCKET_ID_WEAPON_INDEX[id], "id {id}");
     }
+}
+
+/// The slot count comes from the record named `wep_%02d`: `0x4bad90` formats
+/// the name and returns `(record + 0x210) + 0xc`.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_t452_r03_a_image_pins_the_slot_count_source() {
+    let image = image();
+    let bytes = at(&image, 0x4b_ad90, 0x4a);
+    // push offset "wep_%02d"; ... mov edx,[eax+0x210]; mov eax,[edx+0xc]
+    assert_eq!(&bytes[23..28], [0x68, 0x94, 0xb3, 0x62, 0x00]);
+    assert_eq!(&bytes[56..62], [0x8b, 0x90, 0x10, 0x02, 0x00, 0x00]);
+    assert_eq!(&bytes[62..65], [0x8b, 0x42, 0x0c]);
+    assert_eq!(at(&image, 0x62_b394, 8), b"wep_%02d");
 }
 
 fn game_dir() -> std::path::PathBuf {

@@ -7441,3 +7441,31 @@ name = "firepoint.alternate"
 va = 0x004b6d35
 bytes = "8b86c404000083f0018986c4040000"
 fact = "after the muzzle at the current side was used and the other side's slot is filled and enabled (test at 0x4b6d19), the side toggle is flipped (mov eax,[esi+0x4c4]; xor eax,1; mov [esi+0x4c4],eax at 0x4b6d35): shots alternate between the two firepoints of the fire group"
+
+# Rocket id -> weapon record (task #2164 T452-R.03-A, finding
+# docs/findings/2026-10-28-t452-r03-rocket-type-map-and-purchase-totals.md).
+# Statically read; no original run.
+
+[[rocket_id_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "rocket_id.mapper"
+va = 0x004440f0
+bytes = "8b4c240483c8ff83f90a7748ff248d48414400"
+fact = "the rocket id mapper: mov ecx,[esp+4]; or eax,-1; cmp ecx,10; ja (answers -1 for an id above 10, the none id 11 included); jmp [ecx*4 + 0x444148]"
+
+[[rocket_id_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "rocket_id.jump_table"
+va = 0x00444148
+bytes = "03414400094144000f414400154144001b41440021414400274144002d41440033414400394144003f414400"
+fact = "the eleven dword targets for rocket ids 0..10, each `mov eax, N; ret`: N = 5, 6, 7, 8, 9, 15, 13, 12, 10, 11, 14, so the selectable rocket types are wep_05..wep_15 and wep_04, wep_24..wep_27 are not reachable by a rocket id"
+
+[[rocket_id_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "rocket_id.slot_count_source"
+va = 0x004bad90
+bytes = "8b44240483ec0c83f8ff750633c083c40cc3508d4424046894b3620050ff151002a2008d4c240c51e813120f0083c41085c0750483c40cc38b90100200008b420c83c40cc39090909090"
+fact = "0x4bad90(weapon index) returns the dword at (record + 0x210) + 0xc of the record named by format wep_%02d (format at 0x62b394); 0x4b2550 uses it as the slot count (halved only for gun slots without the flag byte), so rocket slot counts come from the weapon record, not from a per-type table"
