@@ -210,7 +210,7 @@ rather than passes.
 `docs/findings/evidence/T452-REG-SILENT-EXPIRY.json`, validates with
 `python3 tools/validate_evidence.py private/evidence/T452-REG-SILENT-EXPIRY/acceptance.json
 --artifact-root private/evidence/T452-REG-SILENT-EXPIRY` (structurally: its
-`unknowns` carry the five measured values the registration still cannot express
+`unknowns` carry the four measured values the registration still cannot express
 for other ids, derived from the production report, so `--require-pass` is not used
 and no limitation was removed to satisfy a validator). It records `capabilities:
 ["retail", "synthetic"]`, the `accept_t452_silent_` selection — 6 tests, 6 passed,
@@ -222,7 +222,7 @@ lifetime, and two session flights of it (stationary: consumed on tick 124 at
 500 m; launcher at 100 m/s along the launch line: consumed on tick 68 at 500 m),
 each with zero detonations, zero areas and zero damage events. Identifiers,
 numbers and digests only. The report's `candidate_tree` is
-`7763e9953e689856409748b3153440204d44f7a7` (the code-and-test commit's tree);
+`d60f88705cdf095e882784c9c3bdae083df54525` (the code-and-test commit's tree);
 this file and the committed copy are the documentation commit that follows it,
 and nothing the report measured changed.
 
