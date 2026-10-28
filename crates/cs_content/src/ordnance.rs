@@ -5462,6 +5462,439 @@ fn measured_area(
     None
 }
 
+// ------------------- T452.R05: the record-to-slot loadout map and the ----
+// ------------------- SONIC/FLASH incapacitation status -------------------
+//
+// Task #2170 measured two things statically in the owner-supplied decrypted
+// engine image (`$CS_ENGINE_IMAGE`, base `0x400000`):
+//
+// 1. how a `wep_` record reaches a loaded slot, and therefore what slot the
+//    glidebomb `wep_25` occupies; and
+// 2. what the two effect bits `SONIC|FLASH` (`test ch, 0x0a` at `0x4b9d84`) do
+//    to the actor they strike: its kind, its duration and which actors it
+//    reaches.
+//
+// Every statement below cites a virtual address; the `accept_t452_r05_` suite
+// re-reads each byte window from the image, so a stale address fails rather
+// than passes. Nothing here is `verified_original`: no original executable ran,
+// and `retail` is read access to the owner's files.
+
+/// The plane-record loadout binder, `0x443de0`.
+///
+/// **Measured, `static`** (task T452-R.05): it takes the local plane record
+/// (the `0x198`-byte airframe record the loadout screen edits), walks its four
+/// gun ids at `record + 0x88` through the gun mapper `0x443d70` into
+/// [`ORIGINAL_GUN_SLOT_TABLE_VA`], then walks its eight rocket ids at
+/// `record + 0xa8` through [`ORIGINAL_ROCKET_ID_FUNCTION_VA`] into
+/// [`ORIGINAL_ROCKET_SLOT_TABLE_VA`] (`0x443f08`..`0x443f2c`), and finally
+/// calls [`ORIGINAL_SLOT_INSTALL_FUNCTION_VA`] (`0x443f35`).
+pub const ORIGINAL_LOADOUT_BINDER_VA: u64 = 0x44_3de0;
+
+/// The preset loadout binder, `0x444180` (task T452-R.05).
+///
+/// **Measured, `static`**: the second path that fills the same slot arrays,
+/// from the preset's four gun ids at `0x643058`, its four flag words at
+/// `0x643068` and its eight rocket ids at `0x643078`. Every rocket id goes
+/// through the same [`ORIGINAL_ROCKET_ID_FUNCTION_VA`]
+/// (`0x444269`..`0x444284`), so this path cannot select a record the id map
+/// does not name either.
+pub const ORIGINAL_LOADOUT_PRESET_BINDER_VA: u64 = 0x44_4180;
+
+/// The four gun slots of the engine's loadout table, `0x62ae28`.
+///
+/// **Measured, `static`** (task T452-R.05): entry `i` is the `weapons.zrd`
+/// record index the airframe's gun slot `i` holds, or `-1` for an empty slot.
+pub const ORIGINAL_GUN_SLOT_TABLE_VA: u64 = 0x62_ae28;
+
+/// The eight rocket slots of the engine's loadout table, `0x62ae38`.
+///
+/// **Measured, `static`** (task T452-R.05): entry `j` is the `weapons.zrd`
+/// record index the airframe's rocket slot `j` holds, or `-1` for an empty
+/// slot. The table runs to [`ORIGINAL_SLOT_FLAG_TABLE_VA`], so it holds
+/// exactly [`ORIGINAL_ROCKET_SLOT_COUNT`] dwords.
+pub const ORIGINAL_ROCKET_SLOT_TABLE_VA: u64 = 0x62_ae38;
+
+/// The slot-enable flag bytes, `0x62ae58`: one byte per gun slot (read by the
+/// binder and stored by the installer), followed by the rocket slots'
+/// implicit "enabled" flag the installer passes as `1`.
+pub const ORIGINAL_SLOT_FLAG_TABLE_VA: u64 = 0x62_ae58;
+
+/// How many gun slots the loadout table carries. The binder's first loop ends
+/// at [`ORIGINAL_ROCKET_SLOT_TABLE_VA`] (`0x443ef8`).
+pub const ORIGINAL_GUN_SLOT_COUNT: u32 = 4;
+
+/// How many rocket slots the loadout table carries. The binder's second loop
+/// ends at [`ORIGINAL_SLOT_FLAG_TABLE_VA`] (`0x443f26`).
+pub const ORIGINAL_ROCKET_SLOT_COUNT: u32 = 8;
+
+/// The offset of the four gun ids in the plane record (`0x443e4a`:
+/// `lea ebx, [ecx + 0x88]`).
+pub const ORIGINAL_PLANE_RECORD_GUN_IDS_OFFSET: u32 = 0x88;
+
+/// The offset of the eight rocket ids in the plane record (`0x443f0d`:
+/// `lea edi, [edx + 0xa8]`). Each id is one of the eleven rocket types
+/// [`ORIGINAL_ROCKET_ID_WEAPON_INDEX`] maps, or the "none" id `11`.
+pub const ORIGINAL_PLANE_RECORD_ROCKET_IDS_OFFSET: u32 = 0xa8;
+
+/// The slot installer `0x4b24d0`: installs all twelve slots of the table
+/// through `0x4b2550(entity, slot, weapon_index, -1, flag)`.
+///
+/// **Measured, `static`** (task T452-R.05): the slot index is the table index,
+/// `0..=3` the gun slots and `4..=11` the eight rocket slots (`0x4b250b`:
+/// `cmp esi, 0xc`; `0x4b2571`: `cmp esi, 4` selects the rocket branch).
+pub const ORIGINAL_SLOT_INSTALL_FUNCTION_VA: u64 = 0x4b_24d0;
+
+/// The one-slot script writer `0x43e553`, inside the command handler that also
+/// answers the engine's revive command.
+///
+/// **Measured, `static`** (task T452-R.05): the two-argument form stores its
+/// second argument, a raw `weapons.zrd` record index, at
+/// `slot_table[first_argument]` and then calls the installer. The handler's
+/// command name is the five-byte compare at `0x43e530`; its argument reader is
+/// `0x5b7980`, which applies no range check, so this is the one writer that can
+/// name a record index the rocket id map does not produce. It installs a record
+/// *at a slot the mission names*; it is not a slot assignment by any airframe.
+pub const ORIGINAL_SCRIPT_AMMO_SLOT_WRITE_VA: u64 = 0x43_e553;
+
+/// The all-rocket-slot script writer `0x43e56a`, the one-argument form of the
+/// same command: `mov ecx, 8; mov edi, 0x62ae38; rep stosd` fills all eight
+/// rocket slots with the raw record index.
+pub const ORIGINAL_SCRIPT_AMMO_ROCKET_FILL_VA: u64 = 0x43_e56a;
+
+/// The loadout screen's rocket-type count: eleven ids (`0`..`=10`), the
+/// [`ORIGINAL_ROCKET_ID_WEAPON_INDEX`] table's length.
+pub const ORIGINAL_ROCKET_TYPE_COUNT: u32 = 11;
+
+/// Claim kept when a record's slot is measured but the record can still be
+/// installed by a mission script: `t452_r05.limit.script_ammo_use`.
+///
+/// The loadout map is measured and answers "no slot"; what a *mission* does
+/// with the two script writers above is script content, not record content, and
+/// no script was read for this task (follow-up task `T452-R05-AMMO-SCRIPT`,
+/// #2173).
+pub const T452_R05_SCRIPT_AMMO_USE: &str = "t452_r05.limit.script_ammo_use";
+
+/// The `cs_sim` status vocabulary's measured gap: the effect the two bits apply
+/// is pilot incapacitation (mode `4`, control words zeroed until a clock
+/// timestamp for every actor but the player; a screen/audio exposure for the
+/// player), and none of `StatusEffectKind`'s `Damage`/`Choke`/`Stall`/`Marker`
+/// variants expresses it.
+///
+/// The missing runtime variant and its application path are follow-up task
+/// `T452-R05-STATUS-KIND` (#2172). No variant is forced here.
+pub const T452_R05_STATUS_KIND_FOLLOW_UP: &str = "T452-R05-STATUS-KIND";
+
+/// The claim kept for the measured effect's missing runtime variant:
+/// `t452_r02.limit.status_incapacitation` (task T452-R.02's id).
+pub const T452_R05_STATUS_INCAPACITATION: &str = T452_R02_STATUS_INCAPACITATION;
+
+/// How a classified record reaches a loaded slot, measured (task T452-R.05).
+///
+/// A plane record does **not** name a record directly: each of its eight rocket
+/// slots holds a rocket *type id*, and
+/// [`ORIGINAL_ROCKET_ID_FUNCTION_VA`] turns that id into a `weapons.zrd` record
+/// index. `wep_05`..`wep_15` are selectable that way; the other classified
+/// records are not selectable by any airframe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginalSlotReach {
+    /// A plane record's rocket slot can hold the record: any of `slots` slots,
+    /// on any airframe, by holding one of `rocket_ids`.
+    RocketSlot {
+        /// The rocket-slot count the loadout table carries.
+        slots: u32,
+        /// The rocket type ids that select this record, in id order.
+        rocket_ids: Vec<u32>,
+    },
+    /// No plane record's slot selects the record. `script_index_writer` says
+    /// whether the mission-script writers above can still install it by naming
+    /// its raw index — true for every record that exists, which is exactly why
+    /// [`T452_R05_SCRIPT_AMMO_USE`] stays a claim.
+    NoRocketSlot {
+        /// Whether the measured script writers can install the record by index.
+        script_index_writer: bool,
+    },
+}
+
+/// One classified record's measured slot reach (task T452-R.05).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalSlotMeasurement {
+    /// The record name (`wep_25`).
+    pub record: String,
+    /// The `weapons.zrd` record index the name carries (`wep_25` -> `25`), or
+    /// `None` when the name carries no number.
+    pub weapon_index: Option<u32>,
+    /// How the loadout map reaches the record.
+    pub reach: OriginalSlotReach,
+    /// The claim ids this measurement resolves for the row.
+    pub resolved: Vec<&'static str>,
+    /// Values the measurement does not resolve, named.
+    pub claims: Vec<OriginalComponentUnknown>,
+    /// The binder window the reach was measured at.
+    pub pin: StaticProvenance,
+}
+
+impl OriginalSlotMeasurement {
+    /// Whether this measurement resolves `claim`.
+    #[must_use]
+    pub fn resolves_claim(&self, claim: &str) -> bool {
+        self.resolved.contains(&claim)
+    }
+
+    /// Whether this measurement names `claim` as unresolved.
+    #[must_use]
+    pub fn names_claim(&self, claim: &str) -> bool {
+        self.claims.iter().any(|unknown| unknown.claim == claim)
+    }
+}
+
+/// The `weapons.zrd` record index a `wep_` record name carries.
+///
+/// `wep_25` -> `Some(25)`; a name outside the `wep_<number>` shape -> `None`.
+#[must_use]
+pub fn original_weapon_record_index(record: &str) -> Option<u32> {
+    record.strip_prefix("wep_")?.parse().ok()
+}
+
+/// The rocket type ids that select record `weapon_index`, in id order.
+///
+/// Measured from [`ORIGINAL_ROCKET_ID_WEAPON_INDEX`]: an empty answer means no
+/// plane-record rocket slot can hold the record.
+#[must_use]
+pub fn original_rocket_ids_for_weapon_index(weapon_index: u32) -> Vec<u32> {
+    ORIGINAL_ROCKET_ID_WEAPON_INDEX
+        .iter()
+        .enumerate()
+        .filter(|(_, index)| **index == weapon_index)
+        .map(|(id, _)| u32::try_from(id).unwrap_or(u32::MAX))
+        .collect()
+}
+
+/// Measures one classified component row's slot reach (task T452-R.05).
+///
+/// The row's own mount is left exactly as T452.04 recorded it: this layer is
+/// the measurement that resolves the claim, and the T452.04 row keeps its
+/// pre-existing entry until the runtime-registration task consumes this layer
+/// (the same split T452-R.02 used). For a record the loadout map cannot select,
+/// the mount claim `t452_04.limit.rocket_flag_missing` is resolved here and the
+/// script question is named separately.
+#[must_use]
+pub fn measure_loadout_slot(row: &OriginalComponentLaunch) -> OriginalSlotMeasurement {
+    let weapon_index = original_weapon_record_index(&row.record);
+    let rocket_ids = weapon_index.map_or_else(Vec::new, original_rocket_ids_for_weapon_index);
+    let mut resolved = Vec::new();
+    let mut claims = Vec::new();
+    let reach = if rocket_ids.is_empty() {
+        if matches!(row.mount, OriginalMountDeclaration::Unknown { .. }) {
+            resolved.push(T452_04_MOUNT);
+        }
+        claims.push(OriginalComponentUnknown::new(
+            T452_R05_SCRIPT_AMMO_USE,
+            "no airframe's rocket slot can hold this record (no rocket type id selects \
+             its index), but the mission-script command at 0x43e553/0x43e56a stores a raw \
+             record index into the slot table with no range check, so a mission could \
+             install it at a slot it names; whether any retail mission does is script \
+             content and was not read (follow-up task T452-R05-AMMO-SCRIPT)",
+        ));
+        OriginalSlotReach::NoRocketSlot {
+            script_index_writer: true,
+        }
+    } else {
+        OriginalSlotReach::RocketSlot {
+            slots: ORIGINAL_ROCKET_SLOT_COUNT,
+            rocket_ids,
+        }
+    };
+    OriginalSlotMeasurement {
+        record: row.record.clone(),
+        weapon_index,
+        reach,
+        resolved,
+        claims,
+        pin: StaticProvenance::new(0x0044_3f13, 10),
+    }
+}
+
+/// Measures every classified row's slot reach, in table order.
+#[must_use]
+pub fn measure_loadout_slots(table: &OriginalComponentTable) -> Vec<OriginalSlotMeasurement> {
+    table.rows.iter().map(measure_loadout_slot).collect()
+}
+
+/// What the two effect bits do to the actor they strike, as the image's code
+/// shows it (task T452-R.05).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeasuredStatusKind {
+    /// The struck actor loses control of its aircraft: an AI/flight actor's
+    /// mode word becomes `4` and its control words are zeroed for a computed
+    /// duration; the player gets the exposure's screen and sound effect
+    /// instead. Not damage, not engine-output loss, not a stall, not a marker.
+    PilotIncapacitation,
+}
+
+/// How long the measured status lasts (task T452-R.05).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredStatusDuration {
+    /// The duration ceiling in seconds (`intensity * 5.0`, `0x42e9b1`).
+    pub max_seconds: f64,
+    /// The ratio at or below which the intensity is full (`0.6`, `0x60411c`).
+    pub full_intensity_ratio: f64,
+    /// The ratio at or above which the intensity is zero (`1.0`, `0x6032dc`).
+    pub zero_intensity_ratio: f64,
+    /// Whether the victim's facing further scales the intensity (`FLASH` only,
+    /// `0x42e8ed`..`0x42e966`).
+    pub facing_scaled: bool,
+    /// What the ratio is measured over: the squared distance from the blast to
+    /// the victim over the record's `IMPACT_PROXIMITY` squared (parsed into
+    /// `record + 0x3c`/`+0x40` at `0x5add6a`, squared again at the call site
+    /// `0x4ba590` and divided at `0x42e862`).
+    pub ratio_denominator: &'static str,
+    /// The formula window.
+    pub pin: StaticProvenance,
+}
+
+/// What the measured status does to the player actor (task T452-R.05).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredPlayerExposure {
+    /// The intensity drives the screen effect (`0x42e9d0`, `0x4ba61d`).
+    pub screen_effect: bool,
+    /// A sound name is resolved for the effect (`0x4ba603`; `SONIC` and
+    /// `FLASH` name different sounds, `0x62b1d0`/`0x62b1dc`).
+    pub sound: bool,
+    /// The player's controls are **not** zeroed: the branch returns to the
+    /// common tail after the screen-effect call (`0x4ba625`).
+    pub control_loss: bool,
+}
+
+/// What the measured status does to every other struck actor (task
+/// T452-R.05).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredActorIncapacitation {
+    /// The mode word the path stores at `+0x358` (`0x420127`).
+    pub mode: u32,
+    /// How many control words the path zeroes (`+0x100`, `+0x108`, `+0x10c`,
+    /// `+0x114`, `+0x11c`, `+0x120`, `0x42015a`..`0x420185`).
+    pub control_words_zeroed: u32,
+    /// The end of the effect: the clock (`0x71c470`) reaching `clock +
+    /// duration` at `+0xc0` clears mode `4` (`0x489acd`..`0x489ae9`).
+    pub ends_at: &'static str,
+    /// The gate window (`0x4200ea`..) and the store window.
+    pub gate_pin: StaticProvenance,
+    pub store_pin: StaticProvenance,
+}
+
+/// Which actors the measured status reaches, and through which gate (task
+/// T452-R.05).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredStatusVictims {
+    /// The player actor.
+    pub player: MeasuredPlayerExposure,
+    /// Every other actor.
+    pub other_actor: MeasuredActorIncapacitation,
+    /// The gate an "other actor" victim must pass: not the player
+    /// (`0x71c298`), `+0x91d == 0`, `+0xf8 == 0`, and `+0x67c` in `{0, 4}`.
+    pub gate: &'static str,
+}
+
+/// One `SONIC`/`FLASH` effect, measured (task T452-R.05).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalStatusMeasurement {
+    /// The record name.
+    pub record: String,
+    /// The effect key this row measures (`SONIC` or `FLASH`).
+    pub key: &'static str,
+    /// What the effect does to the struck actor.
+    pub kind: MeasuredStatusKind,
+    /// How long it lasts.
+    pub duration: MeasuredStatusDuration,
+    /// Who it reaches and what it does to each.
+    pub victims: MeasuredStatusVictims,
+    /// The shot is consumed by the exposure: both result floats are zeroed
+    /// (`0x4ba632`).
+    pub shot_consumed: bool,
+    /// The runtime status kind when one is measured to fit. `None` here: no
+    /// `StatusEffectKind` variant expresses pilot incapacitation
+    /// ([`T452_R05_STATUS_KIND_FOLLOW_UP`]).
+    pub runtime_kind: Option<DeclaredStatusEffectKind>,
+    /// The claim kept for the missing runtime variant.
+    pub claim: Option<&'static str>,
+    /// The follow-up that adds the variant, when the runtime cannot express it.
+    pub follow_up_task: Option<&'static str>,
+    /// The T452.04 claim ids this measurement resolves for the row.
+    pub resolved: Vec<&'static str>,
+    /// The per-hit test window (`test ch, 0x0a`).
+    pub pin: StaticProvenance,
+}
+
+impl OriginalStatusMeasurement {
+    /// Whether this measurement resolves `claim`.
+    #[must_use]
+    pub fn resolves_claim(&self, claim: &str) -> bool {
+        self.resolved.contains(&claim)
+    }
+
+    /// Whether this measurement names `claim` as unresolved.
+    #[must_use]
+    pub fn names_claim(&self, claim: &str) -> bool {
+        self.claim == Some(claim)
+    }
+}
+
+/// Measures every `SONIC`/`FLASH` effect a classified row declares (task
+/// T452-R.05).
+///
+/// One row per declared bit, in the record's own key order. A record that
+/// declares neither gets an empty answer. The duration claim
+/// `t452_04.limit.status_effect_duration` is resolved (the formula is
+/// measured); the kind claim `t452_r02.limit.status_incapacitation` is kept
+/// with the follow-up that will add the runtime variant.
+#[must_use]
+pub fn measure_status_effects(row: &OriginalComponentLaunch) -> Vec<OriginalStatusMeasurement> {
+    row.statuses
+        .iter()
+        .filter(|status| matches!(status.key, "SONIC" | "FLASH"))
+        .map(|status| {
+            let flash = status.key == "FLASH";
+            OriginalStatusMeasurement {
+                record: row.record.clone(),
+                key: if flash { "FLASH" } else { "SONIC" },
+                kind: MeasuredStatusKind::PilotIncapacitation,
+                duration: MeasuredStatusDuration {
+                    max_seconds: 5.0,
+                    full_intensity_ratio: 0.6,
+                    zero_intensity_ratio: 1.0,
+                    facing_scaled: flash,
+                    ratio_denominator: "the squared distance from the detonation to the \
+                                        victim over the record's IMPACT_PROXIMITY squared",
+                    pin: StaticProvenance::new(0x0042_e85b, 10),
+                },
+                victims: MeasuredStatusVictims {
+                    player: MeasuredPlayerExposure {
+                        screen_effect: true,
+                        sound: true,
+                        control_loss: false,
+                    },
+                    other_actor: MeasuredActorIncapacitation {
+                        mode: 4,
+                        control_words_zeroed: 6,
+                        ends_at: "the shared clock (0x71c470) reaching the stored \
+                                  clock + duration at the victim's +0xc0 clears mode 4",
+                        gate_pin: StaticProvenance::new(0x0042_00ea, 24),
+                        store_pin: StaticProvenance::new(0x0042_0154, 54),
+                    },
+                    gate: "not the player, victim +0x91d == 0, victim +0xf8 == 0, \
+                           victim +0x67c in {0, 4}",
+                },
+                shot_consumed: true,
+                runtime_kind: None,
+                claim: Some(T452_R05_STATUS_INCAPACITATION),
+                follow_up_task: Some(T452_R05_STATUS_KIND_FOLLOW_UP),
+                resolved: vec![T452_04_STATUS_DURATION],
+                pin: StaticProvenance::new(0x004b_9d84, 16),
+            }
+        })
+        .collect()
+}
+
 // ------------------- the measured effect-class media declarations (T452-R.03-C) ----
 
 /// The virtual address of the engine's shared effect-block reader.

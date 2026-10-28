@@ -8038,3 +8038,190 @@ name = "flight.age_step"
 va = 0x005b0863
 bytes = "d90544d79a00d88668060000d99e68060000"
 fact = "the age (node +0x668) grows by the frame dt 0x9ad744 each step"
+# The record-to-slot loadout map and the SONIC/FLASH incapacitation status
+# (task #2170 T452-R.05, finding
+# docs/findings/2026-10-28-t452-r05-slot-map-and-incapacitation.md).
+# Statically read; no original run. A plane record's eight rocket slots hold a
+# rocket type id 0..11, never a record index; the id mapper turns the id into
+# the record index, so no slot can select a record the mapper does not name.
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.binder_rocket_array"
+va = 0x00443f08
+bytes = "be38ae6200"
+fact = "the plane-record loadout binder's second loop targets the eight rocket slots at 0x62ae38"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.binder_rocket_ids"
+va = 0x00443f0d
+bytes = "8dbaa8000000"
+fact = "the binder reads the plane record's rocket ids at record + 0xa8 (one dword per slot); the four gun ids are at +0x88 (0x443e4a)"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.binder_store"
+va = 0x00443f13
+bytes = "8b0750e8d50100008906"
+fact = "mov eax,[edi]; push eax; call 0x4440f0; mov [esi],eax: each plane-record rocket id becomes the mapper's record index in the slot array, so the id - not a record name - is what a slot holds"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.binder_bound"
+va = 0x00443f26
+bytes = "81fe58ae6200"
+fact = "cmp esi, 0x62ae58: the loop covers exactly the eight dwords 0x62ae38..0x62ae58 (ORIGINAL_ROCKET_SLOT_COUNT = 8)"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.id_range"
+va = 0x004440f4
+bytes = "83c8ff83f90a7748"
+fact = "the id mapper answers -1 (no record) for any id above 10, the none id 11 included; ids 0..10 answer record indices 5..15 only (ORIGINAL_ROCKET_ID_WEAPON_INDEX), so weapon index 25 can never come out of a slot"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.preset_ids"
+va = 0x00444269
+bytes = "8b967830640052e87bfeffff"
+fact = "the preset binder (0x444180) reads its eight rocket ids from the global preset array 0x643078 and maps each through the same 0x4440f0 into 0x62ae38 — the second loadout path cannot select a different record set either"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.install_slot_count"
+va = 0x004b250b
+bytes = "83fe0c7d24"
+fact = "the installer 0x4b24d0's slot index runs 0..11 over the one 12-entry table: 0..3 the gun slots, 4..11 the eight rocket slots (cmp esi,4 at 0x4b2571 selects the rocket branch)"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.script_one_slot"
+va = 0x0043e553
+bytes = "8904b528ae6200"
+fact = "the mission command at 0x43e530 stores its second argument (a raw weapons.zrd record index, read through 0x5b7980 with no range check) at slot_table[first argument]; this is the one writer that can load a record index the id map does not produce, at a slot the mission names — not a slot map"
+
+[[ordnance_slot_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "slot.script_all_rocket_slots"
+va = 0x0043e56a
+bytes = "b908000000bf38ae6200f3ab"
+fact = "the same command's one-argument form fills all eight rocket slots 0x62ae38..0x62ae58 with the raw record index"
+
+# The two effect bits (task #2170 T452-R.05): the per-hit test, the exposure
+# formula, the two victim paths and the recovery site. Continuation of
+# docs/findings/2026-10-19-t1601-status-bit-consumers.md and
+# docs/findings/2026-10-28-t452-r02-ordnance-effects-fuses-and-swarm.md.
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.sonic_flag"
+va = 0x004ba734
+bytes = "85c07406810e00020000"
+fact = "the weapon parser's SONIC key (string 0x62b268) sets flag 0x200 on the weapon's 0x38-byte effect object"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.flash_flag"
+va = 0x004ba74c
+bytes = "85c07406810e00080000"
+fact = "the FLASH key (string 0x62b270) sets flag 0x800 on the same object"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.per_hit_test"
+va = 0x004b9d84
+bytes = "8b88100200008b09f6c50a0f85cf070000"
+fact = "the per-hit routine 0x4b9bc0 loads weapon+0x210's flag word and tests ch&0x0a (SONIC|FLASH together), jumping to the exposure block at 0x4ba564"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.victim_gate"
+va = 0x0042e84a
+bytes = "8a861d09000084c0"
+fact = "the exposure 0x42e840 returns 0 at once for a victim whose +0x91d byte is set"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.ratio"
+va = 0x0042e85b
+bytes = "d94518c6451300d8751c"
+fact = "ratio = arg[0x18] / arg[0x1c]: the per-hit measure over the squared IMPACT_PROXIMITY the caller passes"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.falloff"
+va = 0x0042e87e
+bytes = "d8251c416000d80da8406000d82ddc326000"
+fact = "intensity = 1 - (ratio - 0.6) * 2.5 (constants 0x60411c = 0.6 and 0x6040a8 = 2.5), clamped to 0 at 0x42e996 and to 1 for ratio <= 0.6"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.duration"
+va = 0x0042e9b1
+bytes = "d80dbc366000"
+fact = "the out-duration is intensity * 5.0 s (0x6036bc); the second out-value is the raw 0..1 intensity"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.radius_parse"
+va = 0x005add6a
+bytes = "894b3c8b5004d9420cd9c0d8c9d95b40"
+fact = "IMPACT_PROXIMITY is stored at record +0x3c and its square at +0x40, so the exposure's denominator is the record's own blast radius squared"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.radius_square"
+va = 0x004ba590
+bytes = "d9473c8d552052d9c08b55ecd8c98d4514508b451051"
+fact = "the SONIC/FLASH call site loads weapon+0x3c, squares it (fmul st(1)) and pushes it as the exposure's denominator while the per-hit squared distance is the numerator"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.player_branch"
+va = 0x004ba5bf
+bytes = "3b3598c271007560"
+fact = "the struck actor is compared with the player at 0x71c298: the player takes the screen/audio path at 0x4ba5c7, every other actor the incapacitation call at 0x4ba627"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.actor_gate"
+va = 0x004200ea
+bytes = "3b3598c271000f8495000000389ef80000000f8589000000"
+fact = "0x4200d0's gate: victim not the player, +0x91d == 0 (checked at entry 0x4200da), +0xf8 == 0, and +0x67c in {0,4}"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.actor_mode"
+va = 0x00420127
+bytes = "c7865803000004000000"
+fact = "the struck actor's mode word +0x358 becomes 4; the path then zeroes six control words (+0x100, +0x108, +0x10c, +0x114, +0x11c, +0x120) and stores clock + duration at +0xc0 (0x420154..0x420179)"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.recovery"
+va = 0x00489acd
+bytes = "83be5803000004751dd90570c47100"
+fact = "the recovery site in the actor update: while mode +0x358 is 4 it loads the shared clock 0x71c470 and compares it with the stored timestamp at +0xc0 (0x489adc), clearing mode 4 when the clock has reached it (0x489ae9)"
