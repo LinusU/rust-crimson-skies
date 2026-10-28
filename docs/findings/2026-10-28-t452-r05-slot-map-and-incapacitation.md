@@ -225,7 +225,8 @@ resolved for every SONIC/FLASH row (the formula above).
 Four mutations were applied to `crates/cs_content/src/ordnance.rs` one at a
 time and the `accept_t452_r05_` selection re-run with `--include-ignored`
 (15 tests; the file was restored byte-identically each time — shasum
-`d70838e5ae165f5c988f6515d6590feb32be0bfa810d8250d8992f9a3ac0cbed`):
+`973db6a73322d7ff8b0328e4d1d931f175a71a2b4551d388ba3f155220b2f10c`). All four
+were re-run on the rebased, review-fixed tree with the same counts as tabled.
 
 | mutation | result | caught by |
 | --- | --- | --- |
