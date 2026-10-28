@@ -5588,7 +5588,9 @@ pub const ORIGINAL_ROCKET_TYPE_COUNT: u32 = 11;
 /// The loadout map is measured and answers "no slot"; what a *mission* does
 /// with the two script writers above is script content, not record content, and
 /// no script was read for this task (follow-up task `T452-R05-AMMO-SCRIPT`,
-/// #2173).
+/// #2173). That follow-up has since landed on `main`: its census of
+/// `ZBD/interp.zbd` found no `ammo` command in 98 scripts, so no retail script
+/// installs any of these records by index either.
 pub const T452_R05_SCRIPT_AMMO_USE: &str = "t452_r05.limit.script_ammo_use";
 
 /// The `cs_sim` status vocabulary's measured gap: the effect the two bits apply

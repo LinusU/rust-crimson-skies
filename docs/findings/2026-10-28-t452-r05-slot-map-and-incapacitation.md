@@ -122,6 +122,13 @@ content, and no script was read for this task. It stays a named claim,
 `t452_r05.limit.script_ammo_use`, with follow-up task `T452-R05-AMMO-SCRIPT`
 (#2173).
 
+**That follow-up has since landed and answered it** (its finding is committed on
+`main` as `2026-10-28-t452-r05-ammo-command-census.md`, task #2173): it decodes
+`ZBD/interp.zbd` (98 scripts, 5083 lines) and finds **zero** `ammo` commands, so
+no retail script installs any record index. The claim stays named here because
+*this* task measured records and code, not scripts; the value behind it is "no
+retail script uses the writer", which the census owns and evidences.
+
 ### `wep_25`'s slot: none
 
 `wep_25` is record index 25. No rocket type id maps to index 25, so **no plane
@@ -254,10 +261,11 @@ this task's claim.
 No original-run behavior; `retail` here is read access to original files and
 static analysis of the owner's decrypted image, never evidence that the original
 executable ran. No statement that `wep_25` never appears in the original
-campaign (a mission's `ammo` command can install it by index — #2173 measures
-that), that a SONIC/FLASH hit in the original hit anything at all, or that the
-player's screen effect looks or sounds a particular way (the sound names resolve
-to descriptors; no audio was played, no frame was rendered). What is verified is
-what the image's **code** does at the cited windows and what the records
-**declare**. This awards at most **checked**; no agent review replaces the
-owner's human approval.
+campaign from record content alone — a mission's `ammo` command can install it by
+index, and the landed #2173 census found no retail script issues that command, so
+no retail mission installs any of the five by index either — that a SONIC/FLASH
+hit in the original hit anything at all, or that the player's screen effect looks
+or sounds a particular way (the sound names resolve to descriptors; no audio was
+played, no frame was rendered). What is verified is what the image's **code**
+does at the cited windows and what the records **declare**. This awards at most
+**checked**; no agent review replaces the owner's human approval.
