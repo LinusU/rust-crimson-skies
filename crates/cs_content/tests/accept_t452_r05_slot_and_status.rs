@@ -376,7 +376,7 @@ const SLOT_PINS: [(u64, &[u8], &str); 10] = [
 ];
 
 /// `(virtual address, bytes, what the window carries)` of the exposure.
-const EXPOSURE_PINS: [(u64, &[u8], &str); 18] = [
+const EXPOSURE_PINS: [(u64, &[u8], &str); 19] = [
     (
         0x004b_a726,
         &[
@@ -458,6 +458,11 @@ const EXPOSURE_PINS: [(u64, &[u8], &str); 18] = [
         0x004b_a5cf,
         &[0xf6, 0xc4, 0x02, 0xc7, 0x45, 0xdc, 0x00, 0x00, 0x80, 0x3f],
         "SONIC selects the player-side parameter triple",
+    ),
+    (
+        0x004b_97ac,
+        &[0x50, 0xe8, 0xce, 0xf0, 0x07, 0x00, 0xd9, 0x5d, 0xe8],
+        "the second hit path measures the victim's squared distance and hands it to the per-hit routine",
     ),
     (
         0x0042_00ea,
@@ -720,6 +725,7 @@ fn accept_t452_r05_the_committed_rows_cover_the_measured_sites() {
             "exposure.actor_gate",
             "exposure.actor_mode",
             "exposure.recovery",
+            "exposure.hit_measure",
         ]
     );
     // Spot-check the bytes that carry the two facts the task is about.
@@ -747,7 +753,7 @@ fn accept_t452_r05_the_committed_rows_match_the_engine_image() {
     let rows = committed_rows("ordnance_slot_fact", "slot.");
     assert_eq!(rows.len(), 9);
     let exposure = committed_rows("exposure_fact", "exposure.");
-    assert_eq!(exposure.len(), 13);
+    assert_eq!(exposure.len(), 14);
     for (name, va, bytes) in rows.into_iter().chain(exposure) {
         assert_eq!(
             at(&image, va, bytes.len()),

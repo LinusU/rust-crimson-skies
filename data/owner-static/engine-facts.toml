@@ -8225,3 +8225,11 @@ name = "exposure.recovery"
 va = 0x00489acd
 bytes = "83be5803000004751dd90570c47100"
 fact = "the recovery site in the actor update: while mode +0x358 is 4 it loads the shared clock 0x71c470 and compares it with the stored timestamp at +0xc0 (0x489adc), clearing mode 4 when the clock has reached it (0x489ae9)"
+
+[[exposure_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "exposure.hit_measure"
+va = 0x004b97ac
+bytes = "50e8cef00700d95de8"
+fact = "the second hit path (0x4b9770) measures the victim's squared distance with 0x538880 and keeps it in [ebp-0x18], the value it later passes to the per-hit routine as the exposure's numerator; the tangler tick 0x4b95db..0x4b9606 does the same, so the ratio is (distance / IMPACT_PROXIMITY)^2"

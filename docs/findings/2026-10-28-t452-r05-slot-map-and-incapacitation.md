@@ -140,14 +140,15 @@ task (#2156) to consume.
 | duration | `0x42e9b1` | out-duration = `intensity * 5.0` s (`0x6036bc`); the second out-value is the raw `0..1` intensity |
 | consumption | `0x4ba632` | the shot is consumed: both result floats are zeroed |
 
-**The ratio is measured over the record's own blast radius.** The caller loads
-`weapon + 0x3c`, squares it (`0x4ba590`: `fld [edi+0x3c]; fmul st(1)`), and
-passes it as the denominator while the per-hit measure is the numerator
+**The ratio is measured over the record's own blast radius, and the numerator is
+a squared distance.** The caller loads `weapon + 0x3c`, squares it (`0x4ba590`:
+`fld [edi+0x3c]; fmul st(1)`), and passes it as the denominator
 (`0x4ba5a6`). `+0x3c` is `IMPACT_PROXIMITY`, parsed at `0x5add6a` with its square
-at `+0x40`, and the per-hit measure is a **squared distance**: the tangler tick
-computes it with `0x538880` (sum of squared component differences), compares it
-with the field's `RADIUS²`, and passes it to the per-hit routine as the same
-argument slot. So the ratio is `(d / radius)²`: full intensity out to
+at `+0x40`. The numerator is the per-hit measure two callers build with
+`0x538880` (the sum of squared component differences): the tangler tick compares
+it with the field's `RADIUS²` and passes it on (`0x4b95db`..`0x4b9606`), and the
+second hit path `0x4b9770` stores it in `[ebp-0x18]` and hands it to the per-hit
+routine (`0x4b97ac`). So the ratio is `(d / radius)²`: full intensity out to
 `d ≈ 0.775·radius`, falling to zero at `d = radius`. For the three records that
 declare an effect bit: `wep_08` 35 m, `wep_09` 450 m, `wep_15` 500 m.
 
@@ -211,7 +212,7 @@ time and the `accept_t452_r05_` selection re-run with `--include-ignored`
 | the exposure's facing scale is set for both bits | 4 failed, 9 passed | `accept_t452_r05_flash_adds_the_facing_scale_and_sonic_does_not`, `accept_t452_r05_sonic_and_flash_are_a_pilot_incapacitation`, `accept_t452_r05_both_bits_measured_are_the_same_incapacitation`, the retail test |
 | the exposure's `runtime_kind` becomes `Some(Marker)` and the claim is dropped | 3 failed, 10 passed | `accept_t452_r05_sonic_and_flash_are_a_pilot_incapacitation`, `accept_t452_r05_both_bits_measured_are_the_same_incapacitation`, the retail test |
 
-The twenty-eight image pins are the second half: a changed VA, a changed
+The twenty-nine image pins are the second half: a changed VA, a changed
 constant or a moved store fails `accept_t452_r05_the_image_pins_the_loadout_map`
 or `…_the_image_pins_the_exposure` rather than passing, and
 `accept_t452_r05_the_committed_rows_match_the_engine_image` re-reads every
