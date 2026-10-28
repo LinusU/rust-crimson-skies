@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T452-R.03-A",
+ "candidate_tree": "4aa71e9c5d4db129cb6eae75f20f3276ee3364d6",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-28T00:34:16Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t452_r03_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 6, "executed": 6, "passed": 6, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t452_r03_a_none_id_and_beyond_select_no_record", "status": "pass", "evidence": ["cargo-test.log", "component-table.json"]}, {"id": "accept_t452_r03_a_image_pins_the_slot_count_source", "status": "pass", "evidence": ["cargo-test.log", "component-table.json"]}, {"id": "accept_t452_r03_a_image_pins_the_id_map", "status": "pass", "evidence": ["cargo-test.log", "component-table.json"]}, {"id": "accept_t452_r03_a_a_record_the_member_lacks_is_named", "status": "pass", "evidence": ["cargo-test.log", "component-table.json"]}, {"id": "accept_t452_r03_a_ids_resolve_to_the_measured_records", "status": "pass", "evidence": ["cargo-test.log", "component-table.json"]}, {"id": "accept_t452_r03_a_retail_every_selectable_type_resolves_to_a_named_record", "status": "pass", "evidence": ["cargo-test.log", "component-table.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "4d04985de324906fce733a23c437306f54a35485b9f50a0efe1836ac4f4599e8", "kind": "log"}, {"path": "rocket-type-table.json", "sha256": "d106955ce26915a8ffcba04887a545c8d12a2eac0338092e0e802578dd571dea", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1 (implementer; no independent review yet)", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR) and the engine image (CS_ENGINE_IMAGE); the report is derived from the recorded log plus a second production pass recorded in rocket-type-table.json. MEASURED (ids, record names, addresses and counts only; provenance static, never verified_original): the engine's rocket id mapper (0x4440f0, jump table 0x444148) sends rocket ids 0..10 to weapon records wep_05, wep_06, wep_07, wep_08, wep_09, wep_15, wep_13, wep_12, wep_10, wep_11, wep_14 and answers none for any other id; through cs_content::ordnance::read_original_rocket_type_table each of the eleven records exists in weapons.zrd and declares a NAME; the classified records no rocket id reaches are wep_04, wep_24, wep_25, wep_26, wep_27. The slot installer 0x4b2550 takes a slot's count from 0x4bad90, the dword at (record + 0x210) + 0xc of the wep_%02d record, with no per-type stack, hardpoint weight or cost table in the plane-record or loadout path. NOT CLAIMED: any original-run behavior (retail is read access, no agent ran the original); which record key fills (record + 0x210) + 0xc (AMMO_LIMIT is only a candidate), the hardpoint weight and cost (no engine read found; the ohardpointweight/ohardpointcost names are absent from the image), the callbacks 2243/2245/2230 and handlers 5058/2031/2037, the media mapping and the equipment-rule census, which stay with the parent task T452-R.03. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
