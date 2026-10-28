@@ -677,8 +677,8 @@ fn accept_t452_retail_the_projectile_component_type_is_still_the_runtime_one() {
         );
         assert!(
             registry.get(id).is_none(),
-            "{} must not be registered as a flyable component while its stack, media and \
-             equipment rules are unmeasured",
+            "{} must not be registered as a flyable component before the measured \
+             lowering step (T452-RUNTIME-REGISTER) lands",
             declared.record
         );
     }

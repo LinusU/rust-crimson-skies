@@ -2926,12 +2926,17 @@ pub const T452_FUSE_CLAIM: &str = "t452.limit.fuse";
 /// that measurement.
 pub const T452_LOST_TARGET_CLAIM: &str = "t452.limit.lost_target";
 
-/// Why a catalogued component is not also a registered runtime component: the
-/// record states no stack capacity or unit mass and no media keys, so lowering
-/// it would fabricate both (F28 non-negotiable 1). Its equipment rules are
-/// measured: none of the sixteen declares a requirement or permission key
-/// (`cs_content::ordnance::read_original_equipment_rule_census`, T452-R.03-D),
-/// so the empty rule set is the value, not a gap.
+/// Why a catalogued component is not also a registered runtime component.
+/// T452-R.03 measured what earlier sessions had not: a slot's stack count is
+/// the record's `CLUSTER_SIZE` (T452-R.03-B), the media ids resolve through
+/// the measured `FIRE`/`FLYOUT`/`IMPACT`/`DESTROY_ANIMATION` blocks
+/// (T452-R.03-C), and none of the sixteen declares a requirement or
+/// permission key so the equipment rule set is measured empty (T452-R.03-D).
+/// Mass is measured too, as an absence: the purchase surface prices each
+/// enabled rocket box a flat 480 weight / 410 cost and no path reads a
+/// type-dependent value (T452-R.03). What still stands between a catalogued
+/// and a registered component is the lowering step itself, which
+/// T452-RUNTIME-REGISTER (#2156) owns.
 pub const T452_RUNTIME_LOWERING_CLAIM: &str = "t452.limit.runtime_lowering";
 
 /// One hardpoint component the installation declares, catalogued with the
@@ -3332,9 +3337,12 @@ pub fn original_catalogue(
         unknowns.push(named_unknown(
             &row.record,
             T452_RUNTIME_LOWERING_CLAIM,
-            "the record states no stack capacity or unit mass and no media keys, so a \
-             runtime component would fabricate both; the component is catalogued, not \
-             registered (its equipment rules are measured empty, T452-R.03-D)",
+            "the component is catalogued, not registered: its stack count is measured \
+             (CLUSTER_SIZE, T452-R.03-B), its mass is measured as flat per enabled \
+             rocket box with no type-dependent term (480 weight / 410 cost, \
+             T452-R.03), its media ids are measured (T452-R.03-C) and its equipment \
+             rules are measured empty (T452-R.03-D); the lowering step that \
+             registers it is T452-RUNTIME-REGISTER's",
         )?);
         let entry = CataloguedOrdnance::try_new(
             ordnance,
@@ -3462,8 +3470,9 @@ pub fn read_original_catalogue(
 /// installation declares is queryable with its family and behavior, and the
 /// values nobody measured are still named on the entry. Registering a *runtime*
 /// component is a separate, stricter step ([`register`](OrdnanceRegistry::register)),
-/// and no original entry is registered because its stack and media are
-/// unmeasured (its equipment rules are measured empty) ([`T452_RUNTIME_LOWERING_CLAIM`]).
+/// and no original entry is registered yet: the stack, mass, media and
+/// equipment-rule measurements exist (T452-R.03), but the lowering step that
+/// registers them is T452-RUNTIME-REGISTER's ([`T452_RUNTIME_LOWERING_CLAIM`]).
 ///
 /// # Errors
 ///
