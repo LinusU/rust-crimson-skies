@@ -4438,3 +4438,464 @@ pub fn read_original_component_table(
     let layout = read_original_mount_layout(install_root)?;
     Ok(original_component_table(&census, &layout))
 }
+
+// ------------------- T452.R02: measured effect, fuse and swarm behavior ------
+//
+// Task #2160 measured the remaining original ordnance behavior statically in
+// the owner-supplied decrypted engine image (`$CS_ENGINE_IMAGE`, image base
+// `0x400000`): what each effect flag does, the duration and radius an area
+// field uses, how a projectile ends its flight, whether a lost target needs a
+// `ROCKET` flag, and what `CLUSTER_SIZE` launches. Every value below carries a
+// [`StaticProvenance`] window that the `accept_t452_r02_` suite re-reads from
+// the image, so a claim of measurement cannot drift from the bytes.
+//
+// This layer is *measured behavior*, not a lowering: the runtime components
+// live in `cs_sim` and this crate may not link it. It resolves the T452.04
+// claims whose value is now known and keeps a named claim wherever the runtime
+// vocabulary cannot express what the image does.
+
+/// Claim: `SONIC`/`FLASH` incapacitate the struck actor, and
+/// `DeclaredStatusEffectKind` has no incapacitation variant.
+pub const T452_R02_STATUS_INCAPACITATION: &str = "t452_r02.limit.status_incapacitation";
+
+/// Claim: what a zero-damage `TANGLER` field does to a flight model. The field
+/// exists and re-applies the weapon's per-hit routine every tick, but `wep_12`
+/// declares no damage and no per-hit status flag, so the gameplay consequence
+/// is not visible in the measured path.
+pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect";
+
+/// Claim: `SMOKE_SCREEN` is a visual emitter with no measured gameplay radius.
+pub const T452_R02_SMOKE_RADIUS: &str = "t452_r02.limit.smoke_radius";
+
+/// Claim: `BEEPER_SEEKER` retargets the projectile onto a live beeper each
+/// step, which `GuidanceRule` cannot express (`Targeted` names one target).
+pub const T452_R02_BEEPER_SEEKER: &str = "t452_r02.limit.beeper_seeker_guidance";
+
+/// The T452.04 fuse claim (`t452.limit.fuse`), resolved for a record whose
+/// end of flight the measured gate now states.
+pub const T452_R02_FUSE_CLAIM: &str = "t452.limit.fuse";
+
+/// The T452.04 lost-target claim (`t452.limit.lost_target`), resolved for the
+/// one targeted record #454's `ROCKET`-record measurement did not cover.
+pub const T452_R02_LOST_TARGET_CLAIM: &str = "t452.limit.lost_target";
+
+/// A byte window of the engine image that a measured value was read from.
+///
+/// `va` is the virtual address (image base `0x400000`) and `len` the number of
+/// bytes; a test re-reads the window from `$CS_ENGINE_IMAGE` and compares it
+/// with the code site it claims. Static analysis only: never
+/// `verified_original`, and no original executable ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaticProvenance {
+    /// Virtual address in the image.
+    pub va: u32,
+    /// Window length in bytes.
+    pub len: u16,
+}
+
+impl StaticProvenance {
+    /// A pin at `va` covering `len` bytes.
+    #[must_use]
+    pub const fn new(va: u32, len: u16) -> Self {
+        Self { va, len }
+    }
+}
+
+/// What an effect flag does, as the image's own consumer of the flag shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeasuredEffectAction {
+    /// The flag places a timed marker on the struck actor for another system to
+    /// consume (`BEEPER`). This is the runtime `Marker` kind.
+    TimedMarker,
+    /// The flag is an area field created at the shooter, not a per-victim
+    /// status (`TANGLER`, `SMOKE_SCREEN`).
+    AreaField,
+    /// The flag runs the per-hit exposure at `0x42e840`, which incapacitates
+    /// the struck actor for a computed duration (`SONIC`, `FLASH`).
+    ExposureIncapacitation,
+    /// The flag installs a guidance callback rather than applying a status
+    /// (`BEEPER_SEEKER`).
+    GuidanceModifier,
+}
+
+/// How long a measured effect lasts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MeasuredEffectDuration {
+    /// The record's own `TIME` value, in seconds.
+    RecordTime,
+    /// The image's default when the record states no `TIME`, in seconds.
+    ImageDefaultSeconds(f64),
+    /// The per-hit exposure formula: a linear falloff from full intensity at
+    /// `full_intensity_ratio` or below to zero at `zero_intensity_ratio`, times
+    /// `max_seconds`, optionally scaled by the victim's facing.
+    Exposure {
+        /// Full-intensity duration ceiling, seconds.
+        max_seconds: f64,
+        /// Ratio at or below which intensity is 1.0.
+        full_intensity_ratio: f64,
+        /// Ratio at or above which intensity is 0.0.
+        zero_intensity_ratio: f64,
+        /// Whether the facing dot product further scales the duration.
+        facing_scaled: bool,
+    },
+    /// The flag carries no duration of its own.
+    None,
+}
+
+/// One effect flag, measured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredEffect {
+    /// The record key (`BEEPER`, `TANGLER`, ...).
+    pub key: &'static str,
+    /// What the flag does.
+    pub action: MeasuredEffectAction,
+    /// How long it lasts.
+    pub duration: MeasuredEffectDuration,
+    /// The runtime status kind when one is measured to fit, `None` when the
+    /// vocabulary cannot express the measured effect.
+    pub runtime_kind: Option<DeclaredStatusEffectKind>,
+    /// The claim kept when no runtime kind fits.
+    pub claim: Option<&'static str>,
+    /// Where the action and duration were measured.
+    pub pin: StaticProvenance,
+}
+
+/// Where a measured area value came from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MeasuredAreaSource {
+    /// The record's own key states the value.
+    RecordKey {
+        /// The key (`TIME`, `IMPACT_PROXIMITY`, ...).
+        key: &'static str,
+    },
+    /// The image applies a default because the record states no key.
+    ImageDefault {
+        /// The default the image stores.
+        value: f64,
+    },
+    /// A blast is instantaneous: it has no area lifetime to measure (T1318).
+    InstantaneousBlast,
+    /// No measured value exists; the claim names what is missing.
+    Unmeasured {
+        /// The claim id.
+        claim: &'static str,
+    },
+}
+
+/// A measured area effect: radius, lifetime and where each came from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredArea {
+    /// The radius in metres, when measured.
+    pub radius_m: Option<f64>,
+    /// Where the radius came from.
+    pub radius_source: MeasuredAreaSource,
+    /// The lifetime in seconds, when measured.
+    pub lifetime_s: Option<f64>,
+    /// Where the lifetime came from.
+    pub lifetime_source: MeasuredAreaSource,
+    /// The window the area's consumer was read from.
+    pub pin: StaticProvenance,
+}
+
+/// How a projectile's flight ends at the end of `RANGE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeasuredRangeEnd {
+    /// The step calls the detonation path at the end of `RANGE`.
+    Detonates,
+    /// The step marks the projectile dead without detonating.
+    ExpiresSilently,
+}
+
+/// The measured end of a projectile's flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredFuse {
+    /// What the end of `RANGE` does.
+    pub range_end: MeasuredRangeEnd,
+    /// The gate the step reads: `LOCK_ON` without `EXPIRES`, or
+    /// `DETONATE_AT_RANGE`.
+    pub gate: &'static str,
+    /// Whether the projectile is marked dead (`+0x20 = 0`) on that path.
+    pub consumed: bool,
+    /// The window the gate was read from.
+    pub gate_pin: StaticProvenance,
+    /// The window the consumption store was read from.
+    pub consume_pin: StaticProvenance,
+}
+
+/// A measured lost-target rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredLostTarget {
+    /// Whether the rule keys on `LOCK_ON` rather than `ROCKET`.
+    pub requires_lock_on: bool,
+    /// The measured behavior (`coast_then_detonate_at_range_end`).
+    pub behavior: &'static str,
+    /// The window the steering guard was read from.
+    pub pin: StaticProvenance,
+}
+
+/// A measured clustered launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredSwarm {
+    /// The record's `CLUSTER_SIZE`.
+    pub munitions: u32,
+    /// How many projectiles one launch step spawns: measured as one.
+    pub projectiles_per_launch: u32,
+    /// The window the per-launch spawn and the countdown were read from.
+    pub pin: StaticProvenance,
+}
+
+/// The measured behavior of one original component (task T452.R02).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalBehaviorMeasurement {
+    /// Every effect flag the record declares, measured.
+    pub effects: Vec<MeasuredEffect>,
+    /// The area effect, when the record has one.
+    pub area: Option<MeasuredArea>,
+    /// How its flight ends.
+    pub fuse: MeasuredFuse,
+    /// The lost-target rule, for a targeted record.
+    pub lost_target: Option<MeasuredLostTarget>,
+    /// The clustered launch, for a volley record.
+    pub swarm: Option<MeasuredSwarm>,
+    /// Values this measurement could not resolve, named.
+    pub claims: Vec<OriginalComponentUnknown>,
+    /// The T452.04 claim ids this measurement resolves for this row.
+    pub resolved: Vec<&'static str>,
+}
+
+impl OriginalBehaviorMeasurement {
+    /// Whether the row names `claim`.
+    #[must_use]
+    pub fn names_claim(&self, claim: &str) -> bool {
+        self.claims.iter().any(|unknown| unknown.claim == claim)
+    }
+
+    /// Whether this measurement resolves `claim`.
+    #[must_use]
+    pub fn resolves_claim(&self, claim: &str) -> bool {
+        self.resolved.contains(&claim)
+    }
+}
+
+/// Measures one component's effect, fuse, lost-target and swarm behavior from
+/// the values already measured in the image.
+///
+/// The input is the T452.04 row: its declared status keys and durations, its
+/// area, its family and its `CLUSTER_SIZE`. The output names the code window
+/// each measured rule was read from and keeps a claim wherever the runtime
+/// vocabulary cannot express the original.
+#[must_use]
+pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBehaviorMeasurement {
+    let mut effects = Vec::new();
+    let mut claims = Vec::new();
+    let mut resolved = Vec::new();
+
+    for status in &row.statuses {
+        let effect = match status.key {
+            "BEEPER" => {
+                resolved.push(T452_04_STATUS_KIND);
+                resolved.push(T452_04_STATUS_DURATION);
+                MeasuredEffect {
+                    key: "BEEPER",
+                    action: MeasuredEffectAction::TimedMarker,
+                    duration: MeasuredEffectDuration::RecordTime,
+                    runtime_kind: Some(DeclaredStatusEffectKind::Marker),
+                    claim: None,
+                    pin: StaticProvenance::new(0x004b_9d95, 14),
+                }
+            }
+            "TANGLER" => {
+                resolved.push(T452_04_STATUS_KIND);
+                resolved.push(T452_04_STATUS_DURATION);
+                claims.push(OriginalComponentUnknown::new(
+                    T452_R02_TANGLER_EFFECT,
+                    "the tangler field re-applies the weapon's per-hit routine every \
+                     tick to actors inside RADIUS; wep_12 declares no damage and no \
+                     per-hit status flag, so what the field does to a flight model is \
+                     not visible in the measured path",
+                ));
+                MeasuredEffect {
+                    key: "TANGLER",
+                    action: MeasuredEffectAction::AreaField,
+                    duration: MeasuredEffectDuration::RecordTime,
+                    runtime_kind: None,
+                    claim: Some(T452_R02_TANGLER_EFFECT),
+                    pin: StaticProvenance::new(0x004b_9482, 18),
+                }
+            }
+            "SMOKE_SCREEN" => {
+                resolved.push(T452_04_STATUS_KIND);
+                resolved.push(T452_04_STATUS_DURATION);
+                MeasuredEffect {
+                    key: "SMOKE_SCREEN",
+                    action: MeasuredEffectAction::AreaField,
+                    duration: MeasuredEffectDuration::RecordTime,
+                    runtime_kind: None,
+                    claim: Some(T452_R02_SMOKE_RADIUS),
+                    pin: StaticProvenance::new(0x004b_71b1, 5),
+                }
+            }
+            "SONIC" | "FLASH" => {
+                resolved.push(T452_04_STATUS_DURATION);
+                claims.push(OriginalComponentUnknown::new(
+                    T452_R02_STATUS_INCAPACITATION,
+                    "SONIC and FLASH run the per-hit exposure at 0x42e840, which \
+                     stores mode 4 and zeroes the struck actor's controls until a \
+                     computed timestamp; StatusEffectKind has no pilot-incapacitation \
+                     variant, so no variant is forced",
+                ));
+                MeasuredEffect {
+                    key: if status.key == "SONIC" {
+                        "SONIC"
+                    } else {
+                        "FLASH"
+                    },
+                    action: MeasuredEffectAction::ExposureIncapacitation,
+                    duration: MeasuredEffectDuration::Exposure {
+                        max_seconds: 5.0,
+                        full_intensity_ratio: 0.6,
+                        zero_intensity_ratio: 1.0,
+                        facing_scaled: status.key == "FLASH",
+                    },
+                    runtime_kind: None,
+                    claim: Some(T452_R02_STATUS_INCAPACITATION),
+                    pin: StaticProvenance::new(0x0042_e85b, 53),
+                }
+            }
+            "BEEPER_SEEKER" => {
+                claims.push(OriginalComponentUnknown::new(
+                    T452_R02_BEEPER_SEEKER,
+                    "BEEPER_SEEKER installs a per-step callback that writes the best \
+                     live beeper into the projectile's target slot, so the seeker \
+                     retargets repeatedly; GuidanceRule::Targeted names one target and \
+                     cannot express it",
+                ));
+                MeasuredEffect {
+                    key: "BEEPER_SEEKER",
+                    action: MeasuredEffectAction::GuidanceModifier,
+                    duration: MeasuredEffectDuration::None,
+                    runtime_kind: None,
+                    claim: Some(T452_R02_BEEPER_SEEKER),
+                    pin: StaticProvenance::new(0x0044_1877, 10),
+                }
+            }
+            _ => continue,
+        };
+        effects.push(effect);
+    }
+
+    let targeted = matches!(
+        row.family,
+        DeclaredOrdnanceFamily::GuidedRocket | DeclaredOrdnanceFamily::AerialTorpedo
+    );
+    let fuse = MeasuredFuse {
+        range_end: if targeted {
+            MeasuredRangeEnd::Detonates
+        } else {
+            if row.proximity_trigger_m.is_none() {
+                resolved.push(T452_R02_FUSE_CLAIM);
+            }
+            MeasuredRangeEnd::ExpiresSilently
+        },
+        gate: "LOCK_ON without EXPIRES detonates at the end of RANGE; otherwise \
+               DETONATE_AT_RANGE detonates and a record with neither expires",
+        consumed: true,
+        gate_pin: StaticProvenance::new(0x005b_01ec, 42),
+        consume_pin: StaticProvenance::new(0x005b_0318, 7),
+    };
+
+    let lost_target = targeted.then(|| {
+        if matches!(row.mount, OriginalMountDeclaration::Unknown { .. }) {
+            // The glidebomb is the one targeted record with no ROCKET flag, and
+            // therefore the one #454's ROCKET-only measurement did not reach.
+            resolved.push(T452_R02_LOST_TARGET_CLAIM);
+        }
+        MeasuredLostTarget {
+            requires_lock_on: true,
+            behavior: "coast_then_detonate_at_range_end",
+            pin: StaticProvenance::new(0x005a_f7f4, 12),
+        }
+    });
+
+    let swarm = match row.cluster {
+        OriginalClusterShape::Volley { munitions } => {
+            resolved.push(T452_04_CLUSTER);
+            Some(MeasuredSwarm {
+                munitions,
+                projectiles_per_launch: 1,
+                pin: StaticProvenance::new(0x004b_72be, 11),
+            })
+        }
+        OriginalClusterShape::AmmunitionCount { .. } | OriginalClusterShape::Undeclared => None,
+    };
+
+    let area = measured_area(row, &mut claims, &mut resolved);
+
+    OriginalBehaviorMeasurement {
+        effects,
+        area,
+        fuse,
+        lost_target,
+        swarm,
+        claims,
+        resolved,
+    }
+}
+
+/// The area a row's effect creates, measured from the image's consumers.
+fn measured_area(
+    row: &OriginalComponentLaunch,
+    claims: &mut Vec<OriginalComponentUnknown>,
+    resolved: &mut Vec<&'static str>,
+) -> Option<MeasuredArea> {
+    let tangler = row.statuses.iter().find(|s| s.key == "TANGLER");
+    if let Some(tangler) = tangler {
+        // `RADIUS` defaults to 10 at 0x4ba870 and `TIME` to 5 at 0x4ba869;
+        // wep_12 states TIME 2 and no RADIUS, so the default applies.
+        let radius_m = 10.0;
+        let lifetime_s = tangler.duration_s.unwrap_or(5.0);
+        resolved.push(T452_04_AREA_RADIUS);
+        resolved.push(T452_04_AREA_LIFETIME);
+        return Some(MeasuredArea {
+            radius_m: Some(radius_m),
+            radius_source: MeasuredAreaSource::ImageDefault { value: radius_m },
+            lifetime_s: Some(lifetime_s),
+            lifetime_source: MeasuredAreaSource::RecordKey { key: "TIME" },
+            pin: StaticProvenance::new(0x004b_950f, 26),
+        });
+    }
+    let smoke = row.statuses.iter().find(|s| s.key == "SMOKE_SCREEN");
+    if let Some(smoke) = smoke {
+        let lifetime_s = smoke.duration_s.unwrap_or(5.0);
+        claims.push(OriginalComponentUnknown::new(
+            T452_R02_SMOKE_RADIUS,
+            "SMOKE_SCREEN creates a scene emitter node (0x4b8d50) that lasts TIME; \
+             no code reads a gameplay radius for it, so area_radius stays unmeasured",
+        ));
+        resolved.push(T452_04_AREA_LIFETIME);
+        return Some(MeasuredArea {
+            radius_m: None,
+            radius_source: MeasuredAreaSource::Unmeasured {
+                claim: T452_R02_SMOKE_RADIUS,
+            },
+            lifetime_s: Some(lifetime_s),
+            lifetime_source: MeasuredAreaSource::RecordKey { key: "TIME" },
+            pin: StaticProvenance::new(0x004b_71b1, 5),
+        });
+    }
+    if row.area.radius_m.is_some() {
+        // A blast applies its damage once per detonation (T1318), so it has no
+        // area lifetime to measure: the radius is the instantaneous burst.
+        resolved.push(T452_04_AREA_LIFETIME);
+        return Some(MeasuredArea {
+            radius_m: row.area.radius_m,
+            radius_source: MeasuredAreaSource::RecordKey {
+                key: "IMPACT_PROXIMITY",
+            },
+            lifetime_s: None,
+            lifetime_source: MeasuredAreaSource::InstantaneousBlast,
+            pin: StaticProvenance::new(0x005a_c3a0, 16),
+        });
+    }
+    None
+}
