@@ -745,6 +745,140 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
     }));
 }
 
+/// The retail half of the launch criterion: a component **registered from the
+/// owner's measured catalogue** launches through the production session path
+/// with its measured fields, not with a fixture's shape.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_t452_register_retail_a_registered_measured_component_launches() {
+    let root = game_dir();
+    let table = cs_content::ordnance::read_original_component_table(&root)
+        .expect("the component table reads");
+    let records =
+        cs_content::ordnance::read_original_weapon_records(&root).expect("the weapon records read");
+    let media = cs_content::ordnance::read_original_weapon_media(&root)
+        .expect("the media declarations read");
+    let ammo = cs_content::ordnance::read_original_ammo_declarations(&root)
+        .expect("the ammunition declarations read");
+    let provenance = cs_content::ordnance::read_original_weapons_provenance(
+        &root,
+        cs_app::ordnance::T452_ORIGINAL_WEAPONS_CLAIM,
+    )
+    .expect("the record member's provenance is measured");
+
+    let row = table
+        .rows
+        .iter()
+        .find(|row| row.record == "wep_05")
+        .expect("the installation declares wep_05");
+    let record = records
+        .iter()
+        .find(|record| record.record == "wep_05")
+        .expect("wep_05 has a record");
+    let declared_media = media
+        .iter()
+        .find(|media| media.record == "wep_05")
+        .expect("wep_05 has media declarations");
+    let declared_ammo = ammo
+        .iter()
+        .find(|ammo| ammo.record == "wep_05")
+        .expect("wep_05 has an ammunition declaration");
+    let declared = measured_ordnance_declaration(
+        row,
+        record,
+        declared_media,
+        declared_ammo,
+        &provenance,
+        TICKS_PER_SECOND,
+    )
+    .expect("wep_05's measured values are expressible");
+
+    // The registry is filled by the production registration path, not by this
+    // test: the component the session launches is the registered one.
+    let mut catalogue = OrdnanceRegistry::new();
+    let report = register_measured_ordnance(
+        &table,
+        &records,
+        &media,
+        &ammo,
+        &provenance,
+        &mut catalogue,
+        TICKS_PER_SECOND,
+    );
+    assert!(
+        report.registered_records().contains(&"wep_05"),
+        "{report:?}"
+    );
+    let ordnance = cs_sim::weapons::OrdnanceId::try_new(declared.ordnance().clone())
+        .expect("the weapon namespace");
+    let registered_component = catalogue
+        .get(&ordnance)
+        .expect("the measured registration holds wep_05");
+    let projectile = registered_component
+        .as_projectile()
+        .expect("a guided rocket is a projectile");
+    assert_eq!(projectile.launch().launch_speed_mps(), 1200.0);
+    assert_eq!(projectile.stack().capacity_units(), 4);
+
+    let mut session = OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, catalogue)
+        .expect("a nonzero session opens");
+    let registered = session
+        .register(actor(1), std::slice::from_ref(&declared))
+        .expect("the measured component registers in the session");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(
+        registered[0].mount.as_ref().map(DamageNodeKey::as_str),
+        Some("weapon_mount_05")
+    );
+
+    let mut world = World::new();
+    launcher(&mut world);
+    let mut damage = damage_resolver();
+    let launched = step(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[OrdnanceOrder::Launch(OrdnanceLaunch {
+            id: OrdnanceLaunchId {
+                session: SESSION,
+                tick: Tick(0),
+                producer: PRODUCER,
+                sequence: 0,
+            },
+            shooter: actor(1),
+            ordnance: ordnance.clone(),
+            target: None,
+            engagement: OrdnanceEngagement {
+                damage_target: actor(2),
+                node: key("hull"),
+                status_recipient: cs_sim::weapons::StatusEffectTarget::whole_actor(actor(2)),
+            },
+        })],
+        Tick(0),
+    );
+    assert_eq!(
+        launched.launched.len(),
+        1,
+        "the measured catalogue's component launches"
+    );
+    let live = session
+        .runtime()
+        .iter()
+        .next()
+        .expect("the launched item is live");
+    let speed = live.air_velocity_m_s();
+    let speed = (speed[0] * speed[0] + speed[1] * speed[1] + speed[2] * speed[2]).sqrt();
+    assert!(
+        (speed - 1200.0).abs() < 1.0,
+        "the item leaves the rail at the record's measured VELOCITY, got {speed}"
+    );
+    let stock = session
+        .stack_remaining(&actor(1), &ordnance)
+        .expect("a projectile has a stack");
+    assert_eq!(stock.capacity_units, 4);
+    assert_eq!(stock.remaining_units, 3);
+}
+
 // ------------------------------------------------------------------ harness --
 
 /// The shared damage authority with the target's synthetic airframe graph
