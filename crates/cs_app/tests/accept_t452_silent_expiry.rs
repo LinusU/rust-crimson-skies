@@ -36,7 +36,7 @@ use cs_content::ordnance::{
     OriginalClusterShape, OriginalComponentLaunch, OriginalComponentTable,
     OriginalDamageDeclaration, OriginalEffectBlock, OriginalLifetime, OriginalMountDeclaration,
     OriginalMountLayout, OriginalSlotArray, OriginalStatusEffectDeclaration, OriginalWeaponMedia,
-    OriginalWeaponRecord, T452_R02_SMOKE_STUN_EFFECT, T452_R02_TANGLER_EFFECT,
+    OriginalWeaponRecord, T452_R02_TANGLER_EFFECT,
 };
 use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy, DamageResolver};
 use cs_sim::time::TickRate;
@@ -639,10 +639,11 @@ fn accept_t452_silent_retail_the_measured_smoke_record_is_consumed_at_range() {
     );
 }
 
-/// The catalogue keeps the two claims T452-R.02 left on these records: the
-/// smoke emitter's unmeasured radius and the tangler's flight effect. Nothing
-/// in this stage resolves or removes either, and neither blocks registration
-/// of a record that does not need it.
+/// The measured claims T452-R.02 left on these records are the *other* stages'
+/// to resolve, and this stage touches none of them: the tangler field stays a
+/// blocker for `wep_12` with its own task, and the smoke record registers with
+/// no gameplay area — its emitter is a stun cone, not the runtime's bounded
+/// area, whichever stage expresses that.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
@@ -653,25 +654,6 @@ fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
     let report = read_and_register_measured_ordnance(&root, &mut registry, TICKS_PER_SECOND)
         .expect("the installation's records read");
 
-    let smoke = table
-        .rows
-        .iter()
-        .find(|row| row.record == "wep_13")
-        .expect("the installation declares wep_13");
-    let behaviour = cs_content::ordnance::measure_component_behavior(smoke);
-    assert!(
-        behaviour.names_claim(T452_R02_SMOKE_STUN_EFFECT),
-        "what the smoke emitter does to the actors inside it stays a named claim"
-    );
-    assert!(
-        report
-            .claims_kept
-            .iter()
-            .any(|(record, claims)| record == "wep_13"
-                && claims.iter().any(|c| c == T452_R02_SMOKE_STUN_EFFECT)),
-        "the registration report keeps it too: {:?}",
-        report.claims_kept
-    );
     // The tangler claim stays a blocker for wep_12: its area outlives the item
     // (follow-up T452-REG-TANGLER-EFFECT), which this stage does not address.
     let tangler = table
@@ -682,6 +664,47 @@ fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
     assert!(
         cs_content::ordnance::measure_component_behavior(tangler)
             .names_claim(T452_R02_TANGLER_EFFECT)
+    );
+    assert!(
+        report.blockers().iter().any(|blocker| {
+            blocker.record == "wep_12"
+                && blocker.claim == T452_R02_TANGLER_EFFECT
+                && blocker.resolving_task == "T452-REG-TANGLER-EFFECT"
+        }),
+        "{:?}",
+        report.blockers()
+    );
+
+    // The smoke record registers and opens no area: its emitter is a stun cone
+    // measured elsewhere, not the runtime's bounded area.
+    let component = registry
+        .get(&ordnance_id())
+        .expect("wep_13 registered as a flyable component");
+    assert_eq!(
+        component
+            .as_projectile()
+            .expect("an area-denial engine is a projectile")
+            .area_effect(),
+        None,
+        "the smoke emitter is not a gameplay area on the item"
+    );
+
+    // The claim this stage resolves is on no catalogue row and in no kept-claim
+    // list: it is expressed, not deleted or reassigned.
+    for row in &table.rows {
+        assert!(
+            !cs_content::ordnance::measure_component_behavior(row)
+                .names_claim(T452_SILENT_EXPIRY_BLOCKED),
+            "{} names a resolved claim",
+            row.record
+        );
+    }
+    assert!(
+        report.claims_kept.iter().all(|(_, claims)| claims
+            .iter()
+            .all(|claim| claim != T452_SILENT_EXPIRY_BLOCKED)),
+        "{:?}",
+        report.claims_kept
     );
 }
 
