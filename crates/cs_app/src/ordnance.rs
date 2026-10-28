@@ -333,6 +333,14 @@ fn lower_fuse(declared: &DeclaredFuseRule) -> Result<FuseRule, OrdnanceLowerErro
     })
 }
 
+/// Whether the measured record installs the `BEEPER_SEEKER` callback.
+fn is_marker_seeker(row: &cs_content::ordnance::OriginalComponentLaunch) -> bool {
+    cs_content::ordnance::measure_component_behavior(row)
+        .effects
+        .iter()
+        .any(|effect| effect.action == cs_content::ordnance::MeasuredEffectAction::GuidanceModifier)
+}
+
 /// Lowers a declared guidance rule.
 ///
 /// The lost-target behavior refuses to lower while unknown: F28
@@ -341,6 +349,7 @@ fn lower_fuse(declared: &DeclaredFuseRule) -> Result<FuseRule, OrdnanceLowerErro
 fn lower_guidance(declared: &DeclaredGuidanceRule) -> Result<GuidanceRule, OrdnanceLowerError> {
     Ok(match declared {
         DeclaredGuidanceRule::Unguided => GuidanceRule::Unguided,
+        DeclaredGuidanceRule::MarkerSeeker => GuidanceRule::MarkerSeeker,
         DeclaredGuidanceRule::Targeted { lost_target } => GuidanceRule::Targeted {
             lost_target: lower_lost_target(known_or_refuse("guidance.lost_target", lost_target)?)?,
         },
@@ -1914,6 +1923,7 @@ pub fn step_ordnance_session(
         }
     }
 
+    session.runtime.retarget_marker_seekers(session.session_id);
     if let Some(observation) = step.guidance {
         let guidance = session
             .runtime
@@ -3289,6 +3299,11 @@ pub fn original_catalogue(
         };
         let mut unknowns = catalogue_unknowns(&row.record, &row.unknowns)?;
         let guidance = match family {
+            OrdnanceFamily::GuidedRocket | OrdnanceFamily::AerialTorpedo
+                if is_marker_seeker(row) =>
+            {
+                CataloguedGuidance::MarkerSeeker
+            }
             OrdnanceFamily::GuidedRocket | OrdnanceFamily::AerialTorpedo => {
                 let lost_target = measured_lost_target(&row.record, blasts);
                 if lost_target.is_none() {
@@ -4113,6 +4128,10 @@ pub fn measured_ordnance_declaration(
     // Guidance: measured, including the lost-target rule task T452-R.02 §4
     // measured over every `LOCK_ON` record.
     let guidance = match (targeted, behavior.lost_target) {
+        // `BEEPER_SEEKER` replaces the one-target homing (T452-R.02 §1): the
+        // item re-selects the newest live marker every step and has no
+        // lost-target rule of its own.
+        (true, _) if is_marker_seeker(row) => DeclaredGuidanceRule::MarkerSeeker,
         (true, Some(_)) => DeclaredGuidanceRule::Targeted {
             lost_target: designed_field(
                 T452_MEASURED_BEHAVIOUR_CLAIM,
@@ -4506,11 +4525,6 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
             "the pilot incapacitation this record's SONIC or FLASH effect applies to the \
              actor it strikes",
             cs_content::ordnance::T452_R05_STATUS_KIND_FOLLOW_UP,
-        ),
-        cs_content::ordnance::T452_R02_BEEPER_SEEKER => (
-            "the per-step retargeting this record's BEEPER_SEEKER installs onto the best live \
-             marker",
-            "T452-REG-BEEPER-SEEKER",
         ),
         cs_content::ordnance::T452_R02_TANGLER_EFFECT => (
             "what this record's zero-damage TANGLER field does to a flight model",

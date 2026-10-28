@@ -319,6 +319,10 @@ pub enum DeclaredGuidanceRule {
         /// The declared lost-target behavior.
         lost_target: Resolved<DeclaredLostTargetBehavior>,
     },
+    /// Re-selects its target every step: the newest live marker, or none.
+    /// Losing a target is not terminal, so there is no lost-target behavior
+    /// to declare.
+    MarkerSeeker,
 }
 
 impl fmt::Display for DeclaredGuidanceRule {
@@ -326,6 +330,7 @@ impl fmt::Display for DeclaredGuidanceRule {
         match self {
             Self::Unguided => f.write_str("unguided"),
             Self::Targeted { .. } => f.write_str("targeted"),
+            Self::MarkerSeeker => f.write_str("marker_seeker"),
         }
     }
 }
@@ -1580,7 +1585,7 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
                 DeclaredFuseRule::Timed { ticks } => walk.value("fuse.ticks", ticks),
             }
             match &projectile.guidance {
-                DeclaredGuidanceRule::Unguided => {}
+                DeclaredGuidanceRule::Unguided | DeclaredGuidanceRule::MarkerSeeker => {}
                 DeclaredGuidanceRule::Targeted { lost_target } => {
                     walk.value("guidance.lost_target", lost_target);
                 }
@@ -5102,7 +5107,9 @@ pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect"
 pub const T452_R02_SMOKE_RADIUS: &str = "t452_r02.limit.smoke_radius";
 
 /// Claim: `BEEPER_SEEKER` retargets the projectile onto a live beeper each
-/// step, which `GuidanceRule` cannot express (`Targeted` names one target).
+/// step, which `GuidanceRule::Targeted` cannot express (it names one target).
+/// Resolved by task T452-REG-BEEPER-SEEKER (`GuidanceRule::MarkerSeeker`): no
+/// measured record keeps it any more.
 pub const T452_R02_BEEPER_SEEKER: &str = "t452_r02.limit.beeper_seeker_guidance";
 
 /// The T452.04 fuse claim (`t452.limit.fuse`), resolved for a record whose
@@ -5148,7 +5155,8 @@ pub enum MeasuredEffectAction {
     /// the struck actor for a computed duration (`SONIC`, `FLASH`).
     ExposureIncapacitation,
     /// The flag installs a guidance callback rather than applying a status
-    /// (`BEEPER_SEEKER`).
+    /// (`BEEPER_SEEKER`); the runtime expresses it as
+    /// `GuidanceRule::MarkerSeeker`.
     GuidanceModifier,
 }
 
@@ -5423,23 +5431,14 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                     pin: StaticProvenance::new(0x0042_e85b, 53),
                 }
             }
-            "BEEPER_SEEKER" => {
-                claims.push(OriginalComponentUnknown::new(
-                    T452_R02_BEEPER_SEEKER,
-                    "BEEPER_SEEKER installs a per-step callback that writes the best \
-                     live beeper into the projectile's target slot, so the seeker \
-                     retargets repeatedly; GuidanceRule::Targeted names one target and \
-                     cannot express it",
-                ));
-                MeasuredEffect {
-                    key: "BEEPER_SEEKER",
-                    action: MeasuredEffectAction::GuidanceModifier,
-                    duration: MeasuredEffectDuration::None,
-                    runtime_kind: None,
-                    claim: Some(T452_R02_BEEPER_SEEKER),
-                    pin: StaticProvenance::new(0x0044_1877, 10),
-                }
-            }
+            "BEEPER_SEEKER" => MeasuredEffect {
+                key: "BEEPER_SEEKER",
+                action: MeasuredEffectAction::GuidanceModifier,
+                duration: MeasuredEffectDuration::None,
+                runtime_kind: None,
+                claim: None,
+                pin: StaticProvenance::new(0x0044_1877, 10),
+            },
             _ => continue,
         };
         effects.push(effect);
