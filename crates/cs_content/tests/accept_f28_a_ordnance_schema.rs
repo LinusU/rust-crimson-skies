@@ -315,13 +315,13 @@ fn accept_f28_a_known_values_are_sanity_checked() {
 #[test]
 fn accept_f28_a_declared_media_must_name_the_right_namespaces() {
     let mut projectile = declared_projectile();
-    projectile.media.sound = known(
+    projectile.media.sound = Some(known(
         ContentId::from_source(
             ContentKind::HardpointEquipment,
             "synthetic.fixture_not_a_sound",
         )
         .expect("a valid id"),
-    );
+    ));
     assert!(
         matches!(
             DeclaredOrdnance::try_new(

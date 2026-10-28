@@ -1042,7 +1042,7 @@ impl OrdnanceStatusEffect {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrdnanceMedia {
     visual: ContentId,
-    sound: ContentId,
+    sound: Option<ContentId>,
     particles: Option<ContentId>,
 }
 
@@ -1053,9 +1053,12 @@ impl OrdnanceMedia {
     ///
     /// [`OrdnanceDefinitionError::MediaKindMismatch`] naming the offending
     /// id and the namespace it needed.
+    ///
+    /// `sound` is `None` for a component whose record declares no sound: a
+    /// measured silence, played as nothing and never replaced by a default.
     pub fn try_new(
         visual: ContentId,
-        sound: ContentId,
+        sound: Option<ContentId>,
         particles: Option<ContentId>,
     ) -> Result<Self, OrdnanceDefinitionError> {
         let check =
@@ -1070,7 +1073,9 @@ impl OrdnanceMedia {
                 }
             };
         check(&visual, ContentKind::HardpointEquipment)?;
-        check(&sound, ContentKind::Sound)?;
+        if let Some(sound) = &sound {
+            check(sound, ContentKind::Sound)?;
+        }
         if let Some(particles) = &particles {
             check(particles, ContentKind::HardpointEquipment)?;
         }
@@ -1087,10 +1092,11 @@ impl OrdnanceMedia {
         &self.visual
     }
 
-    /// The sound resource a launch or detonation plays.
+    /// The sound resource a launch or detonation plays, `None` when the
+    /// component declares none and plays nothing.
     #[must_use]
-    pub const fn sound(&self) -> &ContentId {
-        &self.sound
+    pub const fn sound(&self) -> Option<&ContentId> {
+        self.sound.as_ref()
     }
 
     /// The presentation-only particle resource, when the component declares
@@ -6434,7 +6440,10 @@ pub fn synthetic_media() -> OrdnanceMedia {
             SYNTHETIC_ORDNANCE_EFFECT_KEY,
         )
         .expect("valid id"),
-        ContentId::from_source(ContentKind::Sound, SYNTHETIC_ORDNANCE_SOUND_KEY).expect("valid id"),
+        Some(
+            ContentId::from_source(ContentKind::Sound, SYNTHETIC_ORDNANCE_SOUND_KEY)
+                .expect("valid id"),
+        ),
         Some(
             ContentId::from_source(
                 ContentKind::HardpointEquipment,

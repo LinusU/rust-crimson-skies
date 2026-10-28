@@ -284,7 +284,7 @@ fn accept_f28_a_each_unresolved_field_is_refused_by_name() {
         }),
         ("media.sound", {
             let mut projectile = projectile_of(&declared_synthetic_direct());
-            projectile.media.sound = unknown();
+            projectile.media.sound = Some(unknown());
             with_projectile(
                 DeclaredOrdnanceFamily::DirectExplosive,
                 "synthetic.fixture_unmeasured_sound",

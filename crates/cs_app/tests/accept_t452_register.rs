@@ -24,10 +24,9 @@ use bevy::prelude::{ChildOf, Entity, GlobalTransform, Vec3, World};
 use cs_app::ordnance::{
     ORIGINAL_ORDNANCE_UNIT_MASS_KG, OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
-    OriginalRegistrationBlocker, OriginalRegistrationOutcome, OriginalRegistrationReport,
-    T452_INHERITANCE_BLOCKED, T452_MEASURED_BEHAVIOUR_CLAIM, T452_MEDIA_SILENCE_TASK,
-    T452_PER_BOX_WEIGHT_CLAIM, T452_REG_INHERITANCE_TASK, T452_SILENT_EXPIRY_BLOCKED,
-    T452_SILENT_EXPIRY_TASK, T452_SILENT_LAUNCH_BLOCKED, lower_ordnance,
+    OriginalRegistrationOutcome, OriginalRegistrationReport, T452_INHERITANCE_BLOCKED,
+    T452_MEASURED_BEHAVIOUR_CLAIM, T452_PER_BOX_WEIGHT_CLAIM, T452_REG_INHERITANCE_TASK,
+    T452_SILENT_EXPIRY_BLOCKED, T452_SILENT_EXPIRY_TASK, lower_ordnance,
     measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
     step_ordnance_session,
 };
@@ -46,7 +45,7 @@ use cs_sim::time::TickRate;
 use cs_sim::weapons::{AreaEffect, FuseRule, GuidanceRule, LostTargetBehavior, OrdnanceRegistry};
 use cs_types::Tick;
 use cs_types::asset_id::SourceSpan;
-use cs_types::content::{Origin, Provenance};
+use cs_types::content::{ContentId, Origin, Provenance};
 use cs_types::evidence::{ClaimId as EvidenceClaimId, ClaimStatus, ContentHash};
 use cs_types::net::SessionId;
 
@@ -327,7 +326,10 @@ fn accept_t452_register_a_measured_component_registers_with_its_measured_values(
     assert_eq!(projectile.channels().internal, 40.0);
     // T452-R.03-C: the projectile's own `FLYOUT` model and `FIRE` sound.
     assert_eq!(projectile.media().visual().key(), "ap_rocket");
-    assert_eq!(projectile.media().sound().key(), "snd_missile_sm");
+    assert_eq!(
+        projectile.media().sound().map(ContentId::key),
+        Some("snd_missile_sm")
+    );
 
     // The registry accepts what the lowering produced, and refuses a second
     // registration of the same id.
@@ -530,32 +532,56 @@ fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
         assert!(!blocker.affects.is_empty());
         assert!(!blocker.resolving_task.is_empty());
     }
+}
 
-    // A record the runtime can express nowhere: no declared launch sound.
-    let mut silent_row = guided_row();
-    silent_row.record = "wep_26".to_owned();
-    silent_row.statuses = Vec::new();
+/// A record with no declared `FIRE` `SOUND` is a measured silence: it registers,
+/// its media names no sound (so the launch effect, copied from it, has none), while a record
+/// that declares one still names it.
+#[test]
+fn accept_t452_media_silence_a_record_without_fire_sound_registers_and_plays_nothing() {
     let mut silent_media = guided_media();
-    silent_media.record = "wep_26".to_owned();
     silent_media.fire = None;
-    let mut silent_record = guided_record();
-    silent_record.record = "wep_26".to_owned();
-    let mut silent_ammo = guided_ammo();
-    silent_ammo.record = "wep_26".to_owned();
-    let error = measured_ordnance_declaration(
-        &silent_row,
-        &silent_record,
+    let declared = measured_ordnance_declaration(
+        &guided_row(),
+        &guided_record(),
         &silent_media,
-        &silent_ammo,
+        &guided_ammo(),
         &provenance(),
         TICKS_PER_SECOND,
     )
-    .expect_err("a measured silent launch has no runtime representation");
-    let blocker: &OriginalRegistrationBlocker = error
-        .iter()
-        .find(|blocker| blocker.claim == T452_SILENT_LAUNCH_BLOCKED)
-        .unwrap_or_else(|| panic!("the silent-launch claim is named: {error:?}"));
-    assert_eq!(blocker.resolving_task, T452_MEDIA_SILENCE_TASK);
+    .expect("a measured silent launch is expressible");
+    let component = lower_ordnance(&declared).expect("the silent record lowers");
+    let projectile = component.as_projectile().expect("a rocket is a projectile");
+    assert_eq!(projectile.media().sound(), None, "no sound is invented");
+    assert!(
+        projectile.media().visual().key().contains("ap_rocket"),
+        "the visual is still the record's own FLYOUT model"
+    );
+    let mut registry = OrdnanceRegistry::new();
+    registry
+        .register(component)
+        .expect("the silent component registers");
+
+    let declared = measured_ordnance_declaration(
+        &guided_row(),
+        &guided_record(),
+        &guided_media(),
+        &guided_ammo(),
+        &provenance(),
+        TICKS_PER_SECOND,
+    )
+    .expect("the sounding record declares");
+    let component = lower_ordnance(&declared).expect("the sounding record lowers");
+    assert_eq!(
+        component
+            .as_projectile()
+            .expect("a rocket is a projectile")
+            .media()
+            .sound()
+            .map(ContentId::key),
+        Some("snd_missile_sm"),
+        "a record that declares a sound still names it"
+    );
 }
 
 /// The measured end of flight the runtime cannot express is a claim, not a
@@ -672,7 +698,10 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
         .iter()
         .find(|(name, _)| *name == "wep_26")
         .expect("wep_26 is blocked");
-    assert!(flak.contains(&T452_SILENT_LAUNCH_BLOCKED), "{flak:?}");
+    assert!(
+        !flak.iter().any(|claim| claim.contains("silent_launch")),
+        "a missing launch sound is a measured silence, not a blocker: {flak:?}"
+    );
 
     // A registered id is a *runtime component*, not a catalogue entry: its
     // measured values are the record's own.

@@ -239,7 +239,7 @@ fn accept_t452_r03_c_measured_media_ids_carry_the_declared_names() {
     assert_eq!(visual.value.kind(), ContentKind::HardpointEquipment);
     assert_eq!(visual.value.as_str(), "hardpoint_equipment/dart");
     assert_eq!(visual.provenance.class, ClaimStatus::ObservedTool);
-    let Resolved::Known(sound) = &declared.sound else {
+    let Some(Resolved::Known(sound)) = &declared.sound else {
         panic!("a declared FIRE SOUND resolves")
     };
     assert_eq!(sound.value.kind(), ContentKind::Sound);
@@ -249,7 +249,7 @@ fn accept_t452_r03_c_measured_media_ids_carry_the_declared_names() {
 }
 
 #[test]
-fn accept_t452_r03_c_missing_names_stay_unknown_never_invented() {
+fn accept_t452_r03_c_missing_names_stay_absent_never_invented() {
     let media = cs_content::ordnance::OriginalWeaponMedia {
         record: "wep_99".to_owned(),
         ..Default::default()
@@ -257,7 +257,10 @@ fn accept_t452_r03_c_missing_names_stay_unknown_never_invented() {
     let claim = ClaimId::new("t452_r03_c.test").expect("valid claim id");
     let declared = media.measured_ordnance_media(&claim);
     assert!(!declared.visual.is_known());
-    assert!(!declared.sound.is_known());
+    assert!(
+        declared.sound.is_none(),
+        "no FIRE SOUND is a measured silence, not a default"
+    );
 }
 
 // -------------------------------------------------------------- the image ---
@@ -661,7 +664,7 @@ fn accept_t452_r03_c_retail_media_ids_resolve_the_declared_names() {
                     media.record
                 );
                 assert_eq!(visual.provenance.class, ClaimStatus::ObservedTool);
-                let Resolved::Known(audio) = &declared.sound else {
+                let Some(Resolved::Known(audio)) = &declared.sound else {
                     panic!("{}: declared FIRE SOUND resolves", media.record)
                 };
                 assert_eq!(audio.value.kind(), ContentKind::Sound);
@@ -677,7 +680,7 @@ fn accept_t452_r03_c_retail_media_ids_resolve_the_declared_names() {
                     assert!(!declared.visual.is_known(), "{}", media.record);
                 }
                 if sound.is_none() {
-                    assert!(!declared.sound.is_known(), "{}", media.record);
+                    assert!(declared.sound.is_none(), "{}", media.record);
                 }
             }
         }
@@ -689,7 +692,7 @@ fn accept_t452_r03_c_retail_media_ids_resolve_the_declared_names() {
         panic!("wep_14 declares a torpedo model")
     };
     assert_eq!(visual.value.as_str(), "hardpoint_equipment/a_torpedo");
-    let Resolved::Known(sound) = &declared.sound else {
+    let Some(Resolved::Known(sound)) = &declared.sound else {
         panic!("wep_14 declares a launch sound")
     };
     assert_eq!(sound.value.as_str(), "sound/snd_missile_bg");

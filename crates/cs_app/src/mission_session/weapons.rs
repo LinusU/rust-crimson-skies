@@ -461,10 +461,10 @@ pub fn designed_rocket_with_capacity(capacity_units: u64) -> DeclaredOrdnance {
                 ContentId::from_source(ContentKind::HardpointEquipment, MISSION_ROCKET_VISUAL)
                     .expect("the rocket visual id is valid"),
             ),
-            sound: known(
+            sound: Some(known(
                 ContentId::from_source(ContentKind::Sound, MISSION_ROCKET_SOUND)
                     .expect("the rocket sound id is valid"),
-            ),
+            )),
             particles: None,
         },
         equipment_rules: DeclaredEquipmentRules::default(),

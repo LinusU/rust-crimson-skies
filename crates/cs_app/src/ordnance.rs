@@ -382,7 +382,11 @@ fn lower_media(
     declared: &cs_content::ordnance::DeclaredOrdnanceMedia,
 ) -> Result<OrdnanceMedia, OrdnanceLowerError> {
     let visual = known_or_refuse("media.visual", &declared.visual)?;
-    let sound = known_or_refuse("media.sound", &declared.sound)?;
+    let sound = declared
+        .sound
+        .as_ref()
+        .map(|resolved| known_or_refuse("media.sound", resolved))
+        .transpose()?;
     let particles = declared
         .particles
         .as_ref()
@@ -633,8 +637,8 @@ pub struct RegisteredOrdnance {
     pub family: OrdnanceFamily,
     /// The declared launch-effect catalog id.
     pub visual: ContentId,
-    /// The declared launch-sound catalog id.
-    pub sound: ContentId,
+    /// The declared launch-sound catalog id, `None` for a measured silence.
+    pub sound: Option<ContentId>,
 }
 
 /// Why a declared loadout could not be registered.
@@ -722,8 +726,9 @@ pub struct OrdnanceEffect {
     pub origin: WorldPosition,
     /// The component's declared launch-effect catalog id.
     pub visual: ContentId,
-    /// The component's declared launch-sound catalog id.
-    pub sound: ContentId,
+    /// The component's declared launch-sound catalog id, `None` when it
+    /// declares none and the launch plays nothing.
+    pub sound: Option<ContentId>,
 }
 
 /// What one [`OrdnanceNetworkEvent`] records.
@@ -1543,7 +1548,7 @@ impl OrdnanceSession {
                 mount,
                 family: component.family(),
                 visual: media.visual().clone(),
-                sound: media.sound().clone(),
+                sound: media.sound().cloned(),
             });
         }
 
@@ -1847,7 +1852,7 @@ pub fn step_ordnance_session(
                             at: step.at,
                             origin: transform.origin,
                             visual: component.media().visual().clone(),
-                            sound: component.media().sound().clone(),
+                            sound: component.media().sound().cloned(),
                         };
                         session.effects.push(effect.clone());
                         tick.effects.push(effect);
@@ -3610,10 +3615,11 @@ pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_ramp
 /// task: [`T452_SILENT_EXPIRY_TASK`].
 pub const T452_SILENT_EXPIRY_BLOCKED: &str = "t452_register.limit.silent_expiry";
 
-/// Blocker: the record declares no `FIRE` `SOUND`, and the measured behaviour
-/// is a silent launch, which the runtime media contract cannot express.
-/// Resolving task: [`T452_MEDIA_SILENCE_TASK`].
-pub const T452_SILENT_LAUNCH_BLOCKED: &str = "t452_register.limit.silent_launch";
+/// Blocker: the record declares no `FLYOUT` `MODEL`, so the spawned round has
+/// no visual and the runtime media contract requires one. (A missing `FIRE`
+/// `SOUND` is not a blocker: it is a measured silence the contract expresses.)
+/// Resolving task: [`T452_NO_FLYOUT_MODEL_TASK`].
+pub const T452_NO_FLYOUT_MODEL_BLOCKED: &str = "t452_register.limit.no_flyout_model";
 
 /// Recorded (not blocking): the measured per-box weight and cost have no
 /// runtime consumer, and the weight unit's conversion to kilograms is
@@ -3628,9 +3634,8 @@ pub const T452_REG_INHERITANCE_TASK: &str = "T452-REG-INHERITANCE-RAMP";
 /// vocabulary.
 pub const T452_SILENT_EXPIRY_TASK: &str = "T452-REG-SILENT-EXPIRY";
 
-/// The task that lets the runtime media contract express a measured silent
-/// launch.
-pub const T452_MEDIA_SILENCE_TASK: &str = "T452-REG-MEDIA-SILENCE";
+/// The task that decides what a record without a `FLYOUT` `MODEL` presents.
+pub const T452_NO_FLYOUT_MODEL_TASK: &str = "T452-REG-NO-FLYOUT-MODEL";
 
 /// The task that gives the measured per-box weight and cost a consumer.
 pub const T452_PER_BOX_WEIGHT_TASK: &str = "T452-REG-PER-BOX-WEIGHT";
@@ -4243,18 +4248,17 @@ pub fn measured_ordnance_declaration(
     }
 
     // Media: the record's own `FLYOUT` model and `FIRE` sound. A record that
-    // declares no launch sound is measured silent, and the runtime media
-    // record cannot express that yet.
+    // declares no launch sound is measured silent: the sound stays absent.
     let media_claim = ClaimId::new(T452_MEASURED_MEDIA_CLAIM).expect("a valid claim id");
     let declared_media = media.measured_ordnance_media(&media_claim);
-    if !declared_media.visual.is_known() || !declared_media.sound.is_known() {
+    if !declared_media.visual.is_known() {
         blockers.push(OriginalRegistrationBlocker::new(
             name,
             "media",
-            T452_SILENT_LAUNCH_BLOCKED,
-            "the launch presentation: the record declares no FIRE SOUND, and a measured \
-             silent launch has no runtime representation",
-            T452_MEDIA_SILENCE_TASK,
+            T452_NO_FLYOUT_MODEL_BLOCKED,
+            "the launch presentation: the record declares no FLYOUT MODEL, so the round \
+             has no visual of its own",
+            T452_NO_FLYOUT_MODEL_TASK,
         ));
     }
 

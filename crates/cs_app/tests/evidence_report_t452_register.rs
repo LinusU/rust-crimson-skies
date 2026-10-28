@@ -172,7 +172,10 @@ fn evidence_report_t452_register_writes_the_acceptance_report() {
                     projectile.channels().internal,
                     projectile.status().len(),
                     jstr(projectile.media().visual().key()),
-                    jstr(projectile.media().sound().key()),
+                    projectile
+                        .media()
+                        .sound()
+                        .map_or_else(|| "null".to_owned(), |sound| jstr(sound.key())),
                 ));
             }
             OriginalRegistrationOutcome::Blocked { record, blockers } => {

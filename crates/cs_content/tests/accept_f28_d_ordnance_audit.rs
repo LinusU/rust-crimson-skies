@@ -128,14 +128,15 @@ fn measured_record(key: &str, family: DeclaredOrdnanceFamily, id: ClaimId) -> De
             .known()
             .expect("the fixture's visual is known"),
     );
-    projectile.media.sound = measured(
+    projectile.media.sound = Some(measured(
         id.clone(),
         projectile
             .media
             .sound
-            .known()
+            .clone()
+            .and_then(Resolved::known)
             .expect("the fixture's sound is known"),
-    );
+    ));
     projectile.media.particles = projectile.media.particles.as_ref().map(|particles| {
         measured(
             id.clone(),
@@ -514,14 +515,15 @@ fn accept_f28_d_a_fully_measured_catalogue_is_complete() {
             .known()
             .expect("the fixture's visual is known"),
     );
-    nitro.media.sound = measured(
+    nitro.media.sound = Some(measured(
         id.clone(),
         nitro
             .media
             .sound
-            .known()
+            .clone()
+            .and_then(Resolved::known)
             .expect("the fixture's sound is known"),
-    );
+    ));
     nitro.media.particles = nitro.media.particles.as_ref().map(|particles| {
         measured(
             id.clone(),

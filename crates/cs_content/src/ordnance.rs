@@ -403,8 +403,9 @@ pub struct DeclaredStatusEffect {
 pub struct DeclaredOrdnanceMedia {
     /// The effect resource a launch or detonation plays.
     pub visual: Resolved<ContentId>,
-    /// The sound resource a launch or detonation plays.
-    pub sound: Resolved<ContentId>,
+    /// The sound resource a launch or detonation plays; `None` when the
+    /// record declares none, which is a measured silence and not an unknown.
+    pub sound: Option<Resolved<ContentId>>,
     /// The presentation-only particle resource, when the record declares
     /// one.
     pub particles: Option<Resolved<ContentId>>,
@@ -698,7 +699,7 @@ impl DeclaredOrdnance {
                     sound,
                     particles,
                 } = &projectile.media;
-                validate_media(visual, sound, particles.as_ref())?;
+                validate_media(visual, sound.as_ref(), particles.as_ref())?;
             }
             DeclaredOrdnanceDetails::Nitro(nitro) => {
                 let DeclaredOrdnanceMedia {
@@ -706,7 +707,7 @@ impl DeclaredOrdnance {
                     sound,
                     particles,
                 } = &nitro.media;
-                validate_media(visual, sound, particles.as_ref())?;
+                validate_media(visual, sound.as_ref(), particles.as_ref())?;
                 validate_nitro(&nitro.parameters)?;
             }
         }
@@ -1182,7 +1183,7 @@ fn validate_nitro(parameters: &DeclaredNitroParameters) -> Result<(), OrdnanceSc
 /// The known-value sanity checks on a declared media record.
 fn validate_media(
     visual: &Resolved<ContentId>,
-    sound: &Resolved<ContentId>,
+    sound: Option<&Resolved<ContentId>>,
     particles: Option<&Resolved<ContentId>>,
 ) -> Result<(), OrdnanceSchemaError> {
     let check = |resolved: &Resolved<ContentId>, expected: ContentKind| {
@@ -1197,7 +1198,9 @@ fn validate_media(
         Ok(())
     };
     check(visual, ContentKind::HardpointEquipment)?;
-    check(sound, ContentKind::Sound)?;
+    if let Some(sound) = sound {
+        check(sound, ContentKind::Sound)?;
+    }
     if let Some(particles) = particles {
         check(particles, ContentKind::HardpointEquipment)?;
     }
@@ -1598,7 +1601,9 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
                 walk.value("status.strength", &status.strength);
             }
             walk.value("media.visual", &projectile.media.visual);
-            walk.value("media.sound", &projectile.media.sound);
+            if let Some(sound) = &projectile.media.sound {
+                walk.value("media.sound", sound);
+            }
             if let Some(particles) = &projectile.media.particles {
                 walk.value("media.particles", particles);
             }
@@ -1634,7 +1639,9 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
                 &parameters.authority_multiplier,
             );
             walk.value("media.visual", &nitro.media.visual);
-            walk.value("media.sound", &nitro.media.sound);
+            if let Some(sound) = &nitro.media.sound {
+                walk.value("media.sound", sound);
+            }
             if let Some(particles) = &nitro.media.particles {
                 walk.value("media.particles", particles);
             }
@@ -2240,10 +2247,10 @@ pub fn declared_synthetic_media() -> DeclaredOrdnanceMedia {
             )
             .expect("valid id"),
         ),
-        sound: declared_known(
+        sound: Some(declared_known(
             ContentId::from_source(ContentKind::Sound, DECLARED_SYNTHETIC_SOUND_KEY)
                 .expect("valid id"),
-        ),
+        )),
         particles: Some(declared_known(
             ContentId::from_source(
                 ContentKind::HardpointEquipment,
@@ -6288,15 +6295,12 @@ impl OriginalWeaponMedia {
             )
             .expect("the reason is non-empty"),
         };
-        let sound = match self.launch_sound() {
-            Some(name) => known(ContentKind::Sound, name),
-            None => Resolved::unknown(
-                claim_id.clone(),
-                "the record declares no FIRE SOUND entry: the launch is silent \
-                 (playback gate 0x593b80 early-outs on a missing handle), not defaulted",
-            )
-            .expect("the reason is non-empty"),
-        };
+        // No `FIRE` `SOUND` entry is a measured silence (playback gate
+        // 0x593b80 early-outs on a missing handle), carried as `None` and
+        // never defaulted.
+        let sound = self
+            .launch_sound()
+            .map(|name| known(ContentKind::Sound, name));
         DeclaredOrdnanceMedia {
             visual,
             sound,

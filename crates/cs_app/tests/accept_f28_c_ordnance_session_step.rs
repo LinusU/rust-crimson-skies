@@ -479,8 +479,14 @@ fn accept_f28_c_a_launch_reads_the_live_pose_and_mirrors_the_item() {
         "the effect is at the live mount pose, not the world origin"
     );
     assert_eq!(
-        (effect.visual.as_str(), effect.sound.as_str()),
-        (registered[0].visual.as_str(), registered[0].sound.as_str()),
+        (
+            effect.visual.as_str(),
+            effect.sound.as_ref().map(ContentId::as_str)
+        ),
+        (
+            registered[0].visual.as_str(),
+            registered[0].sound.as_ref().map(ContentId::as_str)
+        ),
         "the effect carries the lowered component's declared media"
     );
     assert_eq!(
