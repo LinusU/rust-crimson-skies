@@ -166,6 +166,12 @@ pub enum DeclaredInheritanceRule {
     /// `|launcher|` and ramps toward `launch speed + |launcher|` at the
     /// declared `acceleration_mps2`.
     LateralRemainder,
+    /// The measured `INSTANT` rule ([`OriginalInheritance::Instant`]): the
+    /// spawn computes the same `+0x60` vector as `LateralRemainder` but the
+    /// step ignores it — the item's one and only step displaces the record's
+    /// `RANGE` metres along the launch direction, the distance
+    /// `instant_range_m` carries.
+    Instant,
 }
 
 impl fmt::Display for DeclaredInheritanceRule {
@@ -175,6 +181,7 @@ impl fmt::Display for DeclaredInheritanceRule {
             Self::Fraction { share } => write!(f, "fraction({share})"),
             Self::None => f.write_str("none"),
             Self::LateralRemainder => f.write_str("lateral_remainder"),
+            Self::Instant => f.write_str("instant"),
         }
     }
 }
@@ -201,6 +208,11 @@ pub struct DeclaredLaunchGeometry {
     /// squared — the record's `ACCELERATION` (`+0x38`). `None` for every
     /// rule that runs no ramp.
     pub acceleration_mps2: Resolved<Option<f64>>,
+    /// The one-step displacement distance for
+    /// [`DeclaredInheritanceRule::Instant`], in metres — the record's
+    /// `RANGE` (`+0x1c`). `None` for every rule whose step integrates
+    /// `dt·velocity` instead.
+    pub instant_range_m: Resolved<Option<f64>>,
     /// Ticks between the launch intent and the actual release.
     pub release_delay_ticks: Resolved<u64>,
 }
@@ -866,6 +878,13 @@ pub enum OrdnanceSchemaError {
         /// The rejected value.
         acceleration_mps2: f64,
     },
+    /// A known `INSTANT` one-step range was NaN or infinite.
+    NonFiniteInstantRange,
+    /// A known `INSTANT` one-step range was zero or negative.
+    NonPositiveInstantRange {
+        /// The rejected value.
+        instant_range_m: f64,
+    },
     /// A known stack capacity was zero, so the launcher can never be loaded.
     ZeroStackCapacity,
     /// A known unit mass was NaN or infinite.
@@ -975,6 +994,15 @@ impl fmt::Display for OrdnanceSchemaError {
                     "the launch acceleration must be positive: {acceleration_mps2}"
                 )
             }
+            Self::NonFiniteInstantRange => {
+                write!(f, "the instant one-step range must be finite")
+            }
+            Self::NonPositiveInstantRange { instant_range_m } => {
+                write!(
+                    f,
+                    "the instant one-step range must be positive: {instant_range_m}"
+                )
+            }
             Self::ZeroStackCapacity => {
                 write!(
                     f,
@@ -1070,6 +1098,16 @@ fn validate_projectile(projectile: &DeclaredProjectile) -> Result<(), OrdnanceSc
         }
         if acceleration_mps2 <= 0.0 {
             return Err(OrdnanceSchemaError::NonPositiveAcceleration { acceleration_mps2 });
+        }
+    }
+    if let Resolved::Known(known) = &projectile.launch.instant_range_m
+        && let Some(instant_range_m) = known.value
+    {
+        if !instant_range_m.is_finite() {
+            return Err(OrdnanceSchemaError::NonFiniteInstantRange);
+        }
+        if instant_range_m <= 0.0 {
+            return Err(OrdnanceSchemaError::NonPositiveInstantRange { instant_range_m });
         }
     }
     if let Resolved::Known(known) = &projectile.stack.capacity_units
@@ -2362,6 +2400,7 @@ pub fn declared_synthetic_launch() -> DeclaredLaunchGeometry {
         launch_speed_mps: declared_known(210.0),
         inheritance: declared_known(DeclaredInheritanceRule::None),
         acceleration_mps2: declared_known(None),
+        instant_range_m: declared_known(None),
         release_delay_ticks: declared_known(0),
     }
 }
