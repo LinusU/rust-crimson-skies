@@ -3486,10 +3486,16 @@ impl OrdnanceState {
         self.consumed_range_m.is_some()
     }
 
-    /// Whether the item has ended at all — detonated, consumed or retired.
+    /// Whether the item has already ended its **fuse** — it detonated, or the
+    /// measured end of its `RANGE` consumed it.
+    ///
+    /// A retired item is **not** ended by this query: [`retire`](Self::retire)
+    /// ends the fuse, not the clock, so a dud keeps aging and stays visible
+    /// until its own lifetime is spent (see [`advance`](Self::advance)). Use
+    /// [`is_retired`](Self::is_retired) for that state.
     #[must_use]
     pub const fn has_ended(&self) -> bool {
-        self.triggered.is_some() || self.consumed_range_m.is_some() || self.destroyed
+        self.triggered.is_some() || self.consumed_range_m.is_some()
     }
 
     /// Whether the measured end of the item's flight is due now: its
