@@ -759,20 +759,36 @@ pub enum GuidanceRule {
     /// Tracks one designated target until it is lost, then does exactly what
     /// `lost_target` says.
     Targeted { lost_target: LostTargetBehavior },
+    /// Re-selects its target every step from the live marker set: the newest
+    /// live [`StatusEffectKind::Marker`] on any actor, or no target at all
+    /// while none is live (`BEEPER_SEEKER`, callback `0x441780`, measured
+    /// static in T452-R.02 §1 and T2116).
+    ///
+    /// Unlike [`GuidanceRule::Targeted`] a lost target here is not terminal and
+    /// has no lost-target behavior: the next step picks the newest other
+    /// marker, and an item with none flies unguided. Only a session change
+    /// ends the seeking.
+    MarkerSeeker,
 }
 
 impl GuidanceRule {
     /// Whether this item tracks a target at all.
     #[must_use]
     pub const fn is_targeted(&self) -> bool {
-        matches!(self, Self::Targeted { .. })
+        matches!(self, Self::Targeted { .. } | Self::MarkerSeeker)
+    }
+
+    /// Whether the target is re-selected from the live markers every step.
+    #[must_use]
+    pub const fn is_marker_seeker(&self) -> bool {
+        matches!(self, Self::MarkerSeeker)
     }
 
     /// The declared lost-target behavior, for a rule that has one.
     #[must_use]
     pub const fn lost_target(&self) -> Option<LostTargetBehavior> {
         match self {
-            Self::Unguided => None,
+            Self::Unguided | Self::MarkerSeeker => None,
             Self::Targeted { lost_target } => Some(*lost_target),
         }
     }
@@ -2333,20 +2349,23 @@ pub enum CataloguedGuidance {
         /// The measured lost-target rule, if one was measured.
         lost_target: Option<LostTargetBehavior>,
     },
+    /// Re-selects its target every step from the live markers
+    /// ([`GuidanceRule::MarkerSeeker`]); it has no lost-target rule.
+    MarkerSeeker,
 }
 
 impl CataloguedGuidance {
     /// Whether the component tracks a target at all.
     #[must_use]
     pub const fn is_targeted(self) -> bool {
-        matches!(self, Self::Targeted { .. })
+        matches!(self, Self::Targeted { .. } | Self::MarkerSeeker)
     }
 
     /// The measured lost-target behavior, when one was measured.
     #[must_use]
     pub const fn lost_target(self) -> Option<LostTargetBehavior> {
         match self {
-            Self::Unguided => None,
+            Self::Unguided | Self::MarkerSeeker => None,
             Self::Targeted { lost_target } => lost_target,
         }
     }
@@ -3660,6 +3679,18 @@ impl GuidanceTracker {
         self.lost
     }
 
+    /// Writes the marker seeker's target for this step: the newest live
+    /// marker's actor, or `None` when no marker is live.
+    ///
+    /// A no-op for any other rule, and after a session change: a spent seeker
+    /// cannot adopt a marker. Returns what the seeker is doing afterwards.
+    pub fn retarget(&mut self, candidate: Option<ActorId>) -> GuidanceUpdate {
+        if self.rule.is_marker_seeker() && self.lost.is_none() {
+            self.target = candidate;
+        }
+        self.hold()
+    }
+
     /// Reports that the tracked target no longer exists.
     ///
     /// This is the **only** way a target is lost. It is idempotent: the
@@ -3667,6 +3698,16 @@ impl GuidanceTracker {
     /// continuing consequence, so a destroyed target cannot be announced on
     /// every tick and a stale lookup cannot resurrect it.
     pub fn lose(&mut self, reason: LostTargetReason) -> GuidanceUpdate {
+        if self.rule.is_marker_seeker() {
+            // Not terminal: the target is dropped and the next step selects
+            // again. Only a session change is final, because no marker of the
+            // new generation is this item's to read.
+            self.target = None;
+            if matches!(reason, LostTargetReason::ForeignSession { .. }) {
+                self.lost = Some(reason);
+            }
+            return GuidanceUpdate::Unguided;
+        }
         if self.lost.is_some() {
             // Already spent. Reporting the consequence here rather than
             // below matters for the `Detonate` behavior: an item that
@@ -3678,7 +3719,7 @@ impl GuidanceTracker {
         self.lost = Some(reason);
         self.target = None;
         match self.rule {
-            GuidanceRule::Unguided => GuidanceUpdate::Unguided,
+            GuidanceRule::Unguided | GuidanceRule::MarkerSeeker => GuidanceUpdate::Unguided,
             GuidanceRule::Targeted { lost_target } => match lost_target {
                 LostTargetBehavior::Detonate => GuidanceUpdate::Lost {
                     reason,
@@ -3707,6 +3748,10 @@ impl GuidanceTracker {
     pub fn hold(&mut self) -> GuidanceUpdate {
         match self.rule {
             GuidanceRule::Unguided => GuidanceUpdate::Unguided,
+            GuidanceRule::MarkerSeeker => match self.target {
+                Some(target) => GuidanceUpdate::Tracked { target },
+                None => GuidanceUpdate::Unguided,
+            },
             GuidanceRule::Targeted { .. } => match (self.lost, self.target) {
                 (None, Some(target)) => GuidanceUpdate::Tracked { target },
                 (None, None) => self.lose(LostTargetReason::Unassigned),
@@ -3831,6 +3876,16 @@ impl GuidanceSet {
         self.trackers.get_mut(projectile)
     }
 
+    /// The items whose target is re-selected from the live markers each step.
+    #[must_use]
+    pub fn marker_seekers(&self) -> Vec<ProjectileId> {
+        self.trackers
+            .values()
+            .filter(|tracker| tracker.rule().is_marker_seeker())
+            .map(GuidanceTracker::projectile)
+            .collect()
+    }
+
     /// How many trackers are registered.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -3864,13 +3919,24 @@ impl GuidanceSet {
                     })
                 } else {
                     match observation.lost {
+                        // A marker seeker follows the markers, not the one
+                        // target the observation reports on: only losing the
+                        // actor it is actually on is its news.
+                        Some(_)
+                            if tracker.rule().is_marker_seeker()
+                                && observation.target != tracker.target() =>
+                        {
+                            tracker.hold()
+                        }
                         Some(reason) => tracker.lose(reason),
                         // The session reports a different actor than the item
                         // tracks: the tracked actor has left the roster. An
                         // observation carrying *no* target is "no news", not
                         // a vanished one, so it falls through to `hold`.
                         None => match (observation.target, tracker.target()) {
-                            (Some(observed), Some(own)) if observed != own => {
+                            (Some(observed), Some(own))
+                                if observed != own && !tracker.rule().is_marker_seeker() =>
+                            {
                                 tracker.lose(LostTargetReason::Despawned)
                             }
                             _ => tracker.hold(),
@@ -4089,6 +4155,20 @@ impl StatusEffectLedger {
             .values()
             .filter(|effect| effect.target.is_same_recipient(target))
             .collect()
+    }
+
+    /// The newest live [`StatusEffectKind::Marker`] at the ledger's tick.
+    ///
+    /// "Newest" is the latest start tick, ties broken by the later instance
+    /// serial, so the answer is a pure function of the ledger.
+    #[must_use]
+    pub fn newest_live_marker(&self) -> Option<&ActiveStatusEffect> {
+        self.live
+            .values()
+            .filter(|effect| {
+                effect.kind == StatusEffectKind::Marker && effect.is_live_at(self.tick)
+            })
+            .max_by_key(|effect| (effect.started_at, effect.instance))
     }
 
     /// Applies one declared status effect to a recipient at `tick`.
@@ -5539,6 +5619,9 @@ impl OrdnanceRuntime {
             },
         );
         if definition.guidance().is_targeted() {
+            // A marker seeker's launch target is zero (`0x5af610`) and its
+            // callback writes the real one before the first steering call.
+            let target = target.filter(|_| !definition.guidance().is_marker_seeker());
             self.guidance.insert(GuidanceTracker::new(
                 self.session,
                 projectile,
@@ -5662,6 +5745,30 @@ impl OrdnanceRuntime {
         Ok(live.state.fuse_decision(&segment, paths, impacts))
     }
 
+    /// Runs the marker seekers' per-step callback: each re-selects its target
+    /// as the newest live [`StatusEffectKind::Marker`] in the ledger, or none.
+    ///
+    /// The original runs this before the step's steering (`0x441780`, called
+    /// at `0x5af745`), on every step whether or not anything else observed the
+    /// target, so a caller runs it once per step. [`guidance_tick`](Self::guidance_tick)
+    /// also runs it, which is idempotent within a tick. An observation of
+    /// another session generation selects nothing: the generation check in
+    /// [`guidance_tick`](Self::guidance_tick) ends those seekers.
+    pub fn retarget_marker_seekers(&mut self, session: SessionId) {
+        if session != self.session {
+            return;
+        }
+        let candidate = self
+            .status
+            .newest_live_marker()
+            .map(|marker| marker.target.actor());
+        for projectile in self.guidance.marker_seekers() {
+            if let Some(tracker) = self.guidance.tracker_mut(&projectile) {
+                tracker.retarget(candidate);
+            }
+        }
+    }
+
     /// Drives every guidance tracker with one tick's target observation.
     ///
     /// The session check runs first: an observation stamped with another
@@ -5678,6 +5785,7 @@ impl OrdnanceRuntime {
         session: SessionId,
         observation: TargetObservation,
     ) -> GuidanceTick {
+        self.retarget_marker_seekers(session);
         let updates = self.guidance.session_tick(session, observation);
         let mut detonated = Vec::new();
         for (projectile, update) in &updates {
