@@ -42,12 +42,16 @@ The totals the purchase screen shows (callback 2262, `0x40b368`) come from
 `0x405550` (weight, stored at `record + 0x3c`) and `0x405680` (cost, stored at
 `record + 0x28`). They read: the airframe row (`0x619bb0` stride 44), the engine
 row (`0x619d98` stride 12, with `0x619e1c`), the four gun slots through
-`0x4055c0`/`0x405700` (rows at `0x619e68`, stride 28), armor (`record + 0x34`,
-`+ 0x38`) and four counters at `record + 0x74..0x80`. **Neither function reads
+`0x4055c0`/`0x405700` (rows at `0x619e68`, stride 28), the two hardpoint box
+counts (`record + 0x34`, `+ 0x38`, priced flat per box) and the four armor
+counters at `record + 0x74..0x80`. **Neither function reads
 `record + 0xa8` (the rocket slots).** The rocket and hardpoint weight/cost named
 by the engine dictionary (`ohardpointweight`, `ohardpointcost`) are therefore not
-part of these totals. The per-type weight and cost table, if it exists, is not
-where the purchase code reads.
+part of these totals. The parent task (T452-R.03) completed the measurement:
+the hardpoint rows `E 2259..2261` and the totals charge a flat **480 weight /
+410 cost per enabled rocket box** and no instruction reads a type-dependent
+value — there is no per-type weight or cost table in the purchase path
+(`docs/findings/2026-10-28-t452-r03-hardpoint-price-and-gate-table.md`).
 
 ## 4. The reader surface (T452-R.03-A, task #2164)
 
@@ -84,13 +88,13 @@ count at row `+0xc` and again at `+0x10`. So:
   image at all (searched as bytes), so those dictionary names are script-side;
   no engine read of such a value was found.
 
-**Not established:** which key of the record fills `(record + 0x210) + 0xc`.
-The record parser reads `AMMO_LIMIT` at `0x5ad91f` into a field it defaults
-earlier (`0x5ad805`, 50.0), but the link from that field to `record + 0x210`
-(set by a per-type callback invoked at `0x5ae0f7`) was not followed, so equating
-the stack count with `AMMO_LIMIT` is a candidate, not a measurement. The
-callbacks 2243/2245/2230 and the 5058/2031/2037 handlers were not read in this
-slice; the purchase side (section 3) already shows no rocket weight or cost is
-summed. Remaining items stay with the follow-ups: `AMMO_LIMIT` default and
-consumer, the `FIRE`/`FLYOUT`/`IMPACT`/`SOUND_NAME` media mapping, the
-equipment-rule census.
+**Established since:** the key that fills `(record + 0x210) + 0xc` is
+`CLUSTER_SIZE` (T452-R.03-B, `0x4baa17`); `AMMO_LIMIT` parses to `record +
+0x18` with default 50.0 and has no found consumer. The `FIRE`/`FLYOUT`/
+`IMPACT`/`DESTROY_ANIMATION` media mapping is measured (T452-R.03-C) and the
+equipment-rule census is measured empty (T452-R.03-D). Of the purchase
+handlers, `E 2245` (`0x40ad0f`) and `E 2031` (`0x409aec`) are now pinned —
+both treat `record + 0x34`/`+ 0x38` as the two sides' enabled-box counts —
+while `2243`/`2230`/`5058`/`2037` remain unread; the purchase side (section 3)
+already showed no rocket weight or cost is summed, and the parent measured
+the flat per-box price that is.
