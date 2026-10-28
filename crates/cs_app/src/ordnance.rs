@@ -4149,13 +4149,21 @@ pub fn measured_ordnance_declaration(
             (Some(radius), Some(seconds)) => {
                 let ticks = seconds_to_ticks(seconds, ticks_per_second);
                 if ticks > lifetime_value {
+                    // `measured_area` yields a timed area **with a radius** only
+                    // for `TANGLER`, whose field re-applies its per-hit routine
+                    // every tick; `SMOKE_SCREEN` has no measured radius and
+                    // never forms an area here. The runtime's bounded area
+                    // applies once and cannot outlive its item, so the value
+                    // that cannot be expressed is the tangler field itself —
+                    // already the filed follow-up #2179.
                     blockers.push(OriginalRegistrationBlocker::new(
                         name,
                         "area_effect.lifetime_ticks",
-                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        cs_content::ordnance::T452_R02_TANGLER_EFFECT,
                         "this record's bounded area: it is measured to last longer than the \
-                         item that creates it, which the runtime's area record refuses",
-                        T452_SILENT_EXPIRY_TASK,
+                         item that creates it, because the effect field lives on its own, \
+                         which the runtime's area record refuses",
+                        "T452-REG-TANGLER-EFFECT",
                     ));
                 }
                 Some(DeclaredAreaEffect {
