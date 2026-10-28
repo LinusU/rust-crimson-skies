@@ -100,8 +100,8 @@ fn accept_t452_smoke_the_radius_claim_is_resolved_as_a_global_key() {
         "the radius claim is resolved, no record keeps it"
     );
     assert!(
-        measured.names_claim(T452_R02_SMOKE_STUN_EFFECT),
-        "what the stun does is a separate, still-open claim"
+        !measured.names_claim(T452_R02_SMOKE_STUN_EFFECT),
+        "what the stun does is expressed by SmokeStunRule (T452-REG-SMOKE-STUN)"
     );
 }
 

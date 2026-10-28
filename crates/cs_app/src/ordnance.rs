@@ -4175,7 +4175,7 @@ pub fn measured_ordnance_declaration(
                 if ticks > lifetime_value {
                     // `measured_area` yields a timed area **with a radius** only
                     // for `TANGLER`, whose field re-applies its per-hit routine
-                    // every tick; `SMOKE_SCREEN` has no measured radius and
+                    // every tick; `SMOKE_SCREEN`'s radius is a global key, not a
                     // never forms an area here. The runtime's bounded area
                     // applies once and cannot outlive its item, so the value
                     // that cannot be expressed is the tangler field itself —
@@ -4297,6 +4297,7 @@ pub fn measured_ordnance_declaration(
         guidance,
         lifetime_ticks,
         area_effect,
+        smoke_stun: behavior.smoke_stun.clone(),
         armor_damage: measured_field(provenance, T452_MEASURED_DAMAGE_CLAIM, armor),
         internal_damage: measured_field(provenance, T452_MEASURED_DAMAGE_CLAIM, internal),
         status,
@@ -4529,11 +4530,6 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
         cs_content::ordnance::T452_R02_TANGLER_EFFECT => (
             "what this record's zero-damage TANGLER field does to a flight model",
             "T452-REG-TANGLER-EFFECT",
-        ),
-        cs_content::ordnance::T452_R02_SMOKE_STUN_EFFECT => (
-            "what this record's smoke emitter does to the actors inside its smokescreen_stun \
-             range and cone: a stun for an AI actor and a screen effect for the player",
-            "T452-REG-SMOKE-STUN",
         ),
         T452_PER_BOX_WEIGHT_CLAIM => (
             "the flat per-enabled-box weight and cost this component's purchase charges, \

@@ -453,6 +453,7 @@ pub fn designed_rocket_with_capacity(capacity_units: u64) -> DeclaredOrdnance {
         guidance: DeclaredGuidanceRule::Unguided,
         lifetime_ticks: known(MISSION_ROCKET_LIFETIME_TICKS),
         area_effect: None,
+        smoke_stun: None,
         armor_damage: known(MISSION_ROCKET_ARMOR_DAMAGE),
         internal_damage: known(MISSION_ROCKET_INTERNAL_DAMAGE),
         status: Vec::new(),

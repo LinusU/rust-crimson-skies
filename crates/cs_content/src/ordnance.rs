@@ -517,6 +517,11 @@ pub struct DeclaredProjectile {
     pub lifetime_ticks: Resolved<u64>,
     /// The bounded area left behind, when the record declares one.
     pub area_effect: Option<DeclaredAreaEffect>,
+    /// The stun the item's smoke emitter applies to the actors it reaches
+    /// (`SMOKE_SCREEN`), when the record declares one. Carries keys, not
+    /// resolved globals: the registration is told the installation's values by
+    /// [`SmokeStunRule::resolve`].
+    pub smoke_stun: Option<SmokeStunRule>,
     /// The immediate damage amount per channel.
     pub armor_damage: Resolved<f64>,
     /// The immediate internal damage amount.
@@ -2310,6 +2315,7 @@ pub fn declared_synthetic_projectile(
         guidance,
         lifetime_ticks: declared_known(lifetime_ticks),
         area_effect: None,
+        smoke_stun: None,
         armor_damage: declared_known(22.0),
         internal_damage: declared_known(9.0),
         status: Vec::new(),
@@ -5109,9 +5115,10 @@ pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect"
 /// ([`MeasuredAreaSource::GlobalKey`]) and no measured record keeps this claim.
 pub const T452_R02_SMOKE_RADIUS: &str = "t452_r02.limit.smoke_radius";
 
-/// Claim: the smoke emitter stuns actors inside the `smokescreen_stun_*` cone
-/// (`0x4200d0` for an AI actor, `0x42e9d0` for the player), which the runtime's
-/// status vocabulary has no variant for.
+/// Claim (resolved by T452-REG-SMOKE-STUN): the smoke emitter stuns actors
+/// inside the `smokescreen_stun_*` cone (`0x4200d0` for an AI actor, `0x42e9d0`
+/// for the player). [`SmokeStunRule`] expresses both, so no measured record
+/// keeps this claim any more.
 pub const T452_R02_SMOKE_STUN_EFFECT: &str = "t452_r02.limit.smoke_stun_effect";
 
 /// Claim: `BEEPER_SEEKER` retargets the projectile onto a live beeper each
@@ -5318,6 +5325,8 @@ pub struct OriginalBehaviorMeasurement {
     pub lost_target: Option<MeasuredLostTarget>,
     /// The clustered launch, for a volley record.
     pub swarm: Option<MeasuredSwarm>,
+    /// What the smoke emitter does to the actors it reaches, for `SMOKE_SCREEN`.
+    pub smoke_stun: Option<SmokeStunRule>,
     /// Values this measurement could not resolve, named.
     pub claims: Vec<OriginalComponentUnknown>,
     /// The T452.04 claim ids this measurement resolves for this row.
@@ -5418,7 +5427,8 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                     action: MeasuredEffectAction::AreaField,
                     duration: measured_time(status.duration_s),
                     runtime_kind: None,
-                    claim: Some(T452_R02_SMOKE_STUN_EFFECT),
+                    // Expressed by `SmokeStunRule`, not by a status kind.
+                    claim: None,
                     pin: StaticProvenance::new(0x004b_71b1, 5),
                 }
             }
@@ -5512,7 +5522,7 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
         OriginalClusterShape::AmmunitionCount { .. } | OriginalClusterShape::Undeclared => None,
     };
 
-    let area = measured_area(row, &mut claims, &mut resolved);
+    let area = measured_area(row, &mut resolved);
 
     OriginalBehaviorMeasurement {
         effects,
@@ -5520,6 +5530,11 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
         fuse,
         lost_target,
         swarm,
+        smoke_stun: row
+            .statuses
+            .iter()
+            .any(|status| status.key == "SMOKE_SCREEN")
+            .then(SmokeStunRule::measured),
         claims,
         resolved,
     }
@@ -5528,7 +5543,6 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
 /// The area a row's effect creates, measured from the image's consumers.
 fn measured_area(
     row: &OriginalComponentLaunch,
-    claims: &mut Vec<OriginalComponentUnknown>,
     resolved: &mut Vec<&'static str>,
 ) -> Option<MeasuredArea> {
     let tangler = row.statuses.iter().find(|s| s.key == "TANGLER");
@@ -5553,14 +5567,6 @@ fn measured_area(
     let smoke = row.statuses.iter().find(|s| s.key == "SMOKE_SCREEN");
     if let Some(smoke) = smoke {
         let lifetime_s = smoke.duration_s.unwrap_or(IMAGE_DEFAULT_TIME_S);
-        claims.push(OriginalComponentUnknown::new(
-            T452_R02_SMOKE_STUN_EFFECT,
-            "SMOKE_SCREEN creates a scene emitter node (0x4b8d50) whose per-step \
-             update (0x4b8fd0) stuns every other live actor inside \
-             smokescreen_stun_range and the smokescreen_stun_angle cone: 0x4200d0 \
-             for an AI actor, 0x42e9d0 for the player; the runtime has no status \
-             variant for either",
-        ));
         resolved.push(T452_04_AREA_RADIUS);
         resolved.push(T452_04_AREA_LIFETIME);
         return Some(MeasuredArea {
@@ -6699,4 +6705,210 @@ pub fn lower_tangler_field(
         },
         pin: StaticProvenance::new(0x004b_950f, 26),
     })
+}
+
+// ------------------- T452-REG-SMOKE-STUN: what the smoke emitter's stun does -----
+//
+// Task #2187 measured statically in the owner-supplied decrypted engine image
+// (`$CS_ENGINE_IMAGE`, base `0x400000`) the two routines the emitter's per-step
+// update (`0x4b8fd0`) calls for an actor inside the stun range and cone
+// (`docs/findings/2026-10-28-t452-reg-smoke-radius.md`, `docs/findings/
+// 2026-10-28-t452-reg-smoke-stun.md`). Nothing here is `verified_original`.
+//
+// * An AI actor: `0x4200d0` is the same incapacitation `SONIC`/`FLASH` apply
+//   ([`MeasuredActorIncapacitation`]): mode word `4` at `+0x358`, six control
+//   words zeroed, and the stored clock + the argument at `+0xc0`. The argument
+//   is `smokescreen_stun_interval`.
+// * The player: `0x42e9d0` starts a screen tint of a fixed colour for `2.0 s`;
+//   the player's controls are not touched. The emitter re-arms it through its
+//   own timer at node `+0x14`.
+
+/// The window in which the emitter picks its victims (`0x4b90a6..0x4b9178`).
+const SMOKE_STUN_PICK_PIN: StaticProvenance = StaticProvenance::new(0x004b_90a6, 210);
+
+/// How the emitter treats the player, measured (`0x4b917f..0x4b91da`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmokeStunPlayerScreen {
+    /// How long the tint lasts, seconds (`push 0x40000000`, `0x4b91cc`).
+    pub tint_seconds: f64,
+    /// The emitter's own re-arm timer is stored as this at each trigger,
+    /// seconds (`0x4b91d3`).
+    pub rearm_seconds: f64,
+    /// The player is tinted only while the re-arm timer is below this
+    /// (`0x4b9182`, constant at `0x6032e0`).
+    pub rearm_gate_seconds: f64,
+    /// The tint colour (`0x4b9192..0x4b91a6`), red, green, blue.
+    pub colour: [f64; 3],
+    /// The tint scalar when the re-arm timer is positive (`0x4b91ad`).
+    pub scalar_rearmed: f64,
+    /// The tint scalar when the re-arm timer is not positive (`0x4b91bb`).
+    pub scalar_first: f64,
+    /// The player's controls are not zeroed by this path.
+    pub control_loss: bool,
+    /// The window of the trigger.
+    pub trigger_pin: StaticProvenance,
+    /// The window of the screen routine's state stores.
+    pub routine_pin: StaticProvenance,
+}
+
+/// How the emitter treats every other actor, measured (`0x4b915e..0x4b9178`,
+/// `0x4200d0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmokeStunAiEffect {
+    /// The incapacitation it applies; its duration is the stun interval.
+    pub incapacitation: MeasuredActorIncapacitation,
+    /// The gate the victim passes in the emitter and in `0x4200d0`.
+    pub gate: &'static str,
+}
+
+/// The smoke emitter's stun rule: who it reaches and what it does, with the
+/// three `player.zrd` globals it reads left as keys (their retail values come
+/// from `OriginalDocuments::smokescreen_stun`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SmokeStunRule {
+    /// The range key (`0x71c3dc`).
+    pub range_key: &'static str,
+    /// The image's range when the key is absent, metres.
+    pub range_image_default_m: f64,
+    /// The cone-angle key (`0x71c3e0`, stored as `cos(angle * pi / 180 * 0.5)`).
+    pub angle_key: &'static str,
+    /// The image's cosine when the key is absent.
+    pub cone_cosine_image_default: f64,
+    /// The interval key (`0x71c3e4`).
+    pub interval_key: &'static str,
+    /// The image's interval when the key is absent, seconds.
+    pub interval_image_default_s: f64,
+    /// The owner (the node's owner actor) is never stunned (`0x4b90bc`).
+    pub excludes_owner: bool,
+    /// The emitter acts on every step it is alive, not once.
+    pub every_step: bool,
+    /// What the player gets.
+    pub player: SmokeStunPlayerScreen,
+    /// What every other actor gets.
+    pub ai: SmokeStunAiEffect,
+    /// The window in which victims are picked.
+    pub pin: StaticProvenance,
+}
+
+impl SmokeStunRule {
+    /// The rule as measured.
+    #[must_use]
+    pub fn measured() -> Self {
+        let f = |bits: u32| f64::from(f32::from_bits(bits));
+        Self {
+            range_key: "smokescreen_stun_range",
+            range_image_default_m: f(0x4348_0000),
+            angle_key: "smokescreen_stun_angle",
+            cone_cosine_image_default: 0.8,
+            interval_key: "smokescreen_stun_interval",
+            interval_image_default_s: 3.0,
+            excludes_owner: true,
+            every_step: true,
+            player: SmokeStunPlayerScreen {
+                tint_seconds: 2.0,
+                rearm_seconds: 2.0,
+                rearm_gate_seconds: 0.5,
+                colour: [f(0x3e4c_cccd), f(0x3e94_7ae1), f(0x3e14_7ae1)],
+                scalar_rearmed: f(0x3f66_6666),
+                scalar_first: f(0x3f78_51ec),
+                control_loss: false,
+                trigger_pin: StaticProvenance::new(0x004b_917f, 92),
+                routine_pin: StaticProvenance::new(0x0042_e9d0, 16),
+            },
+            ai: SmokeStunAiEffect {
+                incapacitation: MeasuredActorIncapacitation {
+                    mode: 4,
+                    control_words_zeroed: 6,
+                    ends_at: "the shared clock (0x71c470) reaching the stored clock + \
+                              smokescreen_stun_interval at the victim's +0xc0 clears mode 4",
+                    gate_pin: StaticProvenance::new(0x0042_00ea, 24),
+                    store_pin: StaticProvenance::new(0x0042_0154, 54),
+                },
+                gate: "not the owner, victim +0x91d == 0, not the player, victim +0xf8 == 0, \
+                       and in 0x4200d0 victim +0x67c in {0, 4}",
+            },
+            pin: SMOKE_STUN_PICK_PIN,
+        }
+    }
+
+    /// The rule with the three globals read from the installation.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        globals: &crate::original_airframe::OriginalSmokescreenStun,
+    ) -> ResolvedSmokeStun {
+        ResolvedSmokeStun {
+            range_m: globals.range_m,
+            cone_cosine: (globals.cone_angle_deg.to_radians() * 0.5).cos(),
+            interval_s: globals.interval_s,
+            player: self.player,
+        }
+    }
+
+    /// The rule with every global at the image's own default.
+    #[must_use]
+    pub fn at_image_defaults(&self) -> ResolvedSmokeStun {
+        ResolvedSmokeStun {
+            range_m: self.range_image_default_m,
+            cone_cosine: self.cone_cosine_image_default,
+            interval_s: self.interval_image_default_s,
+            player: self.player,
+        }
+    }
+}
+
+/// The smoke stun rule with its globals resolved to numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedSmokeStun {
+    /// The stun range, metres.
+    pub range_m: f64,
+    /// The cosine the facing dot product must exceed.
+    pub cone_cosine: f64,
+    /// How long a struck AI actor is incapacitated, seconds.
+    pub interval_s: f64,
+    /// What the player gets.
+    pub player: SmokeStunPlayerScreen,
+}
+
+/// What one emitter step does to the player.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmokeStunPlayerTint {
+    /// The tint duration, seconds.
+    pub seconds: f64,
+    /// The tint scalar.
+    pub scalar: f64,
+    /// The new value of the emitter's re-arm timer, seconds.
+    pub rearm_seconds: f64,
+}
+
+impl ResolvedSmokeStun {
+    /// Whether an actor at `distance_m` from the owner, whose direction from
+    /// the owner has cosine `facing_dot` with the owner's forward axis, is
+    /// reached: strictly inside the range and strictly inside the cone.
+    #[must_use]
+    pub fn reaches(&self, distance_m: f64, facing_dot: f64) -> bool {
+        distance_m < self.range_m && facing_dot > self.cone_cosine
+    }
+
+    /// The tint a reached player gets when the emitter's re-arm timer reads
+    /// `rearm_s`, `None` while it has not run down below the gate.
+    #[must_use]
+    pub fn player_tint(&self, rearm_s: f64) -> Option<SmokeStunPlayerTint> {
+        (rearm_s < self.player.rearm_gate_seconds).then_some(SmokeStunPlayerTint {
+            seconds: self.player.tint_seconds,
+            scalar: if rearm_s > 0.0 {
+                self.player.scalar_rearmed
+            } else {
+                self.player.scalar_first
+            },
+            rearm_seconds: self.player.rearm_seconds,
+        })
+    }
+
+    /// The clock value a reached AI actor's mode-4 stun ends at, given the
+    /// shared clock `now_s`.
+    #[must_use]
+    pub fn ai_stun_ends_at(&self, now_s: f64) -> f64 {
+        now_s + self.interval_s
+    }
 }
