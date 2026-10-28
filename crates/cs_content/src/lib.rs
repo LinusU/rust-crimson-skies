@@ -616,6 +616,7 @@ pub mod objectives;
 pub mod objectives_conditions;
 pub mod objectives_engine;
 pub mod ordnance;
+pub mod ordnance_ammo;
 pub mod original_airframe;
 pub mod pilots;
 pub mod replay;
