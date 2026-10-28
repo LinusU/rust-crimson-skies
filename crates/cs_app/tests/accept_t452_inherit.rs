@@ -597,8 +597,9 @@ fn accept_t452_inherit_an_instant_record_still_names_its_blocker() {
         blockers.iter().any(
             |blocker| blocker.claim == cs_app::ordnance::T452_INHERITANCE_BLOCKED
                 && blocker.field == "launch.inheritance"
+                && blocker.resolving_task == cs_app::ordnance::T452_REG_INSTANT_TASK
         ),
-        "the INSTANT launch names its claim: {blockers:?}"
+        "the INSTANT launch names its claim and its resolving task: {blockers:?}"
     );
 }
 

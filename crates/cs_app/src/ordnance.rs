@@ -3629,7 +3629,8 @@ pub const T452_DESIGNED_LAUNCH_NAMES_CLAIM: &str = "t452_register.designed_launc
 /// by `RANGE·launch_dir` in a single step — a one-step flight the runtime's
 /// per-tick advancement has no rule for. (The `ACCELERATION` ramp this claim
 /// family carried is resolved: [`T452_REG_INHERITANCE_TASK`] added the
-/// lateral-remainder rule and its acceleration field.)
+/// lateral-remainder rule and its acceleration field.) Resolving task:
+/// [`T452_REG_INSTANT_TASK`].
 pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_instant";
 
 /// Blocker: the measured end of flight is a silent expiry at the record's
@@ -3651,6 +3652,10 @@ pub const T452_PER_BOX_WEIGHT_CLAIM: &str = "t452_register.limit.per_box_weight"
 /// The task that adds the measured lateral-remainder inheritance and its
 /// `ACCELERATION` ramp to the runtime vocabulary.
 pub const T452_REG_INHERITANCE_TASK: &str = "T452-REG-INHERITANCE-RAMP";
+
+/// The task that expresses the measured `INSTANT` one-step `RANGE·launch_dir`
+/// displacement in the runtime vocabulary.
+pub const T452_REG_INSTANT_TASK: &str = "T452-REG-INSTANT-STEP";
 
 /// The task that adds the measured silent range-end expiry to the runtime fuse
 /// vocabulary.
@@ -3998,7 +4003,7 @@ pub fn measured_ordnance_declaration(
                 "the launch geometry of this INSTANT record: its measured first step \
                  displaces by RANGE·launch_dir in a single step, which the runtime's \
                  per-tick advancement cannot express",
-                "a follow-up that expresses the measured INSTANT one-step displacement",
+                T452_REG_INSTANT_TASK,
             ));
             designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Full)
         }
