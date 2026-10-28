@@ -262,6 +262,13 @@ pub struct DeclaredProximityFuse {
 /// A `Timed` fuse's tick count is a [`Resolved`] value: the original's burn
 /// or burst delay is unmeasured, and a default tick count would silently
 /// give every area-denial component the same lifetime.
+///
+/// `ExpiresAtRange` is the original's **measured** end of flight
+/// (`docs/findings/2026-10-28-t452-r02-ordnance-effects-fuses-and-swarm.md`
+/// §3): the item is consumed, with no detonation, once the path it has flown
+/// reaches its record's `RANGE`. Its bound is a [`Resolved`] distance for the
+/// same reason a `Timed` fuse's ticks are — a default range would fly a
+/// fabricated distance.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeclaredFuseRule {
     /// Ends on swept contact.
@@ -273,6 +280,12 @@ pub enum DeclaredFuseRule {
         /// The declared tick count.
         ticks: Resolved<u64>,
     },
+    /// Ends — without detonating — once the path flown reaches this many
+    /// meters, the record's own `RANGE`.
+    ExpiresAtRange {
+        /// The declared `RANGE` bound, in meters.
+        range_m: Resolved<f64>,
+    },
 }
 
 impl fmt::Display for DeclaredFuseRule {
@@ -281,6 +294,7 @@ impl fmt::Display for DeclaredFuseRule {
             Self::Impact => f.write_str("impact"),
             Self::Proximity(_) => f.write_str("proximity"),
             Self::Timed { .. } => f.write_str("timed"),
+            Self::ExpiresAtRange { .. } => f.write_str("expires_at_range"),
         }
     }
 }
@@ -868,6 +882,13 @@ pub enum OrdnanceSchemaError {
         /// The rejected value.
         trigger_radius_m: f64,
     },
+    /// A known `RANGE` fuse bound was NaN or infinite.
+    NonFiniteFuseRange,
+    /// A known `RANGE` fuse bound was zero or negative.
+    NonPositiveFuseRange {
+        /// The rejected value.
+        range_m: f64,
+    },
     /// A known area radius was NaN or infinite.
     NonFiniteAreaRadius,
     /// A known area radius was zero or negative.
@@ -972,6 +993,10 @@ impl fmt::Display for OrdnanceSchemaError {
                     f,
                     "the proximity trigger radius must be positive: {trigger_radius_m}"
                 )
+            }
+            Self::NonFiniteFuseRange => write!(f, "the RANGE fuse bound must be finite"),
+            Self::NonPositiveFuseRange { range_m } => {
+                write!(f, "the RANGE fuse bound must be positive: {range_m}")
             }
             Self::NonFiniteAreaRadius => write!(f, "the area radius must be finite"),
             Self::NonPositiveAreaRadius { radius_m } => {
@@ -1082,7 +1107,22 @@ fn validate_projectile(projectile: &DeclaredProjectile) -> Result<(), OrdnanceSc
                 return Err(OrdnanceSchemaError::ZeroFuseTicks);
             }
         }
+        DeclaredFuseRule::ExpiresAtRange {
+            range_m: Resolved::Known(known),
+        } => {
+            if !known.value.is_finite() {
+                return Err(OrdnanceSchemaError::NonFiniteFuseRange);
+            }
+            if known.value <= 0.0 {
+                return Err(OrdnanceSchemaError::NonPositiveFuseRange {
+                    range_m: known.value,
+                });
+            }
+        }
         DeclaredFuseRule::Impact | DeclaredFuseRule::Timed { .. } => {}
+        DeclaredFuseRule::ExpiresAtRange {
+            range_m: Resolved::Unknown { .. },
+        } => {}
     }
     if let Some(area) = &projectile.area_effect {
         if let Resolved::Known(known) = &area.radius_m {
@@ -1626,6 +1666,9 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
                     walk.value("fuse.trigger_radius_m", &fuse.trigger_radius_m);
                 }
                 DeclaredFuseRule::Timed { ticks } => walk.value("fuse.ticks", ticks),
+                DeclaredFuseRule::ExpiresAtRange { range_m } => {
+                    walk.value("fuse.range_m", range_m);
+                }
             }
             match &projectile.guidance {
                 DeclaredGuidanceRule::Unguided | DeclaredGuidanceRule::MarkerSeeker => {}

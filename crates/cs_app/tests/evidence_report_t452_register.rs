@@ -136,6 +136,9 @@ fn evidence_report_t452_register_writes_the_acceptance_report() {
                         format!("proximity({})", fuse.trigger_radius_m())
                     }
                     FuseRule::Timed { ticks } => format!("timed({ticks})"),
+                    FuseRule::ExpiresAtRange { range_m } => {
+                        format!("expires_at_range({range_m})")
+                    }
                 };
                 let guidance = match projectile.guidance() {
                     GuidanceRule::Unguided => "unguided".to_owned(),

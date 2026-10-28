@@ -678,7 +678,8 @@ impl ProximityFuse {
 
 /// How an item ends.
 ///
-/// Three distinct behaviors, all **designed**:
+/// Four behaviors. The first three are **designed** vocabulary; the fourth is
+/// the original's **measured** end of flight:
 ///
 /// * [`Impact`](FuseRule::Impact) — a swept contact ends the item. The
 ///   swept test itself is [`crate::weapons::guns::Ballistics`], whose
@@ -686,8 +687,13 @@ impl ProximityFuse {
 /// * [`Proximity`](FuseRule::Proximity) — the closest approach to a
 ///   target's swept path reaches [`ProximityFuse::trigger_radius_m`].
 /// * [`Timed`](FuseRule::Timed) — the item's own clock reaches the
-///   declared tick. This is the only end an area-denial item may have: its
-///   effect is the bounded area, so a contact end would be meaningless.
+///   declared tick.
+/// * [`ExpiresAtRange`](FuseRule::ExpiresAtRange) — the path the item has
+///   flown reaches the declared metres, and the item is **consumed**: no
+///   detonation, no area and no damage. This is what
+///   `docs/findings/2026-10-28-t452-r02-ordnance-effects-fuses-and-swarm.md`
+///   §3 measured at `0x5b01ec`/`0x5b0318` for every record whose end of
+///   `RANGE` is not gated on `LOCK_ON` or `DETONATE_AT_RANGE`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FuseRule {
     /// Ends on swept contact.
@@ -697,6 +703,26 @@ pub enum FuseRule {
     /// Ends after this many ticks, which may not exceed the item's own
     /// lifetime.
     Timed { ticks: u64 },
+    /// Ends — **without detonating** — once the path flown reaches
+    /// `range_m`, the record's own `RANGE`.
+    ///
+    /// This is a distance bound, not a countdown: [`Timed`](Self::Timed) ends
+    /// on the item's clock and *detonates*, so it cannot express a measured
+    /// end that is both range-bounded and silent, and `range_m` moves with the
+    /// speed the item was released at. [`ArmingRule::Disarmed`] would express
+    /// "never detonates" but overstates the measurement: nothing measured says
+    /// a collision cannot detonate such a record, so a swept contact still
+    /// triggers [`FuseTrigger::Impact`] first (see
+    /// [`OrdnanceState::fuse_decision`]).
+    ///
+    /// The runtime's [`ProjectileOrdnance::lifetime_ticks`] stays a designed
+    /// cap derived from the same `RANGE`; when both boundaries fall on the
+    /// same tick, this measured end is the one reported (see
+    /// [`OrdnanceRuntime::advance`]).
+    ExpiresAtRange {
+        /// The record's `RANGE` bound, in meters. Finite and positive.
+        range_m: f64,
+    },
 }
 
 impl FuseRule {
@@ -707,6 +733,7 @@ impl FuseRule {
             Self::Impact => "impact".to_owned(),
             Self::Proximity(fuse) => format!("proximity({})", fuse.trigger_radius_m),
             Self::Timed { ticks } => format!("timed({ticks})"),
+            Self::ExpiresAtRange { range_m } => format!("expires_at_range({range_m})"),
         }
     }
 
@@ -714,6 +741,16 @@ impl FuseRule {
     #[must_use]
     pub const fn is_impact(&self) -> bool {
         matches!(self, Self::Impact)
+    }
+
+    /// The measured `RANGE` bound, when this is
+    /// [`ExpiresAtRange`](Self::ExpiresAtRange).
+    #[must_use]
+    pub const fn range_end_m(&self) -> Option<f64> {
+        match self {
+            Self::ExpiresAtRange { range_m } => Some(*range_m),
+            Self::Impact | Self::Proximity(_) | Self::Timed { .. } => None,
+        }
     }
 }
 
@@ -1272,9 +1309,10 @@ impl fmt::Display for CompatibilityVerdict {
 /// seeker, a [`OrdnanceFamily::GuidedRocket`] may not be declared
 /// unguided, and an [`OrdnanceFamily::AreaDenialEngine`] component may be
 /// neither guided nor impact-fused — its effect is the bounded area, so it
-/// must end on its own clock. Nothing stops a *torpedo* from being guided or
-/// unguided, because that is exactly the kind of fact F28-D has to measure
-/// rather than assume.
+/// must end on its own rule: a declared clock ([`FuseRule::Timed`]) or the
+/// record's measured `RANGE` ([`FuseRule::ExpiresAtRange`]). Nothing stops a
+/// *torpedo* from being guided or unguided, because that is exactly the kind
+/// of fact F28-D has to measure rather than assume.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectileOrdnance {
     ordnance: OrdnanceId,
@@ -1331,6 +1369,14 @@ impl ProjectileOrdnance {
                 fuse_ticks: ticks,
                 lifetime_ticks,
             });
+        }
+        if let FuseRule::ExpiresAtRange { range_m } = fuse {
+            if !range_m.is_finite() {
+                return Err(OrdnanceDefinitionError::NonFiniteFuseRange);
+            }
+            if range_m <= 0.0 {
+                return Err(OrdnanceDefinitionError::NonPositiveFuseRange { range_m });
+            }
         }
         if let Some(area) = area_effect
             && area.lifetime_ticks() > lifetime_ticks
@@ -1489,7 +1535,7 @@ fn check_family_rules(
                 return Err(OrdnanceDefinitionError::IncoherentFamily {
                     family,
                     field: "fuse",
-                    detail: "this family ends on its own clock, not on contact".to_owned(),
+                    detail: "this family ends on its own rule, not on contact".to_owned(),
                 });
             }
         }
@@ -1545,6 +1591,14 @@ pub enum OrdnanceDefinitionError {
     NonPositiveTriggerRadius {
         /// The rejected value.
         trigger_radius_m: f64,
+    },
+    /// A measured `RANGE` bound was NaN or infinite.
+    NonFiniteFuseRange,
+    /// A measured `RANGE` bound was zero or negative, so the item would be
+    /// consumed before it flew.
+    NonPositiveFuseRange {
+        /// The rejected value.
+        range_m: f64,
     },
     /// An area radius was NaN or infinite.
     NonFiniteAreaRadius,
@@ -1699,6 +1753,10 @@ impl fmt::Display for OrdnanceDefinitionError {
                     f,
                     "the proximity trigger radius must be positive: {trigger_radius_m}"
                 )
+            }
+            Self::NonFiniteFuseRange => write!(f, "the measured RANGE bound must be finite"),
+            Self::NonPositiveFuseRange { range_m } => {
+                write!(f, "the measured RANGE bound must be positive: {range_m}")
             }
             Self::NonFiniteAreaRadius => write!(f, "the area radius must be finite"),
             Self::NonPositiveAreaRadius { radius_m } => {
@@ -3231,26 +3289,50 @@ impl FuseInert {
 /// The result of asking one in-flight item whether it ended this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FuseDecision {
-    /// The item ended, with the cause.
+    /// The item ended, with the cause. A trigger is a **detonation**: its
+    /// declared damage, statuses and area are routed.
     Triggered(FuseTrigger),
+    /// The item ended **without detonating**: the path it has flown reached
+    /// the `RANGE` of its [`FuseRule::ExpiresAtRange`]. Nothing was hit,
+    /// nothing detonates, no area opens and no damage is routed; the item is
+    /// consumed. `range_m` is the bound it reached.
+    Consumed {
+        /// The record's `RANGE` the item reached, in meters.
+        range_m: f64,
+    },
     /// The item is still live, with the reason it did not end.
     Inert(FuseInert),
 }
 
 impl FuseDecision {
-    /// The trigger, when the item ended.
+    /// The trigger, when the item ended in a detonation.
     #[must_use]
     pub const fn trigger(&self) -> Option<FuseTrigger> {
         match self {
             Self::Triggered(trigger) => Some(*trigger),
-            Self::Inert(_) => None,
+            Self::Consumed { .. } | Self::Inert(_) => None,
         }
     }
 
-    /// Whether the item ended.
+    /// Whether the item ended in a detonation.
     #[must_use]
     pub const fn is_triggered(&self) -> bool {
         matches!(self, Self::Triggered(_))
+    }
+
+    /// The `RANGE` the item reached, when it was consumed without detonating.
+    #[must_use]
+    pub const fn consumed_range_m(&self) -> Option<f64> {
+        match self {
+            Self::Consumed { range_m } => Some(*range_m),
+            Self::Triggered(_) | Self::Inert(_) => None,
+        }
+    }
+
+    /// Whether the item ended at all — by detonating or by being consumed.
+    #[must_use]
+    pub const fn has_ended(&self) -> bool {
+        !matches!(self, Self::Inert(_))
     }
 
     /// Whether the item is still live because it has not armed.
@@ -3286,6 +3368,7 @@ pub struct OrdnanceState {
     ticks_live: u64,
     travelled_m: f64,
     triggered: Option<FuseTrigger>,
+    consumed_range_m: Option<f64>,
     destroyed: bool,
 }
 
@@ -3312,6 +3395,7 @@ impl OrdnanceState {
             ticks_live: 0,
             travelled_m: 0.0,
             triggered: None,
+            consumed_range_m: None,
             destroyed: false,
         }
     }
@@ -3382,13 +3466,51 @@ impl OrdnanceState {
         self.ticks_live >= self.lifetime_ticks
     }
 
-    /// Whether the item has already ended.
+    /// Whether the item has already ended in a detonation.
     #[must_use]
     pub const fn is_triggered(&self) -> bool {
         self.triggered.is_some()
     }
 
-    /// The cause of the item's end, when it has ended.
+    /// The `RANGE` the item reached, when the measured end of its flight
+    /// consumed it without a detonation.
+    #[must_use]
+    pub const fn consumed_range_m(&self) -> Option<f64> {
+        self.consumed_range_m
+    }
+
+    /// Whether the item has already ended **without detonating** at the end of
+    /// its measured `RANGE`.
+    #[must_use]
+    pub const fn is_consumed(&self) -> bool {
+        self.consumed_range_m.is_some()
+    }
+
+    /// Whether the item has ended at all — detonated, consumed or retired.
+    #[must_use]
+    pub const fn has_ended(&self) -> bool {
+        self.triggered.is_some() || self.consumed_range_m.is_some() || self.destroyed
+    }
+
+    /// Whether the measured end of the item's flight is due now: its
+    /// [`FuseRule::ExpiresAtRange`] bound has been reached, it has not
+    /// detonated and the end has not already been reported.
+    ///
+    /// A pure query over the path already flown, so
+    /// [`fuse_decision`](Self::fuse_decision) and
+    /// [`OrdnanceRuntime::advance`] answer it identically and cannot
+    /// disagree about which tick the item's flight ends.
+    #[must_use]
+    pub fn reaches_range_end(&self) -> bool {
+        !self.is_triggered()
+            && !self.is_consumed()
+            && self
+                .fuse
+                .range_end_m()
+                .is_some_and(|range_m| self.travelled_m >= range_m)
+    }
+
+    /// The cause of the item's end, when it has ended in a detonation.
     #[must_use]
     pub const fn triggered(&self) -> Option<FuseTrigger> {
         self.triggered
@@ -3404,10 +3526,10 @@ impl OrdnanceState {
     /// A **retired** item (`destroyed`) still ages: `retire` ends the item's
     /// fuse, not its clock, so a dud stays visible until its own lifetime is
     /// spent and the runtime can then expire it. Only an item that has already
-    /// triggered stops counting, because the runtime retires such an item from
-    /// its live set on the next tick.
+    /// ended stops counting, because the runtime retires such an item from its
+    /// live set on the next tick.
     pub fn advance(&mut self, segment: &ProjectileSegment) {
-        if self.is_triggered() {
+        if self.has_ended() {
             return;
         }
         let from = segment.previous.to_array();
@@ -3424,9 +3546,10 @@ impl OrdnanceState {
     /// The order is the contract, and each step is a refusal the next one
     /// cannot override:
     ///
-    /// 1. already ended — triggered **or** retired — →
-    ///    [`FuseInert::AlreadyTriggered`]. A retired item is a dud, so its
-    ///    fuse can never fire, exactly as [`retire`](Self::retire) documents;
+    /// 1. already ended — triggered, consumed at the end of `RANGE` **or**
+    ///    retired — → [`FuseInert::AlreadyTriggered`]. A retired item is a
+    ///    dud, so its fuse can never fire, exactly as
+    ///    [`retire`](Self::retire) documents;
     /// 2. **not armed** → [`FuseInert::NotArmed`], whatever else this tick
     ///    reported. This is AC01's "not before arming";
     /// 3. a swept contact in `impacts` → [`FuseTrigger::Impact`];
@@ -3434,10 +3557,23 @@ impl OrdnanceState {
     /// 5. a [`FuseRule::Proximity`] radius that a path crossed →
     ///    [`FuseTrigger::Proximity`], the **nearest** path, with the actor id
     ///    as the stable tie-breaker;
-    /// 6. otherwise the named inert reason.
+    /// 6. the measured end of flight — a [`FuseRule::ExpiresAtRange`] bound
+    ///    the path has reached → [`FuseDecision::Consumed`], *without* a
+    ///    detonation;
+    /// 7. otherwise the named inert reason.
     ///
-    /// The first trigger that applies is latched, so calling this twice for
-    /// one item yields one detonation.
+    /// Position 3 before position 6 is deliberate: the measured silent expiry
+    /// covers the end of `RANGE`, and nothing measured says a swept contact
+    /// cannot detonate these records
+    /// (`t452_r02.limit` — see the T452.R02 finding §3, "what a collision or
+    /// another path does with the shell is not part of this measurement"), so
+    /// a contact still wins and a range-bounded item never hides one.
+    ///
+    /// The first end that applies is latched, so calling this twice for one
+    /// item yields one detonation or one consumption. A consumed item reports
+    /// [`FuseDecision::Consumed`] again — its latch is
+    /// [`consumed_range_m`](Self::consumed_range_m), not a trigger — while a
+    /// triggered one reports [`FuseInert::AlreadyTriggered`].
     ///
     /// `impacts` is expected in the order
     /// [`crate::weapons::guns::Ballistics::sweep`] produces — ascending time
@@ -3467,6 +3603,12 @@ impl OrdnanceState {
         }
         if self.triggered.is_some() {
             return FuseDecision::Inert(FuseInert::AlreadyTriggered);
+        }
+        if let Some(range_m) = self.consumed_range_m {
+            // The measured end was already latched on an earlier call; the
+            // item ends once, so a second call names the same end rather than
+            // inventing a second one.
+            return FuseDecision::Consumed { range_m };
         }
         if !self.is_armed() {
             return FuseDecision::Inert(FuseInert::NotArmed {
@@ -3526,6 +3668,16 @@ impl OrdnanceState {
                 });
             }
         }
+        if self.reaches_range_end()
+            && let Some(range_m) = self.fuse.range_end_m()
+        {
+            // The measured end of flight: the path has reached the record's
+            // `RANGE`, so the item is consumed. It detonates nothing and it is
+            // not a lifetime expiry — [`FuseDecision::Consumed`] is its own
+            // outcome so a caller can tell "the shell flew its range" from
+            // "the runtime's cap ran out".
+            return self.consume(range_m);
+        }
         if self.is_expired() {
             return FuseDecision::Inert(FuseInert::Expired);
         }
@@ -3536,6 +3688,12 @@ impl OrdnanceState {
     fn trigger(&mut self, trigger: FuseTrigger) -> FuseDecision {
         self.triggered = Some(trigger);
         FuseDecision::Triggered(trigger)
+    }
+
+    /// Latches the measured range end and returns the decision.
+    fn consume(&mut self, range_m: f64) -> FuseDecision {
+        self.consumed_range_m = Some(range_m);
+        FuseDecision::Consumed { range_m }
     }
 
     /// Retires the item — a bounce-off, a dud, or a session teardown —
@@ -5914,6 +6072,17 @@ impl OrdnanceRuntime {
             tick.segments.push(segment);
         }
         for live in self.live.values() {
+            // A [`FuseRule::ExpiresAtRange`] item whose path has reached its
+            // record's `RANGE` is left live here, even when the designed
+            // lifetime cap — which for a measured record is derived from the
+            // same `RANGE` — falls on this very tick. That measured end is
+            // [`decide`](Self::decide)'s to report, and expiring the item here
+            // would report the cap instead and hide the end the record
+            // measured. The item is removed on this tick either way, so the
+            // deferral never extends a flight.
+            if live.state.reaches_range_end() {
+                continue;
+            }
             if live.state.is_expired() {
                 tick.expired.push(live.projectile);
                 let coasting_to_detonate = !live.state.is_retired()

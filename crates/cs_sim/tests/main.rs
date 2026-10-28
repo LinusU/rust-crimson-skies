@@ -78,6 +78,7 @@ mod accept_t442_shared_damage_identity;
 mod accept_t447_loop_route_progress;
 mod accept_t451_integrated_bank_sign;
 mod accept_t452_nitro;
+mod accept_t452_silent_range_end;
 mod accept_t496_audio_identity;
 mod accept_t526_bank_hold_and_envelope;
 mod accept_t548_lost_target_blast;

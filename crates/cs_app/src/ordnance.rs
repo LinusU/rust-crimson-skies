@@ -333,6 +333,9 @@ fn lower_fuse(declared: &DeclaredFuseRule) -> Result<FuseRule, OrdnanceLowerErro
         DeclaredFuseRule::Timed { ticks } => FuseRule::Timed {
             ticks: known_or_refuse("fuse.timed.ticks", ticks)?,
         },
+        DeclaredFuseRule::ExpiresAtRange { range_m } => FuseRule::ExpiresAtRange {
+            range_m: known_or_refuse("fuse.range_m", range_m)?,
+        },
     })
 }
 
@@ -780,6 +783,14 @@ pub enum OrdnanceEventKind {
         /// The item.
         projectile: ProjectileId,
     },
+    /// An item reached the measured end of its record's `RANGE` and was
+    /// consumed: no detonation, no area, no damage.
+    Consumed {
+        /// The item.
+        projectile: ProjectileId,
+        /// The `RANGE` it reached, in meters.
+        range_m: f64,
+    },
     /// A declared status effect was applied to a stable recipient.
     StatusApplied {
         /// The recipient.
@@ -1127,6 +1138,21 @@ pub struct OrdnanceMirrorReport {
     pub moved: usize,
 }
 
+/// One item the measured end of `RANGE` consumed.
+///
+/// This is not a detonation: the item reached the `RANGE` of its record's
+/// [`FuseRule::ExpiresAtRange`](cs_sim::weapons::FuseRule::ExpiresAtRange), so
+/// nothing detonates, no area opens and no damage is routed. It is not a
+/// lifetime expiry either — the runtime reports the measured end it actually
+/// reached, with the bound, rather than only the designed cap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrdnanceConsumption {
+    /// The item that ended.
+    pub projectile: ProjectileId,
+    /// The record's `RANGE` it reached, in meters.
+    pub range_m: f64,
+}
+
 /// What one session teardown released.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrdnanceTeardownReport {
@@ -1167,6 +1193,10 @@ pub struct OrdnanceSessionTick {
     pub retired: Vec<ProjectileId>,
     /// Items whose declared lifetime ended this tick.
     pub expired: Vec<ProjectileId>,
+    /// Items the measured end of their record's `RANGE` consumed this tick:
+    /// they reached the bound and were removed without a detonation, an area
+    /// or damage.
+    pub consumed: Vec<OrdnanceConsumption>,
     /// Status effects that reached their expiry boundary this tick.
     pub status_expired: Vec<ExpiredStatusEffect>,
     /// The status advance was refused whole.
@@ -2063,6 +2093,34 @@ pub fn step_ordnance_session(
                     .decide(&projectile, step.targets, step.impacts);
                 let trigger = match decision {
                     Ok(FuseDecision::Triggered(trigger)) => trigger,
+                    Ok(FuseDecision::Consumed { range_m }) => {
+                        // The measured end of the record's `RANGE`. The item is
+                        // consumed: it detonates nothing, no area opens and no
+                        // damage is routed, so this branch deliberately reaches
+                        // neither `route_trigger` nor `resolve`. Removing the
+                        // item here (rather than leaving it for the next
+                        // advance) is what makes the consumption the item's
+                        // last tick, exactly as a detonation is.
+                        session.runtime.remove(&projectile);
+                        session.engagements.remove(&projectile);
+                        tick.consumed.push(OrdnanceConsumption {
+                            projectile,
+                            range_m,
+                        });
+                        let event = push_network_event(
+                            &mut session.events,
+                            &mut session.next_event_sequence,
+                            session.session_id,
+                            step.at,
+                            session.producer,
+                            OrdnanceEventKind::Consumed {
+                                projectile,
+                                range_m,
+                            },
+                        );
+                        tick.events.push(event);
+                        continue;
+                    }
                     Ok(FuseDecision::Inert(_)) => continue,
                     Err(source) => {
                         tick.routing_refused
@@ -3633,9 +3691,13 @@ pub const T452_DESIGNED_LAUNCH_NAMES_CLAIM: &str = "t452_register.designed_launc
 /// [`T452_REG_INSTANT_TASK`].
 pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_instant";
 
-/// Blocker: the measured end of flight is a silent expiry at the record's
-/// `RANGE`, which the runtime fuse vocabulary has no variant for. Resolving
-/// task: [`T452_SILENT_EXPIRY_TASK`].
+/// Claim: the measured end of flight is a silent expiry at the record's
+/// `RANGE`, which the runtime fuse vocabulary has no variant for.
+///
+/// **Resolved** by [`T452_SILENT_EXPIRY_TASK`]: `FuseRule::ExpiresAtRange` now
+/// expresses it and no record is blocked on this claim. The id is kept, as a
+/// resolved claim id is elsewhere in this crate, because the earlier stage's
+/// evidence report names it; the catalogue layer it came from is unchanged.
 pub const T452_SILENT_EXPIRY_BLOCKED: &str = "t452_register.limit.silent_expiry";
 
 /// Recorded (not blocking): the measured per-box weight and cost have no
@@ -3651,8 +3713,11 @@ pub const T452_REG_INHERITANCE_TASK: &str = "T452-REG-INHERITANCE-RAMP";
 /// displacement in the runtime vocabulary.
 pub const T452_REG_INSTANT_TASK: &str = "T452-REG-INSTANT-STEP";
 
-/// The task that adds the measured silent range-end expiry to the runtime fuse
-/// vocabulary.
+/// The task that added the measured silent range-end expiry to the runtime fuse
+/// vocabulary (`FuseRule::ExpiresAtRange`, this stage). No record is blocked on
+/// it any more; the unmeasured "this record's flight never ends" branch still
+/// names it, because expressing a flight nothing measured ends is the same
+/// vocabulary question.
 pub const T452_SILENT_EXPIRY_TASK: &str = "T452-REG-SILENT-EXPIRY";
 
 /// The task that gives the measured per-box weight and cost a consumer.
@@ -4074,49 +4139,6 @@ pub fn measured_ordnance_declaration(
         ),
     };
 
-    // Fuse: the record's own `DETONATION_DISTANCE` sphere for a seeker (the
-    // measured proximity path needs `LOCK_ON`, T452-R.02 §3), a declared
-    // `DETONATION_TIME` as a timed fuse, and otherwise the measured silent
-    // expiry, which the runtime cannot express.
-    let targeted = matches!(
-        row.family,
-        DeclaredOrdnanceFamily::GuidedRocket | DeclaredOrdnanceFamily::AerialTorpedo
-    );
-    let fuse = match row
-        .proximity_trigger_m
-        .filter(|radius| *radius > 0.0)
-        .filter(|_| targeted)
-    {
-        Some(radius) => DeclaredFuseRule::Proximity(DeclaredProximityFuse {
-            trigger_radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
-        }),
-        None => match row.lifetime {
-            cs_content::ordnance::OriginalLifetime::Declared { seconds, .. } => {
-                DeclaredFuseRule::Timed {
-                    ticks: measured_field(
-                        provenance,
-                        T452_MEASURED_BEHAVIOUR_CLAIM,
-                        seconds_to_ticks(seconds, ticks_per_second),
-                    ),
-                }
-            }
-            cs_content::ordnance::OriginalLifetime::Undeclared => {
-                blockers.push(OriginalRegistrationBlocker::new(
-                    name,
-                    "fuse",
-                    T452_SILENT_EXPIRY_BLOCKED,
-                    "how this record's flight ends: it states no trigger the measured \
-                     proximity path reaches, and the measured end is the silent removal at \
-                     the end of RANGE with no detonation",
-                    T452_SILENT_EXPIRY_TASK,
-                ));
-                DeclaredFuseRule::Timed {
-                    ticks: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, 1),
-                }
-            }
-        },
-    };
-
     // Lifetime: the measured rule is `RANGE` over the flown speed (T452-R.04
     // §2), which depends on the launcher's velocity at release. The runtime
     // field is a fixed cap, so it carries the record's own rule evaluated at a
@@ -4142,6 +4164,65 @@ pub fn measured_ordnance_declaration(
     let lifetime_value = match &lifetime_ticks {
         Resolved::Known(known) => known.value,
         Resolved::Unknown { .. } => 1,
+    };
+
+    // Fuse: the record's own `DETONATION_DISTANCE` sphere for a seeker (the
+    // measured proximity path needs `LOCK_ON`, T452-R.02 §3), a declared
+    // `DETONATION_TIME` as a timed fuse, and otherwise the measured end of the
+    // record's flight at `RANGE` (T452-R.02 §3). That last end has two measured
+    // shapes, and the difference is the whole reason this task exists:
+    //
+    // * `ExpiresSilently` — the item is consumed at the end of `RANGE` with no
+    //   detonation (`0x5b0318`). `FuseRule::ExpiresAtRange` expresses it, with
+    //   the record's own bound.
+    // * `Detonates` — the end is a detonation, gated on `LOCK_ON` without
+    //   `EXPIRES` or on `DETONATE_AT_RANGE`. A guided record's detonation is
+    //   its lost-target rule (`CoastThenDetonate`), whose end is the lifetime
+    //   cap — T452-R.02 §4 measured that rule over exactly the `LOCK_ON`
+    //   records — so a clock at that cap is the end. No measured record is
+    //   both unguided and range-end detonating (T548 measured `DETONATE_AT_RANGE`
+    //   on none), so the unguided case is not asserted by this mapping.
+    let targeted = matches!(
+        row.family,
+        DeclaredOrdnanceFamily::GuidedRocket | DeclaredOrdnanceFamily::AerialTorpedo
+    );
+    let fuse = match row
+        .proximity_trigger_m
+        .filter(|radius| *radius > 0.0)
+        .filter(|_| targeted)
+    {
+        Some(radius) => DeclaredFuseRule::Proximity(DeclaredProximityFuse {
+            trigger_radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
+        }),
+        None => match row.lifetime {
+            cs_content::ordnance::OriginalLifetime::Declared { seconds, .. } => {
+                DeclaredFuseRule::Timed {
+                    ticks: measured_field(
+                        provenance,
+                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        seconds_to_ticks(seconds, ticks_per_second),
+                    ),
+                }
+            }
+            cs_content::ordnance::OriginalLifetime::Undeclared => match behavior.fuse.range_end {
+                cs_content::ordnance::MeasuredRangeEnd::ExpiresSilently => {
+                    DeclaredFuseRule::ExpiresAtRange {
+                        range_m: measured_field(
+                            provenance,
+                            T452_MEASURED_BEHAVIOUR_CLAIM,
+                            geometry.range.metres(),
+                        ),
+                    }
+                }
+                cs_content::ordnance::MeasuredRangeEnd::Detonates => DeclaredFuseRule::Timed {
+                    ticks: measured_field(
+                        provenance,
+                        T452_MEASURED_BEHAVIOUR_CLAIM,
+                        lifetime_value,
+                    ),
+                },
+            },
+        },
     };
 
     // Guidance: measured, including the lost-target rule task T452-R.02 §4
