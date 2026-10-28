@@ -6532,3 +6532,171 @@ pub fn read_original_weapon_media(
         .map(|(name, body)| weapon_media(name, body))
         .collect())
 }
+
+// ------------------- T452-REG-TANGLER-VOCAB: the tangler field -----------
+//
+// Task #2179 measured statically in the decrypted engine image
+// (`docs/findings/2026-10-28-t452-tangler-effect.md`, rows `[[tangler_fact]]`
+// in `data/owner-static/engine-facts.toml`) what a zero-damage `TANGLER` does:
+// the weapon creates a persistent area field at fire time whose tick re-applies
+// a per-hit routine to every live actor inside it, owner included, and that
+// routine tangles the victim for a distance-dependent duration. This section
+// is the pure-data vocabulary for that measurement; the runtime that applies
+// it per tick is a separate task.
+
+/// Claim: what the force scalar `[ebp-8]` of the actor force routine `0x48fc40`
+/// is in physical terms. The tangle zeroes it; whether that is thrust, drag or
+/// something else is not decoded, so the status is named after the store only.
+pub const T452_REG_TANGLER_FORCE_SCALAR: &str = "t452_reg.limit.tangler_force_scalar_meaning";
+
+/// The name of the tangled status: exactly what is measured, no more.
+pub const TANGLE_STATUS_NAME: &str = "force scalar [ebp-8] of 0x48fc40 suppressed";
+
+/// The image's default `RADIUS` when a record states none, metres (`0x4ba870`).
+pub const TANGLER_IMAGE_DEFAULT_RADIUS_M: f64 = 10.0;
+
+/// The constant `1.0` of the duration formula, at `0x6032dc`.
+pub const TANGLE_UNIT: f64 = 1.0;
+
+/// The multiplier `10.0` of the duration formula, seconds, at `0x62b124`.
+pub const TANGLE_FALLOFF_SCALE_S: f64 = 10.0;
+
+/// The duration floor `2.0`, seconds, at `0x62b120`.
+pub const TANGLE_FLOOR_S: f64 = 2.0;
+
+/// Where a re-hit of an already tangled actor leaves the timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TangleReHit {
+    /// The timer becomes the larger of its current value and the new duration;
+    /// it is never shortened (`0x4b16f6..0x4b170b`).
+    RaiseToMax,
+}
+
+/// What advances the tangle timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TangleCountdown {
+    /// The timer loses the frame time each update and the status clears when it
+    /// is no longer positive (`0x48fda5..0x48fdcb`).
+    FrameTime,
+}
+
+/// The per-victim timed status a tangler field applies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TangleStatus {
+    /// [`TANGLE_STATUS_NAME`].
+    pub name: &'static str,
+    /// `RADIUS`, unsquared, metres: the divisor of the duration formula.
+    pub radius_m: f64,
+    /// The duration floor, seconds.
+    pub floor_s: f64,
+    /// The `10.0` multiplier, seconds.
+    pub falloff_scale_s: f64,
+    /// The `1.0` the ratio is subtracted from.
+    pub unit: f64,
+    /// What a re-hit does.
+    pub on_rehit: TangleReHit,
+    /// What counts the timer down.
+    pub countdown: TangleCountdown,
+    /// The claim kept for the unresolved physical meaning of the scalar.
+    pub claim: &'static str,
+    /// The window the duration formula was read from.
+    pub pin: StaticProvenance,
+}
+
+impl TangleStatus {
+    /// The duration a hit at squared distance `d2` (square metres, as the field
+    /// tick passes it) gives: `max(floor, 10 * (1 - d2 / RADIUS))`, `RADIUS`
+    /// unsquared.
+    #[must_use]
+    pub fn duration_for(&self, d2: f64) -> f64 {
+        self.floor_s
+            .max(self.falloff_scale_s * (self.unit - d2 / self.radius_m))
+    }
+
+    /// The timer after a hit at squared distance `d2` on an actor whose timer
+    /// reads `current_s` (zero when not tangled): never shorter than before.
+    #[must_use]
+    pub fn after_hit(&self, current_s: f64, d2: f64) -> f64 {
+        match self.on_rehit {
+            TangleReHit::RaiseToMax => current_s.max(self.duration_for(d2)),
+        }
+    }
+}
+
+/// The persistent area field a `TANGLER` record declares, measured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TanglerFieldDeclaration {
+    /// The record name.
+    pub record: String,
+    /// The field's radius, metres.
+    pub radius_m: f64,
+    /// Where the radius came from.
+    pub radius_source: MeasuredAreaSource,
+    /// How long the field lives, seconds.
+    pub lifetime_s: f64,
+    /// Where the lifetime came from.
+    pub lifetime_source: MeasuredAreaSource,
+    /// The field is created at fire time at the record's flight position.
+    pub created_at_fire_time: bool,
+    /// The field re-applies its hit to every live actor inside it every tick.
+    pub reapplied_every_tick: bool,
+    /// The owner is hit like any other actor.
+    pub includes_owner: bool,
+    /// The status each victim receives.
+    pub status: TangleStatus,
+    /// The window the field's tick was read from.
+    pub pin: StaticProvenance,
+}
+
+impl TanglerFieldDeclaration {
+    /// Whether an actor at squared distance `d2` is inside the field
+    /// (`d2 < RADIUS^2`).
+    #[must_use]
+    pub fn contains(&self, d2: f64) -> bool {
+        d2 < self.radius_m * self.radius_m
+    }
+}
+
+/// Lowers a `TANGLER` record into its measured field and status declaration.
+///
+/// `record_radius_m` is the `RADIUS` the record states, `None` when it states
+/// none (the image then applies [`TANGLER_IMAGE_DEFAULT_RADIUS_M`]; no retail
+/// `wep_` record states one). Returns `None` for a record without `TANGLER`.
+#[must_use]
+pub fn lower_tangler_field(
+    row: &OriginalComponentLaunch,
+    record_radius_m: Option<f64>,
+) -> Option<TanglerFieldDeclaration> {
+    let tangler = row.statuses.iter().find(|s| s.key == "TANGLER")?;
+    let (radius_m, radius_source) = match record_radius_m {
+        Some(radius) => (radius, MeasuredAreaSource::RecordKey { key: "RADIUS" }),
+        None => (
+            TANGLER_IMAGE_DEFAULT_RADIUS_M,
+            MeasuredAreaSource::ImageDefault {
+                value: TANGLER_IMAGE_DEFAULT_RADIUS_M,
+            },
+        ),
+    };
+    Some(TanglerFieldDeclaration {
+        record: row.record.clone(),
+        radius_m,
+        radius_source,
+        lifetime_s: tangler.duration_s.unwrap_or(IMAGE_DEFAULT_TIME_S),
+        lifetime_source: measured_time_source(tangler.duration_s),
+        created_at_fire_time: true,
+        reapplied_every_tick: true,
+        includes_owner: true,
+        status: TangleStatus {
+            name: TANGLE_STATUS_NAME,
+            radius_m,
+            floor_s: TANGLE_FLOOR_S,
+            falloff_scale_s: TANGLE_FALLOFF_SCALE_S,
+            unit: TANGLE_UNIT,
+            on_rehit: TangleReHit::RaiseToMax,
+            countdown: TangleCountdown::FrameTime,
+            claim: T452_REG_TANGLER_FORCE_SCALAR,
+            pin: StaticProvenance::new(0x004b_9dfa, 36),
+        },
+        pin: StaticProvenance::new(0x004b_950f, 26),
+    })
+}
