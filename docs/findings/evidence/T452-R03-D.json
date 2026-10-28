@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T452-R.03-D",
+ "candidate_tree": "e706e5f56665131188c329af027e1dc52ca37309",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-28T01:47:09Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t452_r03_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t452_r03_d_a_requirement_key_is_reported_not_assumed_away", "status": "pass", "evidence": ["cargo-test.log", "equipment-rule-census.json"]}, {"id": "accept_t452_r03_d_retail_catalogued_records_declare_no_equipment_rule", "status": "pass", "evidence": ["cargo-test.log", "equipment-rule-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "2d21e553f664abb45b8ea3fbe693505ed7904c0c8c2695fb541b8a48c3b55b08", "kind": "log"}, {"path": "equipment-rule-census.json", "sha256": "7f49be50e7d99c1a9ae7efc0649e67abaf5e865d3c93ce80cf7490541aa81264", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR); the report is derived from the recorded log plus a second production pass recorded in equipment-rule-census.json. MEASURED (record and key names only; provenance static, never verified_original): through cs_content::ordnance::read_original_equipment_rule_census the sixteen catalogued weapons.zrd records declare exactly the 41 pinned top-level keys and none names a requirement or permission, so the empty equipment rule set is the measured value. NOT CLAIMED: any original-run behavior (retail is read access, no agent ran the original); equipment compatibility held in any other source; stack capacity, unit mass and media ids, which keep t452.limit.runtime_lowering open. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
