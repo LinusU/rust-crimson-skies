@@ -7721,3 +7721,113 @@ name = "ammo_limit.slot_count_is_cluster_size"
 va = 0x004baa04
 bytes = "53e886f60b0083c4083bc774098b48048b510c89560c6854"
 fact = "CLUSTER_SIZE is looked up and stored at [esi+0xc] of the type object (mov [esi+0xc], edx at 0x4baa17); this is the dword 0x4bad90 returns as a slot's count, so the per-slot stack count is CLUSTER_SIZE (0 when absent), applied to whichever slot holds the record; AMMO_LIMIT does not reach it"
+# Ordnance media ids: the effect-class keys of weapons.zrd (task #2166
+# T452-R.03-C, finding
+# docs/findings/2026-10-28-t452-r03-c-ordnance-media-ids.md). Statically
+# read; no original run. The shared effect-block reader at 0x5ae990 fills a
+# 0x64-byte block per FIRE/FLYOUT key and per IMPACT surface row; weapon
+# records stride 0x214.
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.block_reader"
+va = 0x005ae990
+bytes = "8b44240c8b4c240453558b6c241056575051c7"
+fact = "the shared effect-block reader (zrd node, block base, key) zeroes block+0x5c then reads: EFFECT->+0x24 via the effect resolver 0x526160, MODEL->+0x28 via the model-table lookup 0x5aec00, ANIMATION_ATTACHED->+0x14, MODEL_ANIMATION->+0x18, SURFACE_ANIMATION->+0x1c, ANIMATION_MIN_RANGE->+0x20 via 0x523820, ANIMATION text children->+0x04/+0x08 (two handles max, an int child sets flag bit1 of +0x00), RANDOM_ROTATE->bit0 of +0x00, SOUND->count at +0x2c and entries at +0x30.. via 0x596120, BOUNCE_SOUND->count at +0x40 and entries at +0x44.. via 0x596120; key strings pushed at 0x5ae9bf..0x5aebb8"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.fire_block"
+va = 0x005ae0fc
+bytes = "68d8cf63008d93940000005256e88208000068d0"
+fact = "the weapon parser reads the record's FIRE key (string 0x63cfd8) through the shared block reader into weapon + 0x94, so FIRE>SOUND entries land at weapon + 0xc4.. (block +0x30) with their count at +0xc0 (block +0x2c)"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.flyout_block"
+va = 0x005ae10e
+bytes = "68d0cf63008d83f80000005056e8"
+fact = "the weapon parser reads FLYOUT (string 0x63cfd0) through the block reader into weapon + 0xf8, so FLYOUT>MODEL lands at +0x120, MODEL_ANIMATION at +0x110, EFFECT at +0x11c and SOUND count/array at +0x124/+0x128"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.impact_rows"
+va = 0x005ae1ef
+bytes = "8b8b5c010000505156e8930700008b0d107b6300b80100000083c40c3bc88945e80f8e8c000000be64000000bf187b6300"
+fact = "after the IMPACT lookup (0x5ae1cf pushes string 0x63cf98), the parser reads the 'default' child into row 0 at weapon + 0x15c via the block reader, then walks the registered soil-name table at 0x637b10 (esi = 0x64 stride, edi = 0x637b18) parsing each declared surface row; undeclared soils' rows are verbatim copies of row 0 and a declared row without ANIMATION_MIN_RANGE inherits row 0's"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.destroy_animation_parse"
+va = 0x005adc33
+bytes = "68fcd0630056e852c4fcff83c40885c074158b40048b480c51e8cf5bf7ff83c404"
+fact = "DESTROY_ANIMATION (string 0x63d0fc) resolves through 0x523820 and the handle is stored at weapon + 0x188 (the store is at 0x5adc54); wep_14 declares 'torpedo_destroy_effect'"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.launch_sound"
+va = 0x005af3c0
+bytes = "8b86e800000083f8ff741b8b55208b8486c40000006a0052680000803f50e89d47feff83c410"
+fact = "the fire routine reads the launch-sound slot at weapon + 0xe8: -1 plays nothing, otherwise it plays [weapon + 0xc4 + 4*slot], a FIRE>SOUND entry, through the gate 0x593b80; then FIRE>EFFECT (weapon + 0xb8 = block +0x24) wins over the ANIMATION slots at 0x5af3e6, else the slot at weapon + 0xec selects among FIRE>ANIMATION handles"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.launch_sound_slot"
+va = 0x005ac120
+bytes = "8b4c240433c085c97501c38b5424083b91c00000007d0b8991e8000000b801000000c3"
+fact = "0x5ac120(weapon, index) writes weapon + 0xe8 when index is signed-below the FIRE>SOUND count (weapon + 0xc0): the firing callers pass 0 (first declared entry) or -1 (silence), an index at or above the count writes nothing and returns 0 — the launch sound is the record's own declared entry or explicit silence, never a fallback"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.sound_gate"
+va = 0x00593ba4
+bytes = "8b74240c85f60f84da000000"
+fact = "the sound playback gate 0x593b80 loads the descriptor argument at 0x593ba4 and returns early (je 0x593c8a) when it is null — a record with no declared sound entry produces silence; there is no shared default"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.impact_row_effect"
+va = 0x005aca01
+bytes = "8b865c0100008b44902485c07414f644241002750d83c50c5550e87093f7ff"
+fact = "the detonation path plays the surface row's EFFECT (row +0x24, table at weapon + 0x15c, stride 0x64) through 0x525d90; SURFACE_ANIMATION (row +0x1c) plays surface-aligned at 0x5ac9eb and the row ANIMATION slots +0x04/+0x08 at 0x5ac942"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.impact_row_sound"
+va = 0x005ad100
+bytes = "8b4c240456578b7c24148d04bf8d34808b815c010000c1e6028b54062c85d27436538bd8ff155003a2000faf44332c8b4c24148b54241c83c10c6a0051c1e80f8d0cbf8d048803c88b4c8b305251e82d6afeff"
+fact = "0x5ad100(weapon, position, flags, surface_row) picks the row's SOUND uniformly: rand(0xa20350) * row+0x2c count >> 15 indexes the entries at row +0x30.., played through 0x593b80; a zero count plays nothing — the detonation sound is per declared surface row, never one media id"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.destroy_animation_use"
+va = 0x005af78b
+bytes = "8b87880100003bc3743a8b4e1c3bcb53535374125150e8fae5f3ff83"
+fact = "a round ending in flight plays the weapon's DESTROY_ANIMATION handle (+0x188) through 0x4edda0/0x4edc10; the detonation path at 0x5b06b8 selects it as the fallback when the surface row's ANIMATION_MIN_RANGE (row +0x20) is absent"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.flyout_model_attach"
+va = 0x005aecbf
+bytes = "8b87200100003bc3742d399f10010000"
+fact = "the round allocator 0x5aeca0 attaches FLYOUT>MODEL (weapon + 0x120) to the spawned round's scene node through 0x4d1390; when weapon + 0x110 (MODEL_ANIMATION) is nonzero the animated form is built first via 0x5ad290 — the flying projectile's own visual"
+
+[[ordnance_media_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ordnance_media.looped_sound_parse"
+va = 0x004baa7b
+bytes = "6880b3620053e80af60b0083c4083bc7741f8b40048b480c6a1351e8a5220e0083c4045083c624"
+fact = "LOOPED_SOUND_NAME (string 0x62b380) is parsed in the weapon's mount-descriptor filler: the name resolves through 0x59cd40(0x13, name) and the registered callback lands on descriptor +0x24 — the gun's mount loop, not an ordnance field; no literal SOUND_NAME key exists in the image (the only occurrence is this string's tail)"
