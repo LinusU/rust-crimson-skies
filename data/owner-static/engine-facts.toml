@@ -7685,3 +7685,39 @@ name = "launch.range_cmp"
 va = 0x005b01e6
 bytes = "d98664060000d85f1cdfe0"
 fact = "fld [esi+0x664]; fcomp [edi+0x1c] — the node's distance-flown scalar +0x664 is compared against the record's RANGE +0x1c each step"
+
+# AMMO_LIMIT and the slot count (task #2165 T452-R.03-B, finding
+# docs/findings/2026-10-28-t452-r03-b-ammo-limit-and-slot-count.md).
+# Statically read; no original run.
+
+[[ammo_limit_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ammo_limit.default"
+va = 0x005ad802
+bytes = "8d7b18c70700004842"
+fact = "the weapons.zrd record parser (entry 0x5ad630) sets edi = record + 0x18 and stores the float 50.0 (0x42480000) there before reading any key, so a record without AMMO_LIMIT keeps 50.0 in that field"
+
+[[ammo_limit_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ammo_limit.read"
+va = 0x005ad91e
+bytes = "576804d2630056e806c8fcff"
+fact = "push edi (record + 0x18); push \"AMMO_LIMIT\" (0x63d204); push esi; call 0x57a130 reads a number as a float into the record field; no instruction reading that field back was found in the zweapon module (0x5ac000..0x5af000) or after the callers of the lookups 0x5abfd0 and 0x5ac050"
+
+[[ammo_limit_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ammo_limit.type_object"
+va = 0x004ba6f3
+bytes = "6a38bf0100000057ff15b401"
+fact = "the per-type callback 0x4ba6f0 (invoked at 0x5ae0f7) allocates a zero-filled 0x38-byte object (calloc(1, 0x38)) and stores it at record + 0x210 (mov [eax+0x210], esi at 0x4ba711)"
+
+[[ammo_limit_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "ammo_limit.slot_count_is_cluster_size"
+va = 0x004baa04
+bytes = "53e886f60b0083c4083bc774098b48048b510c89560c6854"
+fact = "CLUSTER_SIZE is looked up and stored at [esi+0xc] of the type object (mov [esi+0xc], edx at 0x4baa17); this is the dword 0x4bad90 returns as a slot's count, so the per-slot stack count is CLUSTER_SIZE (0 when absent), applied to whichever slot holds the record; AMMO_LIMIT does not reach it"
