@@ -3,12 +3,12 @@
 //! named `accept_t452_r01_*`: it is not part of the acceptance suite and
 //! fails loudly when its inputs are missing.
 //!
-//! 1. `cargo test --workspace --locked -- accept_t452_r01_ --include-ignored 2>&1 |
+//! 1. `cargo test --locked -p cs_content --test cs_content_tests -- accept_t452_r01_ --include-ignored 2>&1 |
 //!    tee private/evidence/T452-R01/cargo-test.log` (note the exit status)
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/T452-R01 \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_t452_r01_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_content --test cs_content_tests accept_t452_r01_ -- --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
 //!      cargo test --locked -p cs_content --test cs_content_tests evidence_report_t452_r01 -- --ignored
 //!    ```
