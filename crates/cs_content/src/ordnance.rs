@@ -3309,10 +3309,15 @@ pub const ORIGINAL_ROCKET_SLOT_ARRAY: &str = "RKA";
 /// The ordnance screen's own array of gun/ammunition slots (`object QKA[4]`).
 pub const ORIGINAL_AMMUNITION_SLOT_ARRAY: &str = "QKA";
 
-/// The claim id for "`VELOCITY`'s unit is not measured".
+/// The claim id for "`VELOCITY`'s unit is not measured" — resolved by task
+/// T452-R.01 (metres per second, static); kept so older findings and claim
+/// lists stay parseable.
 pub const T452_04_VELOCITY_UNIT: &str = "t452_04.limit.velocity_unit";
 
-/// The claim id for "what `FIRE_RATE` delays, and in which direction".
+/// The claim id for "what `FIRE_RATE` delays, and in which direction" —
+/// narrowed by T452-R.01: the parser stores `1/FIRE_RATE` at record `+0x14`
+/// and a mount adds an interval to a shared clock, but the field binding is
+/// not pinned.
 pub const T452_04_RELEASE_DELAY: &str = "t452_04.limit.release_delay";
 
 /// The claim id for "no record states a projectile lifetime".
@@ -3750,6 +3755,195 @@ pub enum OriginalLifetime {
     Undeclared,
 }
 
+/// The `RANGE` the parser leaves in the weapon record's `+0x1c`, metres
+/// (task T452-R.01 — static analysis, `checked` provenance at most).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OriginalRangeBound {
+    /// The record declares `RANGE`; store `0x5adfb5`, square to `+0x20` at
+    /// `0x5adfb8`.
+    Declared {
+        /// The declared metres.
+        m: f64,
+    },
+    /// The record declares no `RANGE`: the parser writes the default `500.0`
+    /// at `0x5ad80b` and no key store runs (`wep_13`, `wep_15`).
+    Defaulted,
+}
+
+impl OriginalRangeBound {
+    /// The metres the record ends up with.
+    #[must_use]
+    pub fn metres(&self) -> f64 {
+        match self {
+            Self::Declared { m } => *m,
+            Self::Defaulted => ORIGINAL_RANGE_DEFAULT_M,
+        }
+    }
+}
+
+/// The `RANGE` the parser supplies when a record declares none (`mov
+/// [record+0x1c], 0x43fa0000` at `0x5ad80b`).
+pub const ORIGINAL_RANGE_DEFAULT_M: f64 = 500.0;
+
+/// The `VELOCITY` the parser supplies when a record declares none (`mov
+/// [record+0x2c], 0x42f00000` at `0x5ad812`).
+pub const ORIGINAL_VELOCITY_DEFAULT_MPS: f64 = 120.0;
+
+/// The launch speed the weapon record's `+0x2c` holds once the parser's rule
+/// order has run, in metres per second along the launch direction (task
+/// T452-R.01).
+///
+/// Parse order matters and is measured: `BEAM` first writes `+0x2c = 10000.0`
+/// or the reciprocal of `TIME_TO_MAX_RANGE` (`0x5ad950..0x5ada08`) and sets
+/// flag bit `0x2` of `+0x74`; `VELOCITY` stores later at `0x5ae0b8` and is
+/// skipped when that bit is set (`0x5ae0ac`); then, only when `GRAVITY` parsed
+/// to a non-zero `+0x54` (`jne` at `0x5ae4ed` skips the block when it is `0`),
+/// `+0x2c` is overwritten with `sqrt(2·GRAVITY·RANGE)` (`0x5ae4ef..0x5ae520`,
+/// a bit-level square root). So a declared `VELOCITY` loses only to a declared
+/// non-zero `GRAVITY`.
+///
+/// Every retail record that declares `GRAVITY` at all declares `GRAVITY 0`
+/// (`wep_04`, `wep_25`–`wep_28`): the override is engine-real but unexercised
+/// by the retail data, so those records fly at their declared `VELOCITY` and
+/// the step's `dt·+0x54` pull is zero.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OriginalLaunchSpeed {
+    /// `VELOCITY` declared and not overridden: stored verbatim.
+    Declared {
+        /// The metres per second.
+        mps: f64,
+    },
+    /// `VELOCITY` absent: the parser default `120.0` stands.
+    Defaulted,
+    /// `GRAVITY` declared non-zero: `+0x2c = sqrt(2·GRAVITY·RANGE)` — the
+    /// speed a 45° lob needs to reach `RANGE`. `+0x200` separately keeps
+    /// `VELOCITY²/(2·GRAVITY)`, the height the declared speed could climb to.
+    /// No retail record reaches this arm (all declare `GRAVITY 0`).
+    Ballistic {
+        /// The speed the parser computes, metres per second.
+        mps: f64,
+        /// The declared gravity, metres per second squared.
+        gravity_mps2: f64,
+        /// The range the computation used (declared or the `500.0` default).
+        range_m: f64,
+    },
+    /// `BEAM` declared: `+0x2c = 1/TIME_TO_MAX_RANGE`, or `10000.0` when that
+    /// key is present and not positive; with the key absent the reciprocal
+    /// runs on the `10000.0` default and yields `1e-4` — transcribed as
+    /// measured, not "corrected". The value is a rate, not metres per second.
+    Beam {
+        /// The value `+0x2c` holds, per second.
+        per_second: f64,
+    },
+}
+
+/// How a spawned item's velocity relates to the launcher's velocity (task
+/// T452-R.01): the spawn `0x5aef40` writes the projectile's `+0x60` vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalInheritance {
+    /// `ACCELERATION` (`+0x38`) non-zero and `INSTANT` clear: `+0x60 =
+    /// shooter_velocity + launch_dir·speed` (`0x5af144..0x5af15a`, via the
+    /// multiply-accumulate `0x5389a0`) — the launcher's whole velocity is
+    /// added, fraction 1.0, plus the launch-direction speed.
+    Full,
+    /// `ACCELERATION` zero or undeclared and `INSTANT` clear: `+0x60 =
+    /// shooter_velocity − launch_dir·|shooter_velocity|` (`0x5af315..0x5af3a3`)
+    /// — the component of the launcher's velocity along the launch direction
+    /// is removed, not added; what is left is the remainder. For a
+    /// straight-ahead launch that is near zero. Most retail records take this
+    /// path: `ACCELERATION 0` is as common as the key being absent.
+    LateralRemainder,
+    /// `INSTANT` set: `+0x60` is computed as `LateralRemainder` but unused —
+    /// the per-step displacement for the flag is `RANGE·launch_dir` instead.
+    Instant,
+}
+
+/// One launched component's measured launch geometry (task T452-R.01,
+/// `checked` provenance — static analysis of the owner image).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OriginalLaunchGeometry {
+    /// The speed `+0x2c` holds after parsing.
+    pub speed: OriginalLaunchSpeed,
+    /// `1/FIRE_RATE` — the interval the parser writes to record `+0x14` in
+    /// seconds (`0x5adcc9..0x5adcd2`). `None` when the record declares no
+    /// `FIRE_RATE`; the field then stays `0`, which the mount's refire
+    /// arithmetic would read as "always ready".
+    pub refire_interval_s: Option<f64>,
+    /// `ACCELERATION` (`+0x38`): metres per second the projectile's speed
+    /// scalar `+0x640` gains per second toward its target `+0x644`
+    /// (`0x5afd70..0x5afdaf`). `None` when undeclared — the zero-initialized
+    /// field then means "no acceleration", which selects the
+    /// [`OriginalInheritance::LateralRemainder`] spawn path.
+    pub acceleration_mps2: Option<f64>,
+    /// The `RANGE` bound the parser leaves in `+0x1c`.
+    pub range: OriginalRangeBound,
+    /// How the spawned item's velocity is formed from the launcher's.
+    pub inheritance: OriginalInheritance,
+}
+
+/// Derives the launch geometry the parser leaves in one record (T452-R.01).
+///
+/// Pure: mirrors the parser's measured rule order — `BEAM` before `VELOCITY`
+/// before `GRAVITY`, the `BEAM` flag suppressing the `VELOCITY` store, and the
+/// ballistic overwrite using the effective (declared-or-default) `RANGE`.
+#[must_use]
+pub fn original_launch_geometry(record: &OriginalWeaponRecord) -> OriginalLaunchGeometry {
+    let range = record
+        .first("RANGE")
+        .map_or(OriginalRangeBound::Defaulted, |m| {
+            OriginalRangeBound::Declared { m }
+        });
+    let speed = if record.declares("BEAM") {
+        let per_second = match record.first("TIME_TO_MAX_RANGE") {
+            Some(t) if t > 0.0 => 1.0 / t,
+            Some(_) => 10_000.0,
+            None => 1.0e-4,
+        };
+        OriginalLaunchSpeed::Beam { per_second }
+    } else if let Some(gravity_mps2) = record.first("GRAVITY").filter(|gravity| *gravity != 0.0) {
+        let range_m = range.metres();
+        OriginalLaunchSpeed::Ballistic {
+            mps: (2.0 * gravity_mps2 * range_m).sqrt(),
+            gravity_mps2,
+            range_m,
+        }
+    } else {
+        record
+            .first("VELOCITY")
+            .map_or(OriginalLaunchSpeed::Defaulted, |mps| {
+                OriginalLaunchSpeed::Declared { mps }
+            })
+    };
+    let acceleration_mps2 = record.first("ACCELERATION");
+    let inheritance = if record.declares("INSTANT") {
+        OriginalInheritance::Instant
+    } else if acceleration_mps2.is_some_and(|a| a != 0.0) {
+        OriginalInheritance::Full
+    } else {
+        OriginalInheritance::LateralRemainder
+    };
+    OriginalLaunchGeometry {
+        speed,
+        refire_interval_s: record.first("FIRE_RATE").map(|rate| 1.0 / rate),
+        acceleration_mps2,
+        range,
+        inheritance,
+    }
+}
+
+/// The launch geometry of every record in a census, keyed by record name
+/// (T452-R.01). Pure: the same derivation as [`original_launch_geometry`].
+#[must_use]
+pub fn original_launch_geometry_table(
+    census: &OriginalWeaponCensus,
+) -> BTreeMap<String, OriginalLaunchGeometry> {
+    census
+        .records
+        .iter()
+        .map(|record| (record.record.clone(), original_launch_geometry(record)))
+        .collect()
+}
+
 /// The area a record declares, in metres and seconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct OriginalAreaDeclaration {
@@ -3830,14 +4024,17 @@ pub struct OriginalComponentLaunch {
     pub family: DeclaredOrdnanceFamily,
     /// Where the screens mount it.
     pub mount: OriginalMountDeclaration,
-    /// `VELOCITY`, the first value, exactly as stored. The unit is not stated
-    /// by any file ([`T452_04_VELOCITY_UNIT`]); F16-E measured the world unit
-    /// is the metre, which makes a metre-per-second reading consistent but not
-    /// proven.
+    /// `VELOCITY`, the first value, exactly as stored. Task T452-R.01
+    /// measured it statically as metres per second along the launch
+    /// direction: the spawn adds `dir·VELOCITY` to a velocity vector that the
+    /// step integrates as `displacement = dt·v`, and F16-E measured the world
+    /// unit is the metre. A declared `GRAVITY` or `BEAM` makes the parser
+    /// overwrite the field — see [`original_launch_geometry`].
     pub velocity: Option<f64>,
-    /// `FIRE_RATE`, the first value, exactly as stored. What it delays and in
-    /// which direction is not stated ([`T452_04_RELEASE_DELAY`]), so no
-    /// release delay is derived from it here.
+    /// `FIRE_RATE`, the first value, exactly as stored. Task T452-R.01
+    /// measured that the parser stores `1/FIRE_RATE` in record `+0x14` (an
+    /// interval, seconds); which mount field receives that interval is not
+    /// pinned, so the release-delay claim [`T452_04_RELEASE_DELAY`] stands.
     pub fire_rate: Option<f64>,
     /// `DETONATION_DISTANCE`, metres: the proximity fuse's trigger radius, and
     /// the radius of the sphere around the target the fuse tests (task T452.02,
@@ -4019,25 +4216,21 @@ fn component_launch(
     };
 
     let mut unknowns = Vec::new();
-    if velocity.is_some() {
-        unknowns.push(OriginalComponentUnknown::new(
-            T452_04_VELOCITY_UNIT,
-            "no file states that VELOCITY is metres per second",
-        ));
-    }
     if fire_rate.is_some() {
         unknowns.push(OriginalComponentUnknown::new(
             T452_04_RELEASE_DELAY,
-            "no file states whether FIRE_RATE is a rate per second or an \
-             interval, nor which delay it governs, so no release delay is \
-             derived",
+            "the parser stores 1/FIRE_RATE in record +0x14 and a mount adds an \
+             interval to a shared clock for its next-fire timestamp, but the \
+             write that binds the record field to a mount's interval is not \
+             pinned, so the mount-level semantics stay claimed",
         ));
     }
     if lifetime == OriginalLifetime::Undeclared {
         unknowns.push(OriginalComponentUnknown::new(
             T452_04_NO_EXPIRES,
             "the member carries no EXPIRES key and this record states no other \
-             duration, so its lifetime is unmeasured",
+             duration; flight ends at RANGE (or the 500 m default) but the time \
+             that takes is not a stated lifetime",
         ));
     }
     // An area-denial record's whole effect is an area, and it declares the

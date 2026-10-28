@@ -634,8 +634,9 @@ fn accept_t452_retail_every_entry_names_the_values_it_does_not_measure() {
             claims.push(&unknown.claim);
         }
     }
+    // The VELOCITY unit is measured since T452-R.01, so no entry carries
+    // `t452_04.limit.velocity_unit` any more.
     for claim in [
-        cs_content::ordnance::T452_04_VELOCITY_UNIT,
         cs_content::ordnance::T452_04_RELEASE_DELAY,
         cs_content::ordnance::T452_04_NO_EXPIRES,
         T452_RUNTIME_LOWERING_CLAIM,

@@ -307,15 +307,16 @@ fn accept_t452_04_a_rocket_record_carries_its_declared_launch_values() {
     assert_eq!(row.mount.slots(), Some(8));
     assert!(row.statuses.is_empty());
 
-    // The values no file states are named on the row, not defaulted.
+    // The values no file states are named on the row, not defaulted. The
+    // VELOCITY unit is measured since T452-R.01, so its claim is absent.
     for claim in [
-        T452_04_VELOCITY_UNIT,
         T452_04_RELEASE_DELAY,
         T452_04_NO_EXPIRES,
         T452_04_AREA_LIFETIME,
     ] {
         assert!(row.names_claim(claim), "{claim} must be recorded");
     }
+    assert!(!row.names_claim(T452_04_VELOCITY_UNIT));
     assert!(
         !row.names_claim(T452_04_CLUSTER),
         "a single sub-munition raises no swarm question"
@@ -770,12 +771,9 @@ fn accept_t452_04_retail_no_record_declares_a_lifetime_key() {
     // Every row records the unknowns its own declarations raise, and nothing
     // else: a record with no VELOCITY does not claim a velocity unit question.
     for row in &table.rows {
-        assert_eq!(
-            row.names_claim(T452_04_VELOCITY_UNIT),
-            row.velocity.is_some(),
-            "{}",
-            row.record
-        );
+        // T452-R.01 measured VELOCITY statically as metres per second, so the
+        // unit claim must not be recorded any more.
+        assert!(!row.names_claim(T452_04_VELOCITY_UNIT), "{}", row.record);
         assert_eq!(
             row.names_claim(T452_04_RELEASE_DELAY),
             row.fire_rate.is_some(),
@@ -898,10 +896,12 @@ fn accept_t452_04_retail_every_unknown_names_the_rows_it_affects() {
             (T452_04_MOUNT.to_owned(), 1),
             (T452_04_STATUS_DURATION.to_owned(), 4),
             (T452_04_STATUS_KIND.to_owned(), 7),
-            (T452_04_VELOCITY_UNIT.to_owned(), 15),
             (T452_04_CLUSTER.to_owned(), 11),
         ]
     );
+    // The VELOCITY unit is measured since T452-R.01: the claim is no longer
+    // raised, so it cannot appear in the table's claim set at all.
+    assert!(!table.claims().contains(T452_04_VELOCITY_UNIT));
     assert_eq!(table.rows.len(), 16);
     assert_eq!(table.unknowns.len(), 1, "one value no single record owns");
     assert_eq!(table.unknowns[0].claim, T452_04_PER_AIRFRAME);
