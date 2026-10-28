@@ -16,7 +16,7 @@
 //!    --artifact-root private/evidence/T452-R02 --require-pass`
 //! 4. Commit a copy as `docs/findings/evidence/T452-R02.json`.
 //!
-//! `component-table.json` is a second production observation: the mount layout
+//! `behavior.json` is a second production observation: the mount layout
 //! the two screens declare, the per-component rows, the per-claim row counts and
 //! the table-level unknown, as
 //! [`read_original_component_table`] returns them. Identifiers, numbers and
@@ -376,7 +376,7 @@ struct Suite {
 }
 
 /// Extracts the libtest summaries and the per-test results of the
-/// `accept_t452_04_` tests from a recorded `cargo test` output.
+/// `accept_t452_r02_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
@@ -419,7 +419,7 @@ fn parse_suite(log: &str) -> Suite {
                 .to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !name.starts_with("accept_t452_04_") {
+            if !name.starts_with("accept_t452_r02_") {
                 continue;
             }
             match tail.split_whitespace().next() {
@@ -503,7 +503,7 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
         .map(|(name, status)| {
             format!(
                 "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\", \
-                 \"component-table.json\"]}}",
+                 \"behavior.json\"]}}",
                 jstr(name)
             )
         })
