@@ -4883,7 +4883,10 @@ fn measured_area(
     let tangler = row.statuses.iter().find(|s| s.key == "TANGLER");
     if let Some(tangler) = tangler {
         // `RADIUS` defaults to 10 at 0x4ba870 and `TIME` to 5 at 0x4ba869;
-        // wep_12 states TIME 2 and no RADIUS, so the default applies.
+        // wep_12 states TIME 2 and no RADIUS, so the default applies. No retail
+        // `wep_` record declares `RADIUS` at all (T452.01's measured 46-key
+        // union in `accept_t452_01_weapon_census`), and the T452.04 row does
+        // not carry it, so there is no record value this default could shadow.
         let radius_m = 10.0;
         let lifetime_s = tangler.duration_s.unwrap_or(IMAGE_DEFAULT_TIME_S);
         resolved.push(T452_04_AREA_RADIUS);

@@ -135,14 +135,21 @@ and `+0x18` = `TIME` (`0x4b9523`–`0x4b9526`). Its tick `0x4b9590` subtracts `d
 from `+0x18` (`0x4b9597`), and while the remaining time is positive walks the
 actor list at `0x71dabc`; for each live actor it compares the squared distance to
 the field position with `+0x14` (`0x4b95db`–`0x4b95e4`) and, inside the radius,
-applies the weapon's own per-hit routine `0x4b9bc0` with zero damage arguments
-(`0x4b95f1`–`0x4b961a`). At `<= 0` the field is unlinked and freed
+calls the weapon's own per-hit routine `0x4b9bc0` with the field's owning actor,
+the victim and the weapon as arguments (`0x4b95f1`–`0x4b961a`). Which of that
+routine's argument slots carries each damage channel is **not decoded**; what is
+measured is that the routine is the same one the impact path runs, and that
+`wep_12` declares no `ARMOR_DAMAGE`/`HEALTH_DAMAGE`/`DAMAGE` and none of
+`SONIC`/`FLASH`/`BEEPER`, so the routine's exposure and marker branches cannot
+fire for it. At `<= 0` the field is unlinked and freed
 (`0x4b96f2`–`0x4b9736`).
 
 So **the tangler is an area of `RADIUS` around the field position that lasts
 `TIME` and re-applies the weapon's hit every tick to every actor inside it**.
 For `wep_12` the record states `TIME` 2 and no `RADIUS`, so the field is 10 m
-(image default) for 2 s. `t452_04.limit.area_radius` and
+(image default; no retail `wep_` record declares `RADIUS` at all — the 46-key
+union `accept_t452_01_weapon_census` pins exactly — so the default is the only
+value the image can use here). `t452_04.limit.area_radius` and
 `t452_04.limit.area_lifetime` are resolved for `wep_12`.
 
 **The gameplay consequence for `wep_12` is still a claim**
@@ -290,23 +297,31 @@ provenance label follows the value it actually used.
 The T452.04 acceptance tests pin the exact claim set and per-claim row counts of
 that stage, and AGENTS.md forbids weakening or deleting another stage's tests. A
 resolved claim is therefore not deleted from the T452.04 row here; the new
-measured layer records it in `OriginalBehaviorMeasurement::resolved` and a test
-asserts that no row both resolves and still names the same claim. Removing the
-now-empty claim entries from the T452.04 rows, and dropping them from the
-`cs_app` catalogue mapping, belongs to the parent runtime-registration task
-(#2156) that consumes this layer; doing it here would edit `cs_app`, outside
-this task's owner paths.
+measured layer records it in `OriginalBehaviorMeasurement::resolved`, and the
+retail test asserts two invariants on that output: no measured row both resolves
+a claim and still lists it among the layer's own kept claims, and every
+`resolved` entry is a claim id the layer actually measured. What the assertion
+does *not* claim is that `OriginalComponentLaunch::unknowns` is empty: the
+T452.04 rows keep their pre-existing entries until #2156 removes them, which is
+exactly why the T452.04 ids are resolved here and still listed there.
+Removing the now-empty claim entries from the T452.04 rows, and dropping them
+from the `cs_app` catalogue mapping, belongs to the parent runtime-registration
+task (#2156) that consumes this layer; doing it here would edit `cs_app`,
+outside this task's owner paths.
 
 ## Test sensitivity (measured, one mutation at a time)
 
-Three mutations were applied to the production file, the `accept_t452_r02_`
-selection re-run, and the file restored byte-identically each time
-(`shasum d2c127e8…`):
+Three mutations were applied to the production file one at a time, the
+`accept_t452_r02_` selection re-run, and the file restored byte-identically
+each time (`shasum ec89c56885ff8f6958645616253d020e4f71ab4b` of
+`crates/cs_content/src/ordnance.rs` at the reviewed commit; the implementer's
+first pass recorded a pre-rebase hash of the same file, and the reviewer
+re-ran all three mutations at this tree with the same results):
 
 | mutation | caught by |
 | --- | --- |
 | the tangler default radius becomes 9.0 m instead of the image's 10.0 | `accept_t452_r02_a_tangler_is_an_area_with_the_image_default_radius`, `accept_t452_r02_retail_the_measured_facts_read_the_original_rows` |
-| `projectiles_per_launch` becomes 2 (one projectile expands) | `accept_t452_r02_a_volley_launches_one_projectile_per_sub_munition`, the retail test |
+| `projectiles_per_launch` becomes 2 (one projectile expands) | `accept_t452_r02_a_volley_launches_one_projectile_per_sub_munition`, the retail test (with `--include-ignored`) |
 | an absent `TIME` is labelled `RecordTime`/`RecordKey { TIME }` instead of the image's 5.0 s default | `accept_t452_r02_a_time_the_record_does_not_state_is_the_image_default` |
 
 The 24 image pins are the second half: a changed VA, a changed constant or a

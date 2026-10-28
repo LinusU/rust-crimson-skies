@@ -534,6 +534,18 @@ fn accept_t452_r02_a_beeper_seeker_is_a_named_guidance_claim() {
     assert!(measured.names_claim(T452_R02_BEEPER_SEEKER));
 }
 
+/// The claim ids this measured layer is allowed to report as resolved. A
+/// `resolved` entry outside this set would be a resolution nothing measured.
+const RESOLVABLE_CLAIMS: [&str; 7] = [
+    T452_04_STATUS_KIND,
+    T452_04_STATUS_DURATION,
+    T452_04_AREA_RADIUS,
+    T452_04_AREA_LIFETIME,
+    T452_04_CLUSTER,
+    T452_R02_FUSE_CLAIM,
+    T452_R02_LOST_TARGET_CLAIM,
+];
+
 /// The installation half: the same production function over the measured rows.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -625,6 +637,10 @@ fn accept_t452_r02_retail_the_measured_facts_read_the_original_rows() {
         }
         // A resolved claim is never still named as unmeasured on the same row.
         for resolved in &measured.resolved {
+            assert!(
+                RESOLVABLE_CLAIMS.contains(resolved),
+                "{name} resolves {resolved}, which this layer does not measure"
+            );
             assert!(
                 !measured.names_claim(resolved),
                 "{name} resolves {resolved} and still names it"
