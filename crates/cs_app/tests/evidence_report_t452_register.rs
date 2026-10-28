@@ -11,7 +11,7 @@
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 //!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t452_register_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-//!      cargo test --locked -p cs_app --test cs_app_tests_a evidence_report_t452_register --ignored
+//!      cargo test --locked -p cs_app --test cs_app_tests_a evidence_report_t452_register -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py private/evidence/T452-RUNTIME-REGISTER/acceptance.json
 //!    --artifact-root private/evidence/T452-RUNTIME-REGISTER`
@@ -36,8 +36,10 @@ use cs_app::ordnance::{OriginalRegistrationOutcome, read_and_register_measured_o
 use cs_assets::install::{self, content_fingerprint, fingerprint, sha256};
 use cs_sim::weapons::{FuseRule, GuidanceRule, OrdnanceRegistry};
 
-const RETAIL_TESTS: [&str; 1] =
-    ["accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures"];
+const RETAIL_TESTS: [&str; 2] = [
+    "accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures",
+    "accept_t452_register_retail_a_registered_measured_component_launches",
+];
 
 /// Every id the measurement can express, in member order.
 const EXPECTED_REGISTERED: [&str; 10] = [
@@ -154,7 +156,7 @@ fn evidence_report_t452_register_writes_the_acceptance_report() {
                     projectile.launch().release_delay_ticks(),
                     projectile.stack().capacity_units(),
                     projectile.stack().unit_mass_kg(),
-                    projectile.arming().label(),
+                    jstr(&projectile.arming().label()),
                     jstr(&fuse),
                     jstr(&guidance),
                     projectile.lifetime_ticks(),
@@ -510,7 +512,7 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
         .map(|(name, status)| {
             format!(
                 "{{\"id\": {}, \"status\": {}, \"evidence\": [\"cargo-test.log\", \
-                 \"original-catalogue.json\"]}}",
+                 \"original-registration.json\"]}}",
                 jstr(name),
                 jstr(status)
             )
