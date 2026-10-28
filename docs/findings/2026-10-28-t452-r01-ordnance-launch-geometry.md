@@ -58,7 +58,9 @@ Two parser overrides can replace the declared value; the production reader
 - `GRAVITY` declared **non-zero** (`+0x54 != 0`, gate `0x5ae4df..0x5ae4ed`)
   overwrites `+0x2c` with `sqrt(2·GRAVITY·RANGE)` — a bit-level square root
   (`sar`+`0x1fc00000`, `0x5ae505..0x5ae520`) — and separately keeps
-  `VELOCITY²/(2·GRAVITY)` in `+0x200` (`0x5ae4ef`). **Every retail record
+  `VELOCITY²/(2·GRAVITY)` in `+0x200` (`0x5ae4ef`). The block is the
+  post-parse tail and runs unconditionally, so it wins over a `BEAM` rate as
+  well as over a declared `VELOCITY`. **Every retail record
   that declares `GRAVITY` declares `GRAVITY 0`** (`wep_04`, `wep_25`–`wep_28`):
   the override is engine-real but unexercised by the data, so those records
   keep their declared `VELOCITY` and the step's `dt·+0x54` pull is zero.
@@ -97,7 +99,7 @@ The parser stores `1.0/FIRE_RATE` at record `+0x14` (`0x5adcc9..0x5adcd2`) —
 an **interval in seconds**, not a rate. In the mount fire-control loop
 (`0x4b6820..0x4b6eaa`), each `0x30`-byte mount entry takes `next_fire =
 shared_clock + mount+0x14` (`0x4b6b2d`, `fld [0x71c470]; fadd [edi+0x14];
-fstp [edi+0x10]`), and an alternating mount biases its next-fire by
+fst [edi+0x10]`), and an alternating mount biases its next-fire by
 `−0.5·interval` (`0x4b6d26`, `fmul [0x6032e0]` = 0.5f). Mount entries live in
 the launcher vector `+0x268..+0x26c` with the mount id at `+0x4` and the
 enabled byte at `+0x2c` (`find_mount` `0x4b2080`, stride `0x30`).

@@ -7644,7 +7644,7 @@ provenance = "static"
 name = "launch.refire_interval"
 va = 0x004b6b2d
 bytes = "d90570c47100d84714d95710"
-fact = "fld [0x71c470]; fadd [edi+0x14]; fstp [edi+0x10] — a mount's next-fire timestamp is the shared clock plus its +0x14 interval"
+fact = "fld [0x71c470]; fadd [edi+0x14]; fst [edi+0x10] — a mount's next-fire timestamp is the shared clock plus its +0x14 interval"
 
 [[ordnance_launch_fact]]
 claim = "OWNER-STATIC-2026-10-28"
