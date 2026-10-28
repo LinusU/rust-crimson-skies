@@ -3389,6 +3389,92 @@ pub fn read_original_ammo_declarations(
     )?))
 }
 
+// ------------------- the equipment-rule census (T452-R.03-D) ----------------
+
+/// Fragments of a key name that would state a requirement or permission on
+/// another piece of equipment. A catalogued record that declares a key
+/// containing one of these would carry an equipment rule the importer must read;
+/// the census reports every such key rather than assuming none exists.
+pub const ORIGINAL_EQUIPMENT_RULE_KEY_FRAGMENTS: [&str; 8] = [
+    "REQUIRE", "PERMIT", "ALLOW", "FORBID", "PROHIBIT", "EXCLUDE", "NEED", "EQUIP",
+];
+
+/// What the catalogued `weapons.zrd` records declare about equipment rules.
+///
+/// **Measured, `static`** (a read of the installation's data, not a run of the
+/// original): the union of top-level keys over the records, and which of them
+/// state a requirement or permission.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalEquipmentRuleCensus {
+    /// The records the census covers, in table order.
+    pub records: Vec<String>,
+    /// The union of every top-level key those records declare.
+    pub keys: BTreeSet<String>,
+    /// `(record, key)` for every declared key that names a requirement or
+    /// permission ([`ORIGINAL_EQUIPMENT_RULE_KEY_FRAGMENTS`]).
+    pub rule_keys: Vec<(String, String)>,
+}
+
+impl OriginalEquipmentRuleCensus {
+    /// Whether any covered record states an equipment rule; when it is false
+    /// the empty rule set is the measured value for every one of them.
+    #[must_use]
+    pub fn declares_rules(&self) -> bool {
+        !self.rule_keys.is_empty()
+    }
+}
+
+/// Census of the equipment-rule keys over the named records of `census`.
+///
+/// A name the census does not hold is skipped from `records` (and so shows as a
+/// short record count, which the caller pins).
+#[must_use]
+pub fn original_equipment_rule_census(
+    census: &OriginalWeaponCensus,
+    records: &[String],
+) -> OriginalEquipmentRuleCensus {
+    let mut covered = Vec::new();
+    let mut keys = BTreeSet::new();
+    let mut rule_keys = Vec::new();
+    for name in records {
+        let Some(record) = census.records.iter().find(|record| &record.record == name) else {
+            continue;
+        };
+        covered.push(record.record.clone());
+        for key in &record.keys {
+            keys.insert(key.clone());
+            if ORIGINAL_EQUIPMENT_RULE_KEY_FRAGMENTS
+                .iter()
+                .any(|fragment| key.contains(fragment))
+            {
+                rule_keys.push((record.record.clone(), key.clone()));
+            }
+        }
+    }
+    OriginalEquipmentRuleCensus {
+        records: covered,
+        keys,
+        rule_keys,
+    }
+}
+
+/// Reads the installation and counts the equipment-rule keys over the records
+/// of the component table (the catalogued records).
+///
+/// # Errors
+///
+/// [`OriginalComponentError`] when the records or a screen cannot be read.
+pub fn read_original_equipment_rule_census(
+    install_root: &std::path::Path,
+) -> Result<OriginalEquipmentRuleCensus, OriginalComponentError> {
+    let census =
+        read_original_weapon_census(install_root).map_err(OriginalComponentError::Records)?;
+    let layout = read_original_mount_layout(install_root)?;
+    let table = original_component_table(&census, &layout);
+    let records: Vec<String> = table.rows.iter().map(|row| row.record.clone()).collect();
+    Ok(original_equipment_rule_census(&census, &records))
+}
+
 // ------------------------------- the per-component launch table (T452.04) ----
 
 /// The retail container that holds the two ordnance screens (task T452.04).
