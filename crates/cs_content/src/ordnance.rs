@@ -3659,6 +3659,84 @@ impl OriginalHardpointPrice {
     }
 }
 
+/// The composite factors the two totalizers multiply the summed box counts by:
+/// `15 * 8 * 4` in [`ORIGINAL_PLANE_WEIGHT_TOTAL_VA`] (`0x40558e`) and
+/// `41 * 5 * 2` in [`ORIGINAL_PLANE_COST_TOTAL_VA`] (`0x4056aa`..`0x4056ef`).
+/// They are the instructions' own constants, and their products are
+/// [`ORIGINAL_HARDPOINT_WEIGHT_PER_BOX`] and [`ORIGINAL_HARDPOINT_COST_PER_BOX`].
+///
+/// **Measured, `static`.**
+pub const ORIGINAL_PLANE_TOTAL_BOX_FACTORS: ([u32; 3], [u32; 3]) = ([15, 8, 4], [41, 5, 2]);
+
+/// The claim that the weight unit's conversion to kilograms is **not
+/// measured**: [`OriginalWeightUnits`] deliberately has no kilogram accessor,
+/// and nothing may present its value as kilograms until a task measures the
+/// conversion.
+pub const ORIGINAL_WEIGHT_UNIT_KG_CLAIM: &str = "t452_register.limit.weight_unit_kg";
+
+/// A weight in the engine's own purchase unit. Its conversion to kilograms is
+/// unmeasured ([`ORIGINAL_WEIGHT_UNIT_KG_CLAIM`]), so the type offers no
+/// kilogram view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct OriginalWeightUnits(pub u32);
+
+/// The two enabled-rocket-box counts of an airframe record (`record + 0x34`
+/// and `record + 0x38`, [`ORIGINAL_HARDPOINT_BOX_COUNT_OFFSETS`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginalHardpointBoxes {
+    counts: [u32; 2],
+}
+
+/// A box count above what one hardpoint side holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginalBoxCountError {
+    /// The side (0 = `+0x34`, 1 = `+0x38`).
+    pub side: usize,
+    /// The refused count.
+    pub count: u32,
+}
+
+impl OriginalHardpointBoxes {
+    /// Assembles the two counts, refusing one above the four boxes a side holds
+    /// (`RKA[8]` splits 4 + 4).
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalBoxCountError`] naming the side.
+    pub fn try_new(counts: [u32; 2]) -> Result<Self, OriginalBoxCountError> {
+        let max = original_hardpoint_price().boxes_per_side;
+        for (side, &count) in counts.iter().enumerate() {
+            if count > max {
+                return Err(OriginalBoxCountError { side, count });
+            }
+        }
+        Ok(Self { counts })
+    }
+
+    /// The enabled boxes over both sides.
+    #[must_use]
+    pub const fn total_boxes(&self) -> u32 {
+        self.counts[0] + self.counts[1]
+    }
+
+    /// The hardpoint term of the airframe weight total
+    /// (`0x40558e`): the summed counts times `15 * 8 * 4`. The loaded rocket
+    /// type contributes nothing. In the engine's own unit, not kilograms.
+    #[must_use]
+    pub const fn weight(&self) -> OriginalWeightUnits {
+        let [a, b, c] = ORIGINAL_PLANE_TOTAL_BOX_FACTORS.0;
+        OriginalWeightUnits(self.total_boxes() * a * b * c)
+    }
+
+    /// The hardpoint term of the airframe cost total (`0x4056aa`): the summed
+    /// counts times `41 * 5 * 2`.
+    #[must_use]
+    pub const fn cost(&self) -> u32 {
+        let [a, b, c] = ORIGINAL_PLANE_TOTAL_BOX_FACTORS.1;
+        self.total_boxes() * a * b * c
+    }
+}
+
 // ------------------------------- the per-component launch table (T452.04) ----
 
 /// The retail container that holds the two ordnance screens (task T452.04).
