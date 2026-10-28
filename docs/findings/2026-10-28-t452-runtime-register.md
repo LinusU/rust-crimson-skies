@@ -133,7 +133,7 @@ defaulted to make an id register.
 | `wep_05`, `wep_06`, `wep_07`, `wep_08`, `wep_09`, `wep_10`, `wep_11`, `wep_14`, `wep_15`, `wep_24` | **registered** | full-inheritance launch, `DETONATION_DISTANCE` or declared timer fuse, measured stack, damage and media |
 | `wep_04`, `wep_25`, `wep_27` | blocked | `ACCELERATION 150`: the measured lateral-remainder ramp (`t452_register.limit.inheritance_ramp`, `T452-REG-INHERITANCE-RAMP`) |
 | `wep_12`, `wep_13` | blocked | the measured end of flight is a silent expiry at the end of `RANGE`, and the runtime fuse vocabulary only detonates (`t452_register.limit.silent_expiry`, `T452-REG-SILENT-EXPIRY`) |
-| `wep_26` | blocked | all three: the ramp, the silent expiry, and a measured silent launch (`t452_register.limit.silent_launch`, `T452-REG-MEDIA-SILENCE`) |
+| `wep_26` | blocked | the ramp (`t452_register.limit.inheritance_ramp`) and the silent expiry (`t452_register.limit.silent_expiry`); its missing `FIRE` `SOUND` is a measured silence the media record expresses, not a blocker |
 
 **Why these are blockers and not defaults.** `InheritanceRule` is
 `Full`/`Fraction`/`None` and lives in `crates/cs_sim/src/weapons/guns.rs`, and
@@ -142,10 +142,14 @@ speed, keep the lateral remainder, accelerate along the launch direction — is 
 expressible at all, and `Fraction { share: 1.0 }` would keep the along-direction
 part and lose the ramp. `FuseRule` is `Impact`/`Proximity`/`Timed` and `Timed`
 detonates; `ArmingRule::Disarmed` would express "never detonates" but overstates
-a measurement that only covers the end of `RANGE`. `OrdnanceMedia` requires both
-a visual and a sound id, so a measured silent launch cannot lower. Each is a
-vocabulary gap with a filed task, not missing data: the measurement is done and
-is recorded in `cs_content`.
+a measurement that only covers the end of `RANGE`. `OrdnanceMedia` requires a
+visual and carries the sound as optional, so a measured silent launch lowers as
+no sound. A record without a `FLYOUT` `MODEL` would have no visual, but none
+exists: all sixteen hardpoint records declare one (measured by
+`accept_t452_register_retail_every_hardpoint_record_declares_a_flyout_model`),
+so `t452_register.limit.no_flyout_model` was dropped and nothing defaults a
+visual. Each remaining blocker is a vocabulary gap with a filed task, not
+missing data: the measurement is done and is recorded in `cs_content`.
 
 A registered id keeps the claims the runtime still cannot carry, named per
 record by `original_kept_claim_context`: the `SONIC`/`FLASH` pilot

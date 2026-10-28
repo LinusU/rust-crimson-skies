@@ -964,3 +964,44 @@ fn step(
         },
     )
 }
+
+/// Measured: no retail hardpoint record lacks a `FLYOUT` `MODEL`, so no
+/// registered round is ever visual-less and the lowering needs no default.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_t452_register_retail_every_hardpoint_record_declares_a_flyout_model() {
+    let root = game_dir();
+    let table = cs_content::ordnance::read_original_component_table(&root)
+        .expect("the component table reads");
+    let media =
+        cs_content::ordnance::read_original_weapon_media(&root).expect("the weapon media read");
+    assert_eq!(table.rows.len(), 16);
+    for row in &table.rows {
+        let record = media
+            .iter()
+            .find(|media| media.record == row.record)
+            .unwrap_or_else(|| panic!("{} has a weapon record", row.record));
+        let model = record
+            .flyout_model()
+            .unwrap_or_else(|| panic!("{} declares no FLYOUT MODEL", row.record));
+        assert!(!model.is_empty(), "{}: empty FLYOUT MODEL", row.record);
+        assert!(
+            record
+                .measured_ordnance_media(
+                    &EvidenceClaimId::new("t452_register.measured_media").expect("a claim id")
+                )
+                .visual
+                .is_known()
+        );
+    }
+    // The registration report never names the no-FLYOUT-MODEL blocker.
+    let mut registry = OrdnanceRegistry::new();
+    let report = read_and_register_measured_ordnance(&root, &mut registry, 30)
+        .expect("the installation's records read");
+    assert!(
+        report
+            .blockers()
+            .iter()
+            .all(|blocker| blocker.claim != "t452_register.limit.no_flyout_model")
+    );
+}

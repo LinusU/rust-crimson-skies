@@ -3638,12 +3638,6 @@ pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_inst
 /// task: [`T452_SILENT_EXPIRY_TASK`].
 pub const T452_SILENT_EXPIRY_BLOCKED: &str = "t452_register.limit.silent_expiry";
 
-/// Blocker: the record declares no `FLYOUT` `MODEL`, so the spawned round has
-/// no visual and the runtime media contract requires one. (A missing `FIRE`
-/// `SOUND` is not a blocker: it is a measured silence the contract expresses.)
-/// Resolving task: [`T452_NO_FLYOUT_MODEL_TASK`].
-pub const T452_NO_FLYOUT_MODEL_BLOCKED: &str = "t452_register.limit.no_flyout_model";
-
 /// Recorded (not blocking): the measured per-box weight and cost have no
 /// runtime consumer, and the weight unit's conversion to kilograms is
 /// unmeasured. Resolving task: [`T452_PER_BOX_WEIGHT_TASK`].
@@ -3660,9 +3654,6 @@ pub const T452_REG_INSTANT_TASK: &str = "T452-REG-INSTANT-STEP";
 /// The task that adds the measured silent range-end expiry to the runtime fuse
 /// vocabulary.
 pub const T452_SILENT_EXPIRY_TASK: &str = "T452-REG-SILENT-EXPIRY";
-
-/// The task that decides what a record without a `FLYOUT` `MODEL` presents.
-pub const T452_NO_FLYOUT_MODEL_TASK: &str = "T452-REG-NO-FLYOUT-MODEL";
 
 /// The task that gives the measured per-box weight and cost a consumer.
 pub const T452_PER_BOX_WEIGHT_TASK: &str = "T452-REG-PER-BOX-WEIGHT";
@@ -4302,10 +4293,10 @@ pub fn measured_ordnance_declaration(
         blockers.push(OriginalRegistrationBlocker::new(
             name,
             "media",
-            T452_NO_FLYOUT_MODEL_BLOCKED,
+            T452_MEASURED_MEDIA_CLAIM,
             "the launch presentation: the record declares no FLYOUT MODEL, so the round \
-             has no visual of its own",
-            T452_NO_FLYOUT_MODEL_TASK,
+             has no visual of its own (no retail hardpoint record is in this state)",
+            "a #452 follow-up, only if a record without a FLYOUT MODEL is ever measured",
         ));
     }
 
