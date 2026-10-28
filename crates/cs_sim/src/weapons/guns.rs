@@ -295,6 +295,15 @@ pub enum InheritanceRule {
     /// A gun never declares it: the runtime [`crate::weapons::LaunchRamp`]
     /// carries the scalar this variant removes from the release vector.
     LateralRemainder,
+    /// The measured `INSTANT` rule (record flag `0x800` of `+0x74`): the
+    /// spawn takes the same ramping branch `0x5af315` as
+    /// [`InheritanceRule::LateralRemainder`] and computes the same `+0x60`
+    /// vector, but the step ignores it — the item's one and only step
+    /// displaces the record's `RANGE` metres along the mount's forward axis
+    /// (T452-R.04 §2 rule 3), the distance
+    /// `crate::weapons::LaunchGeometry::instant_range_m` carries. Ordnance-only:
+    /// a gun round has no one-step range displacement.
+    Instant,
 }
 
 /// The speed the measured ramping spawn adds to the airframe's speed when it
@@ -312,6 +321,7 @@ impl InheritanceRule {
             Self::Fraction { .. } => "fraction",
             Self::None => "none",
             Self::LateralRemainder => "lateral_remainder",
+            Self::Instant => "instant",
         }
     }
 }
@@ -490,7 +500,10 @@ impl GunDefinition {
         {
             return Err(GunDefinitionError::InvalidInheritanceShare { share });
         }
-        if inheritance == InheritanceRule::LateralRemainder {
+        if matches!(
+            inheritance,
+            InheritanceRule::LateralRemainder | InheritanceRule::Instant
+        ) {
             return Err(GunDefinitionError::OrdnanceOnlyInheritance);
         }
         if effect.kind() != ContentKind::HardpointEquipment {
@@ -639,10 +652,12 @@ pub enum GunDefinitionError {
         /// The rejected share.
         share: f64,
     },
-    /// The inheritance rule is [`InheritanceRule::LateralRemainder`], the
-    /// measured ordnance spawn's ramp: a gun has no speed scalar to drive it
-    /// and its release would silently drop the launch-direction part of the
-    /// airframe's velocity with no ramp to carry it.
+    /// The inheritance rule is [`InheritanceRule::LateralRemainder`] or
+    /// [`InheritanceRule::Instant`], the measured ordnance spawn's ramp and
+    /// one-step rules: a gun has no speed scalar to drive the ramp and no
+    /// `RANGE` one-step displacement, and its release would silently drop the
+    /// launch-direction part of the airframe's velocity with nothing to
+    /// carry it.
     OrdnanceOnlyInheritance,
     /// The effect id is not in the `hardpoint_equipment` namespace.
     EffectKindMismatch {
@@ -1320,6 +1335,12 @@ impl MountTransform {
     /// velocity plus `1e-4` m/s along the forward axis. The declared muzzle
     /// speed is the scalar's *target*, not a release term, so
     /// `muzzle_velocity_mps` does not enter this rule's composition.
+    ///
+    /// [`InheritanceRule::Instant`] takes the measured spawn's *same* ramping
+    /// branch (`launch.accel_instant_gate`: `ACCELERATION != 0` **or**
+    /// `INSTANT` selects `0x5af315`), so its release vector is the same
+    /// composition — the `+0x60` the node holds even though the `INSTANT`
+    /// step never uses it.
     #[must_use]
     pub fn world_velocity_mps(
         &self,
@@ -1327,7 +1348,10 @@ impl MountTransform {
         muzzle_velocity_mps: f64,
     ) -> [f64; 3] {
         let forward = self.forward.to_array();
-        if inheritance == InheritanceRule::LateralRemainder {
+        if matches!(
+            inheritance,
+            InheritanceRule::LateralRemainder | InheritanceRule::Instant
+        ) {
             let speed = (self.inherited_velocity_mps[0] * self.inherited_velocity_mps[0]
                 + self.inherited_velocity_mps[1] * self.inherited_velocity_mps[1]
                 + self.inherited_velocity_mps[2] * self.inherited_velocity_mps[2])
@@ -1343,7 +1367,9 @@ impl MountTransform {
             InheritanceRule::Full => 1.0,
             InheritanceRule::Fraction { share } => share,
             InheritanceRule::None => 0.0,
-            InheritanceRule::LateralRemainder => unreachable!("handled above"),
+            InheritanceRule::LateralRemainder | InheritanceRule::Instant => {
+                unreachable!("handled above")
+            }
         };
         [
             self.inherited_velocity_mps[0] * share + forward[0] * muzzle_velocity_mps,

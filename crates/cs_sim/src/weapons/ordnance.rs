@@ -322,6 +322,10 @@ pub struct LaunchGeometry {
     /// second squared — the record's `ACCELERATION` (`+0x38`). `None` for
     /// every rule that runs no ramp.
     acceleration_mps2: Option<f64>,
+    /// The one-step displacement distance for [`InheritanceRule::Instant`],
+    /// in metres — the record's `RANGE` (`+0x1c`). `None` for every rule
+    /// whose step integrates `dt·velocity` instead.
+    instant_range_m: Option<f64>,
 }
 
 impl LaunchGeometry {
@@ -334,8 +338,13 @@ impl LaunchGeometry {
     /// [`OrdnanceDefinitionError::InvalidInheritanceShare`],
     /// [`OrdnanceDefinitionError::NonFiniteAcceleration`],
     /// [`OrdnanceDefinitionError::NonPositiveAcceleration`],
-    /// [`OrdnanceDefinitionError::MissingAcceleration`] or
-    /// [`OrdnanceDefinitionError::UnexpectedAcceleration`].
+    /// [`OrdnanceDefinitionError::MissingAcceleration`],
+    /// [`OrdnanceDefinitionError::UnexpectedAcceleration`],
+    /// [`OrdnanceDefinitionError::NonFiniteInstantRange`],
+    /// [`OrdnanceDefinitionError::NonPositiveInstantRange`],
+    /// [`OrdnanceDefinitionError::MissingInstantRange`] or
+    /// [`OrdnanceDefinitionError::UnexpectedInstantRange`].
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         mount: DamageNodeKey,
         hardpoint: HardpointKind,
@@ -343,6 +352,7 @@ impl LaunchGeometry {
         inheritance: InheritanceRule,
         release_delay_ticks: u64,
         acceleration_mps2: Option<f64>,
+        instant_range_m: Option<f64>,
     ) -> Result<Self, OrdnanceDefinitionError> {
         if !launch_speed_mps.is_finite() {
             return Err(OrdnanceDefinitionError::NonFiniteLaunchSpeed);
@@ -370,6 +380,21 @@ impl LaunchGeometry {
             }
             _ => {}
         }
+        match instant_range_m {
+            Some(instant_range_m) if !instant_range_m.is_finite() => {
+                return Err(OrdnanceDefinitionError::NonFiniteInstantRange);
+            }
+            Some(instant_range_m) if instant_range_m <= 0.0 => {
+                return Err(OrdnanceDefinitionError::NonPositiveInstantRange { instant_range_m });
+            }
+            Some(instant_range_m) if inheritance != InheritanceRule::Instant => {
+                return Err(OrdnanceDefinitionError::UnexpectedInstantRange { instant_range_m });
+            }
+            None if inheritance == InheritanceRule::Instant => {
+                return Err(OrdnanceDefinitionError::MissingInstantRange);
+            }
+            _ => {}
+        }
         Ok(Self {
             mount,
             hardpoint,
@@ -377,6 +402,7 @@ impl LaunchGeometry {
             inheritance,
             release_delay_ticks,
             acceleration_mps2,
+            instant_range_m,
         })
     }
 
@@ -416,6 +442,14 @@ impl LaunchGeometry {
     #[must_use]
     pub const fn acceleration_mps2(&self) -> Option<f64> {
         self.acceleration_mps2
+    }
+
+    /// The one-step displacement distance an [`InheritanceRule::Instant`]
+    /// launch runs on its advance, in metres — the record's `RANGE` — or
+    /// `None` when the declared rule integrates `dt·velocity`.
+    #[must_use]
+    pub const fn instant_range_m(&self) -> Option<f64> {
+        self.instant_range_m
     }
 
     /// The item's world velocity at release, composed from the supplied
@@ -1576,6 +1610,23 @@ pub enum OrdnanceDefinitionError {
         /// The rejected value.
         acceleration_mps2: f64,
     },
+    /// A declared `INSTANT` one-step range was NaN or infinite.
+    NonFiniteInstantRange,
+    /// A declared `INSTANT` one-step range was zero or negative, so the
+    /// step could not displace along the launch direction at all.
+    NonPositiveInstantRange {
+        /// The rejected value.
+        instant_range_m: f64,
+    },
+    /// An `INSTANT` launch declared no one-step range, so its only step
+    /// would have no distance to displace.
+    MissingInstantRange,
+    /// A launch declared a one-step range its inheritance rule never uses —
+    /// a value no code path reads is not carried.
+    UnexpectedInstantRange {
+        /// The rejected value.
+        instant_range_m: f64,
+    },
     /// A launcher declared no stack capacity, so it can never be loaded.
     ZeroStackCapacity,
     /// A unit mass was NaN or infinite.
@@ -1733,6 +1784,27 @@ impl fmt::Display for OrdnanceDefinitionError {
                     f,
                     "only a lateral-remainder launch declares an acceleration: \
                      {acceleration_mps2}"
+                )
+            }
+            Self::NonFiniteInstantRange => {
+                write!(f, "the instant one-step range must be finite")
+            }
+            Self::NonPositiveInstantRange { instant_range_m } => {
+                write!(
+                    f,
+                    "the instant one-step range must be positive: {instant_range_m}"
+                )
+            }
+            Self::MissingInstantRange => {
+                write!(
+                    f,
+                    "an instant launch must declare the range its one step displaces"
+                )
+            }
+            Self::UnexpectedInstantRange { instant_range_m } => {
+                write!(
+                    f,
+                    "only an instant launch declares a one-step range: {instant_range_m}"
                 )
             }
             Self::ZeroStackCapacity => {
@@ -5484,6 +5556,56 @@ impl LaunchRamp {
     }
 }
 
+/// One live item's measured `INSTANT` step: the flag's own displacement
+/// rule, which ignores the `+0x60` velocity vector the spawn computed and
+/// moves the node `RANGE` metres along the launch direction in a single
+/// step (T452-R.04 §2 rule 3; the gate `launch.accel_instant_gate` selects
+/// the ramping spawn `0x5af315` for `INSTANT` exactly as for a non-zero
+/// `ACCELERATION`).
+///
+/// The direction is fixed at release: the measured step displaces along the
+/// launch direction the mount faced when the item left. This is the runtime
+/// state [`InheritanceRule::Instant`] opens at release; the item's declared
+/// `lifetime_ticks` of one is what retires it after that step — the measured
+/// flight ends because the first step reaches `RANGE`, which the runtime's
+/// range-end lifetime expresses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstantStep {
+    /// The launch direction the displacement runs along, fixed at release.
+    direction: [f64; 3],
+    /// The one-step displacement distance: the record's `RANGE` (`+0x1c`).
+    range_m: f64,
+}
+
+impl InstantStep {
+    /// Opens the one-step rule an instant release carries.
+    fn new(direction: [f64; 3], range_m: f64) -> Self {
+        Self { direction, range_m }
+    }
+
+    /// The launch direction the displacement runs along.
+    #[must_use]
+    pub const fn direction(&self) -> [f64; 3] {
+        self.direction
+    }
+
+    /// The one-step distance: the record's `RANGE`.
+    #[must_use]
+    pub const fn range_m(&self) -> f64 {
+        self.range_m
+    }
+
+    /// The measured one-step displacement: `RANGE·launch_dir`.
+    #[must_use]
+    pub fn displacement_m(&self) -> [f64; 3] {
+        [
+            self.direction[0] * self.range_m,
+            self.direction[1] * self.range_m,
+            self.direction[2] * self.range_m,
+        ]
+    }
+}
+
 /// One live ordnance item's authoritative motion and behavior state.
 ///
 /// The declared [`ProjectileOrdnance`] travels with the item so the runtime
@@ -5493,7 +5615,10 @@ impl LaunchRamp {
 /// defined. `previous` and `current` are the authoritative swept segment of
 /// the current tick; an ECS body is a mirror, never a second integrator.
 /// An item released under [`InheritanceRule::LateralRemainder`] also carries
-/// the [`LaunchRamp`] that recomposes its velocity each tick.
+/// the [`LaunchRamp`] that recomposes its velocity each tick, and one
+/// released under [`InheritanceRule::Instant`] carries the [`InstantStep`]
+/// whose single `RANGE·direction` displacement replaces the integrated
+/// `dt·velocity` step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveOrdnance {
     projectile: ProjectileId,
@@ -5504,6 +5629,7 @@ pub struct LiveOrdnance {
     current: WorldPosition,
     air_velocity_m_s: [f64; 3],
     ramp: Option<LaunchRamp>,
+    instant: Option<InstantStep>,
 }
 
 impl LiveOrdnance {
@@ -5556,6 +5682,13 @@ impl LiveOrdnance {
     #[must_use]
     pub const fn launch_ramp(&self) -> Option<&LaunchRamp> {
         self.ramp.as_ref()
+    }
+
+    /// The measured `INSTANT` one-step rule this item runs, when its launch
+    /// declared [`InheritanceRule::Instant`].
+    #[must_use]
+    pub const fn instant_step(&self) -> Option<&InstantStep> {
+        self.instant.as_ref()
     }
 
     /// The swept segment the item covered over the current tick.
@@ -5988,6 +6121,23 @@ impl OrdnanceRuntime {
         } else {
             None
         };
+        // An `INSTANT` launch carries its measured one-step rule instead of
+        // a ramp: the spawn computed the same `+0x60` (which
+        // `release_velocity_mps` already composed above) but the step
+        // ignores it for the `RANGE·direction` displacement
+        // (`launch.accel_instant_gate`, `flight.spawn_ramp_scalars`;
+        // T452-R.04 §2 rule 3).
+        let instant = if definition.launch().inheritance() == InheritanceRule::Instant {
+            Some(InstantStep::new(
+                transform.forward.to_array(),
+                definition
+                    .launch()
+                    .instant_range_m()
+                    .expect("an instant launch declares its one-step range"),
+            ))
+        } else {
+            None
+        };
         let origin = transform.origin;
         self.live.insert(
             projectile,
@@ -6008,6 +6158,7 @@ impl OrdnanceRuntime {
                 current: origin,
                 air_velocity_m_s,
                 ramp,
+                instant,
             },
         );
         if definition.guidance().is_targeted() {
@@ -6064,10 +6215,22 @@ impl OrdnanceRuntime {
             if let Some(ramp) = live.ramp.as_mut() {
                 live.air_velocity_m_s = ramp.advance(dt_s);
             }
-            let velocity = world_velocity_from_air_m_s(live.air_velocity_m_s, wind_velocity_m_s);
             let mut position = live.current.to_array();
-            for axis in 0..3 {
-                position[axis] += velocity[axis] * dt_s;
+            if let Some(instant) = &live.instant {
+                // The measured `INSTANT` step: `RANGE·launch_dir` in a
+                // single step. The `+0x60` velocity plays no part in it —
+                // neither do `dt` or the wind, because the displacement is
+                // the node's own, not an integrated velocity.
+                let displacement = instant.displacement_m();
+                for axis in 0..3 {
+                    position[axis] += displacement[axis];
+                }
+            } else {
+                let velocity =
+                    world_velocity_from_air_m_s(live.air_velocity_m_s, wind_velocity_m_s);
+                for axis in 0..3 {
+                    position[axis] += velocity[axis] * dt_s;
+                }
             }
             let current = WorldPosition::try_new(position).map_err(|_| {
                 OrdnanceRuntimeError::NonFinitePosition {
@@ -6991,6 +7154,7 @@ pub fn synthetic_launch_geometry() -> LaunchGeometry {
         SYNTHETIC_LAUNCH_SPEED_MPS,
         InheritanceRule::None,
         0,
+        None,
         None,
     )
     .expect("the fixture launch geometry is valid")
