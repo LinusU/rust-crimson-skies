@@ -282,6 +282,7 @@ fn lower_launch(
     )?);
     let acceleration_mps2 =
         known_or_refuse("launch.acceleration_mps2", &declared.acceleration_mps2)?;
+    let instant_range_m = known_or_refuse("launch.instant_range_m", &declared.instant_range_m)?;
     let release_delay_ticks =
         known_or_refuse("launch.release_delay_ticks", &declared.release_delay_ticks)?;
     LaunchGeometry::try_new(
@@ -291,6 +292,7 @@ fn lower_launch(
         inheritance,
         release_delay_ticks,
         acceleration_mps2,
+        instant_range_m,
     )
     .map_err(OrdnanceLowerError::Definition)
 }
@@ -538,6 +540,7 @@ fn lower_inheritance(declared: DeclaredInheritanceRule) -> InheritanceRule {
         DeclaredInheritanceRule::Fraction { share } => InheritanceRule::Fraction { share },
         DeclaredInheritanceRule::None => InheritanceRule::None,
         DeclaredInheritanceRule::LateralRemainder => InheritanceRule::LateralRemainder,
+        DeclaredInheritanceRule::Instant => InheritanceRule::Instant,
     }
 }
 
@@ -3682,15 +3685,6 @@ pub const T452_MEASURED_STATUS_CLAIM: &str = "t452_register.status";
 /// vocabulary is not.
 pub const T452_DESIGNED_LAUNCH_NAMES_CLAIM: &str = "t452_register.designed_launch_names";
 
-/// Blocker: the measured `INSTANT` launch computes the lateral-remainder
-/// vector the runtime now expresses, but its measured first step displaces
-/// by `RANGE·launch_dir` in a single step — a one-step flight the runtime's
-/// per-tick advancement has no rule for. (The `ACCELERATION` ramp this claim
-/// family carried is resolved: [`T452_REG_INHERITANCE_TASK`] added the
-/// lateral-remainder rule and its acceleration field.) Resolving task:
-/// [`T452_REG_INSTANT_TASK`].
-pub const T452_INHERITANCE_BLOCKED: &str = "t452_register.limit.inheritance_instant";
-
 /// Claim: the measured end of flight is a silent expiry at the record's
 /// `RANGE`, which the runtime fuse vocabulary has no variant for.
 ///
@@ -3704,14 +3698,6 @@ pub const T452_SILENT_EXPIRY_BLOCKED: &str = "t452_register.limit.silent_expiry"
 /// runtime consumer, and the weight unit's conversion to kilograms is
 /// unmeasured. Resolving task: [`T452_PER_BOX_WEIGHT_TASK`].
 pub const T452_PER_BOX_WEIGHT_CLAIM: &str = "t452_register.limit.per_box_weight";
-
-/// The task that adds the measured lateral-remainder inheritance and its
-/// `ACCELERATION` ramp to the runtime vocabulary.
-pub const T452_REG_INHERITANCE_TASK: &str = "T452-REG-INHERITANCE-RAMP";
-
-/// The task that expresses the measured `INSTANT` one-step `RANGE·launch_dir`
-/// displacement in the runtime vocabulary.
-pub const T452_REG_INSTANT_TASK: &str = "T452-REG-INSTANT-STEP";
 
 /// The task that added the measured silent range-end expiry to the runtime fuse
 /// vocabulary (`FuseRule::ExpiresAtRange`, this stage). No record is blocked on
@@ -4052,16 +4038,7 @@ pub fn measured_ordnance_declaration(
             DeclaredInheritanceRule::LateralRemainder,
         ),
         cs_content::ordnance::OriginalInheritance::Instant => {
-            blockers.push(OriginalRegistrationBlocker::new(
-                name,
-                "launch.inheritance",
-                T452_INHERITANCE_BLOCKED,
-                "the launch geometry of this INSTANT record: its measured first step \
-                 displaces by RANGE·launch_dir in a single step, which the runtime's \
-                 per-tick advancement cannot express",
-                T452_REG_INSTANT_TASK,
-            ));
-            designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Full)
+            designed_field(T452_MEASURED_LAUNCH_CLAIM, DeclaredInheritanceRule::Instant)
         }
     };
     let acceleration_mps2 = geometry.acceleration_mps2.filter(|_| {
@@ -4092,6 +4069,16 @@ pub fn measured_ordnance_declaration(
             provenance,
             T452_MEASURED_LAUNCH_CLAIM,
             acceleration_mps2,
+        ),
+        // The `RANGE` field is carried only for the rule that reads it: for
+        // a `Full` or `LateralRemainder` record the parser's `+0x1c` is the
+        // flight's end bound, not a step displacement, so `None` is the
+        // measured value, not a dropped declaration.
+        instant_range_m: measured_field(
+            provenance,
+            T452_MEASURED_LAUNCH_CLAIM,
+            (geometry.inheritance == cs_content::ordnance::OriginalInheritance::Instant)
+                .then(|| geometry.range.metres()),
         ),
         release_delay_ticks: measured_field(provenance, T452_MEASURED_LAUNCH_CLAIM, 0),
     };
