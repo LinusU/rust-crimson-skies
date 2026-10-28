@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T452-R05-AMMO-SCRIPT",
+ "candidate_tree": "59e2bf6467885ec3180bf9ea50be1185272183ca",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-28T05:54:04Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t452_r05ammo_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t452_r05ammo_synthetic_resolves_both_arities_and_reports_out_of_range", "status": "pass", "evidence": ["cargo-test.log", "ammo-command-census.json"]}, {"id": "accept_t452_r05ammo_retail_installs_no_record_through_any_script", "status": "pass", "evidence": ["cargo-test.log", "ammo-command-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "9a0149f80e54cdcb5ad6ae4219a0e89ed7d2cdac27c4ea7a4754e681cd8406fe", "kind": "log"}, {"path": "ammo-command-census.json", "sha256": "ae3b7f64bba5637151ae6722fe7b168c1de9daf2682be954f0d15e5c6381442b", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-1", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR); the report is derived from the recorded log plus a second production pass recorded in ammo-command-census.json. MEASURED (counts only; provenance static, never verified_original): through cs_content::ordnance_ammo::read_original_ammo_census the 98 INTERP script bodies of ZBD/interp.zbd (5083 lines, the only container in the installation with the INTERP signature) contain no ammo command, so no retail script installs wep_04, wep_24, wep_25, wep_26 or wep_27 (or any record) by index. NOT CLAIMED: any original-run behavior (retail is read access, no agent ran the original); that the engine reads no other source for the slot table; how the engine argument reader spells a number. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
