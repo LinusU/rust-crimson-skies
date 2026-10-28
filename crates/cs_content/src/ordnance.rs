@@ -3289,6 +3289,106 @@ pub fn read_original_rocket_type_table(
     )?))
 }
 
+// ------------------------------------------- AMMO_LIMIT and the slot count ----
+
+/// The virtual address of the `weapons.zrd` record parser (`zwep_init.c`
+/// loader) whose `AMMO_LIMIT` read is [`ORIGINAL_AMMO_LIMIT_READ_VA`].
+///
+/// **Measured, `static`** (task T452-R.03-B, never `verified_original`).
+pub const ORIGINAL_WEAPON_RECORD_PARSER_VA: u64 = 0x5a_d630;
+
+/// The call that reads `AMMO_LIMIT` (`0x57a130`, number read as a float) into
+/// the record's own float at `record + 0x18`.
+pub const ORIGINAL_AMMO_LIMIT_READ_VA: u64 = 0x5a_d925;
+
+/// The store that defaults `record + 0x18` to [`ORIGINAL_AMMO_LIMIT_DEFAULT`]
+/// before any key is read, so a record without `AMMO_LIMIT` keeps that value.
+pub const ORIGINAL_AMMO_LIMIT_DEFAULT_VA: u64 = 0x5a_d805;
+
+/// The default of the `AMMO_LIMIT` field (`0x42480000` as an `f32`).
+///
+/// **Measured, `static`**. No reader of the field was found (see
+/// [`ORIGINAL_AMMO_LIMIT_CONSUMER_NOTE`]), so what the default means for play is
+/// unknown.
+pub const ORIGINAL_AMMO_LIMIT_DEFAULT: f32 = 50.0;
+
+/// The byte offset of the parsed `AMMO_LIMIT` float inside a `weapons.zrd`
+/// record (stride `0x214`, list at `0xa1d78c`).
+pub const ORIGINAL_AMMO_LIMIT_RECORD_OFFSET: u32 = 0x18;
+
+/// The per-type callback the record parser invokes (`0x5ae0f7`); it allocates
+/// the 0x38-byte object stored at `record + 0x210`.
+pub const ORIGINAL_WEAPON_TYPE_CALLBACK_VA: u64 = 0x4b_a6f0;
+
+/// The store of `CLUSTER_SIZE` at `(record + 0x210) + 0xc`, the dword the slot
+/// installer takes as a slot's count (`0x4bad90`). The object is zero-filled
+/// on allocation, so a record without `CLUSTER_SIZE` has count 0.
+///
+/// **Measured, `static`**: this, not `AMMO_LIMIT`, fills the stack count.
+pub const ORIGINAL_SLOT_COUNT_STORE_VA: u64 = 0x4b_aa17;
+
+/// What the static search for a reader of the `AMMO_LIMIT` float established.
+pub const ORIGINAL_AMMO_LIMIT_CONSUMER_NOTE: &str = "no instruction reading record+0x18 as AMMO_LIMIT was found: the zweapon module (0x5ac000..0x5af000) only writes it, and the callers of the record lookups 0x5abfd0 and 0x5ac050 read other structures at +0x18; the slot count (per-slot stack, applied to every slot holding the record) is CLUSTER_SIZE";
+
+/// What one `weapons.zrd` record declares about its ammunition, and what the
+/// engine's two parsers make of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalAmmoDeclaration {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// The declared `AMMO_LIMIT`, or `None` (the parser field then keeps
+    /// [`ORIGINAL_AMMO_LIMIT_DEFAULT`]).
+    pub ammo_limit: Option<f64>,
+    /// The declared `CLUSTER_SIZE`, or `None`.
+    pub cluster_size: Option<f64>,
+}
+
+impl OriginalAmmoDeclaration {
+    /// The stack count the slot installer reads for this record: the declared
+    /// `CLUSTER_SIZE`, and 0 when it is absent (the zero-filled object).
+    #[must_use]
+    pub fn slot_count(&self) -> u32 {
+        self.cluster_size.map_or(0, whole)
+    }
+
+    /// The value of the parsed `AMMO_LIMIT` field: the declaration, else the
+    /// parser default.
+    #[must_use]
+    pub fn parsed_ammo_limit(&self) -> f64 {
+        self.ammo_limit
+            .unwrap_or_else(|| f64::from(ORIGINAL_AMMO_LIMIT_DEFAULT))
+    }
+}
+
+/// The ammunition declaration of every record in the census, in member order.
+#[must_use]
+pub fn original_ammo_declarations(census: &OriginalWeaponCensus) -> Vec<OriginalAmmoDeclaration> {
+    census
+        .records
+        .iter()
+        .map(|record| OriginalAmmoDeclaration {
+            record: record.record.clone(),
+            ammo_limit: record.first("AMMO_LIMIT"),
+            cluster_size: record.first("CLUSTER_SIZE"),
+        })
+        .collect()
+}
+
+/// Reads the installation's `weapons.zrd` and returns every record's ammunition
+/// declaration.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] as
+/// [`read_original_weapon_records`].
+pub fn read_original_ammo_declarations(
+    install_root: &std::path::Path,
+) -> Result<Vec<OriginalAmmoDeclaration>, crate::original_airframe::OriginalImportError> {
+    Ok(original_ammo_declarations(&read_original_weapon_census(
+        install_root,
+    )?))
+}
+
 // ------------------------------- the per-component launch table (T452.04) ----
 
 /// The retail container that holds the two ordnance screens (task T452.04).
