@@ -3543,6 +3543,40 @@ pub const ORIGINAL_HARDPOINT_WEIGHT_PER_BOX: u32 = 480;
 /// and [`ORIGINAL_PLANE_COST_TOTAL_VA`] adds it per counted box.
 pub const ORIGINAL_HARDPOINT_COST_PER_BOX: u32 = 410;
 
+/// The Instant Action rocket availability table: twelve 8-byte records the
+/// E 2028 list enumerates through `0x40ff00` (count), `0x40ff50` (nth passing
+/// row's index) and `0x40ffa0` (a record index's row). Each record's first
+/// dword gates it: a row passes when any of the flag cells `0x647b5c`,
+/// `0x647b68`, `0x647b6c` is set, or when `first <= progress + 1` against the
+/// progress cell `0x64b678`.
+///
+/// **Measured, `static`** (T452-R.03; the row values were first pinned by
+/// F2066-B's `[ordinance_feed]` facts).
+pub const ORIGINAL_ROCKET_GATE_TABLE_VA: u64 = 0x61_9efc;
+
+/// The availability thresholds of the twelve gate-table rows (the first
+/// dword of each). Row `n` is the rocket id `n`: the same ids
+/// [`ORIGINAL_ROCKET_ID_WEAPON_INDEX`] maps (0..10 selectable, 11 the none
+/// entry the Instant Action list shows last).
+pub const ORIGINAL_ROCKET_GATE_THRESHOLDS: [u32; 12] = [1, 1, 2, 8, 7, 12, 7, 7, 17, 17, 20, 1];
+
+/// The second dwords of the gate-table rows (`4, 4, 2, 2, 2, 2, 2, 4, 4, 1, 0`
+/// for rows 0..10): **measured to be unread** — every code reference to the
+/// table is one of the three accessors, and each compares `[ecx]` only. Row
+/// 11's second dword is not table data at all: `0x619f58` is the base of the
+/// 204-byte plane-record table (`lea esi, [ecx * 4 + 0x619f58]` copies
+/// `0x33` dwords, e.g. at `0x40ab16`). What the column means is unknown;
+/// nothing in the image reads it.
+pub const ORIGINAL_ROCKET_GATE_AUX: [u32; 11] = [4, 4, 2, 2, 2, 2, 2, 4, 4, 1, 0];
+
+/// The base of the static plane-record table (204-byte records, the source
+/// the live `0x64b78c` table mirrors). It overlaps what would be the last
+/// gate-table row's second dword.
+pub const ORIGINAL_PLANE_RECORD_TABLE_VA: u64 = 0x61_9f58;
+
+/// The byte stride of a plane record.
+pub const ORIGINAL_PLANE_RECORD_STRIDE: u32 = 204;
+
 /// What the purchase surface charges for hardpoints — the measured answer to
 /// "the hardpoint weight and cost".
 #[derive(Clone, Debug, PartialEq)]
