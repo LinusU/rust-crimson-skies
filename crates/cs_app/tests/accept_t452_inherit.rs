@@ -300,6 +300,7 @@ fn accept_t452_inherit_the_boundary_refuses_an_incoherent_ramp() {
             inheritance,
             0,
             acceleration_mps2,
+            None,
         )
     };
     assert_eq!(
@@ -569,13 +570,16 @@ fn accept_t452_inherit_a_session_launch_runs_the_measured_ramp() {
     );
 }
 
-/// An `INSTANT` record still names its unexpressible launch rather than
-/// borrowing the ramp it does not run.
+/// An `INSTANT` record lowers with its own measured rule — the one-step
+/// `RANGE·launch_dir` displacement — not the ramp it does not run. Its own
+/// acceptance file (`accept_t452_instant.rs`) proves the step itself; this
+/// only pins that the declaration no longer names a blocker here.
 #[test]
-fn accept_t452_inherit_an_instant_record_still_names_its_blocker() {
+fn accept_t452_inherit_an_instant_record_lowers_its_own_rule() {
     let mut record = ramping_record();
     record.record = "wep_instant".to_owned();
-    record.first_values.remove("ACCELERATION");
+    // `ACCELERATION` stays declared: the measured gate takes the ramping
+    // branch for either flag, but the `INSTANT` step never reads `+0x38`.
     record.first_values.insert("INSTANT".to_owned(), 1.0);
     record.keys = record.first_values.keys().cloned().collect();
     let mut row = ramping_row();
@@ -584,7 +588,7 @@ fn accept_t452_inherit_an_instant_record_still_names_its_blocker() {
     media.record = "wep_instant".to_owned();
     let mut ammo = ramping_ammo();
     ammo.record = "wep_instant".to_owned();
-    let blockers = measured_ordnance_declaration(
+    let declared = measured_ordnance_declaration(
         &row,
         &record,
         &media,
@@ -592,14 +596,31 @@ fn accept_t452_inherit_an_instant_record_still_names_its_blocker() {
         &provenance(),
         TICKS_PER_SECOND,
     )
-    .expect_err("the INSTANT one-step displacement is not the ramp");
-    assert!(
-        blockers.iter().any(
-            |blocker| blocker.claim == cs_app::ordnance::T452_INHERITANCE_BLOCKED
-                && blocker.field == "launch.inheritance"
-                && blocker.resolving_task == cs_app::ordnance::T452_REG_INSTANT_TASK
-        ),
-        "the INSTANT launch names its claim and its resolving task: {blockers:?}"
+    .expect("the INSTANT one-step rule is expressible now");
+    let projectile = lower_ordnance(&declared)
+        .expect("the INSTANT record lowers")
+        .as_projectile()
+        .expect("a projectile")
+        .clone();
+    assert_eq!(
+        projectile.launch().inheritance(),
+        InheritanceRule::Instant,
+        "the measured INSTANT flag lowers as its own rule, not the ramp"
+    );
+    assert_eq!(
+        projectile.launch().instant_range_m(),
+        Some(900.0),
+        "the step's displacement is the record's RANGE"
+    );
+    assert_eq!(
+        projectile.launch().acceleration_mps2(),
+        None,
+        "the declared ACCELERATION is measured to play no part in the step"
+    );
+    assert_eq!(
+        projectile.lifetime_ticks(),
+        1,
+        "the measured flight is one step long"
     );
 }
 
