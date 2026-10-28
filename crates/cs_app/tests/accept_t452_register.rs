@@ -25,16 +25,16 @@ use cs_app::ordnance::{
     ORIGINAL_ORDNANCE_UNIT_MASS_KG, OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
     OriginalRegistrationOutcome, OriginalRegistrationReport, T452_MEASURED_BEHAVIOUR_CLAIM,
-    T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED, lower_ordnance,
-    measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
-    step_ordnance_session,
+    T452_NO_FLYOUT_MODEL_BLOCKED, T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED,
+    lower_ordnance, measured_ordnance_declaration, read_and_register_measured_ordnance,
+    register_measured_ordnance, step_ordnance_session,
 };
 use cs_app::scene::SceneGeneration;
 use cs_app::weapons::MountPoseBinding;
 use cs_content::ordnance::{
-    DeclaredOrdnance, DeclaredOrdnanceDetails, DeclaredOrdnanceFamily, DeclaredStackLoad,
-    ORIGINAL_HARDPOINT_WEIGHT_PER_BOX, OriginalAmmoDeclaration, OriginalAreaDeclaration,
-    OriginalClusterShape, OriginalComponentLaunch, OriginalComponentTable,
+    DeclaredFuseRule, DeclaredOrdnance, DeclaredOrdnanceDetails, DeclaredOrdnanceFamily,
+    DeclaredStackLoad, ORIGINAL_HARDPOINT_WEIGHT_PER_BOX, OriginalAmmoDeclaration,
+    OriginalAreaDeclaration, OriginalClusterShape, OriginalComponentLaunch, OriginalComponentTable,
     OriginalDamageDeclaration, OriginalEffectBlock, OriginalLifetime, OriginalMountDeclaration,
     OriginalMountLayout, OriginalSlotArray, OriginalWeaponMedia, OriginalWeaponRecord,
     declared_synthetic_guided, declared_unknown,
@@ -458,9 +458,11 @@ fn accept_t452_register_lowering_refuses_a_field_no_measurement_states() {
         "the refusal names the field: {text}"
     );
 
-    // And the measured path itself refuses a record whose end of flight the
-    // runtime cannot express, registering nothing and naming the claim.
-    let error = measured_ordnance_declaration(
+    // And the measured path itself refuses a record whose measured `RANGE`
+    // bound is unknown, registering nothing and naming the field with its
+    // claim: a fuse bound no measurement states is refused, never flown as a
+    // defaulted distance.
+    let declared = measured_ordnance_declaration(
         &blocked_row(),
         &blocked_record(),
         &blocked_media(),
@@ -468,12 +470,29 @@ fn accept_t452_register_lowering_refuses_a_field_no_measurement_states() {
         &provenance(),
         TICKS_PER_SECOND,
     )
-    .expect_err("the record's measured silent expiry is unexpressible");
-    let blocker = error
-        .iter()
-        .find(|blocker| blocker.claim == T452_SILENT_EXPIRY_BLOCKED)
-        .unwrap_or_else(|| panic!("the silent-expiry claim is named: {error:?}"));
-    assert_eq!(blocker.field, "fuse");
+    .expect("the record's measured end of flight is expressible");
+    let DeclaredOrdnanceDetails::Projectile(projectile) = declared.details() else {
+        panic!("the area-denial record is a projectile");
+    };
+    let mut projectile = (**projectile).clone();
+    projectile.fuse = DeclaredFuseRule::ExpiresAtRange {
+        range_m: declared_unknown("no measurement states this record's RANGE"),
+    };
+    let refused = DeclaredOrdnance::try_new(
+        declared.ordnance().clone(),
+        cs_types::content::Origin::SyntheticFixture,
+        DeclaredOrdnanceFamily::AreaDenialEngine,
+        DeclaredOrdnanceDetails::Projectile(Box::new(projectile)),
+        None,
+        provenance(),
+    )
+    .expect("an unresolved fuse bound is a legal record");
+    let error = lower_ordnance(&refused).expect_err("the boundary refuses an unknown RANGE bound");
+    let text = error.to_string();
+    assert!(
+        text.contains("fuse.range_m"),
+        "the refusal names the field: {text}"
+    );
 }
 
 /// Every declared id is either registered or blocked with a named claim, the
@@ -481,11 +500,16 @@ fn accept_t452_register_lowering_refuses_a_field_no_measurement_states() {
 #[test]
 fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
     let table = table(vec![guided_row(), blocked_row()]);
+    // The silent range end registers now (task #2175), so the blocked id here
+    // is blocked for a measured value the runtime still cannot express: a
+    // record with no `FLYOUT` `MODEL` has no visual for its round.
+    let mut no_visual = blocked_media();
+    no_visual.flyout = None;
     let mut registry = OrdnanceRegistry::new();
     let report: OriginalRegistrationReport = register_measured_ordnance(
         &table,
         &[guided_record(), blocked_record()],
-        &[guided_media(), blocked_media()],
+        &[guided_media(), no_visual],
         &[guided_ammo(), blocked_ammo()],
         &provenance(),
         &mut registry,
@@ -495,6 +519,14 @@ fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
     assert_eq!(report.registered_records(), vec!["wep_05"]);
     assert_eq!(report.blocked_records(), vec!["wep_12"]);
     assert!(!report.is_complete());
+    assert!(
+        report
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.claim == T452_NO_FLYOUT_MODEL_BLOCKED),
+        "{:?}",
+        report.blockers()
+    );
     for blocker in report.blockers() {
         assert!(!blocker.record.is_empty());
         assert!(!blocker.field.is_empty());
@@ -612,7 +644,7 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
         report.registered_records(),
         vec![
             "wep_04", "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11",
-            "wep_13", "wep_14", "wep_15", "wep_24", "wep_25", "wep_26", "wep_27",
+            "wep_13", "wep_14", "wep_15", "wep_24", "wep_26", "wep_25", "wep_27",
         ],
         "the ids whose measured values the runtime vocabulary expresses"
     );

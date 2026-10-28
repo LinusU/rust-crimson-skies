@@ -544,8 +544,11 @@ fn accept_t452_silent_retail_the_measured_smoke_record_is_consumed_at_range() {
             .unwrap_or_else(|| panic!("{record} is blocked: {:?}", report.blocked_records()))
     };
     assert_eq!(claims_of("wep_12"), vec![T452_R02_TANGLER_EFFECT]);
-    let flak = claims_of("wep_26");
-    assert!(!flak.contains(&T452_SILENT_EXPIRY_BLOCKED), "{flak:?}");
+    assert!(
+        report.registered_records().contains(&"wep_26"),
+        "the flak record's silent end was its last unexpressible value: {:?}",
+        report.blocked_records()
+    );
 
     let row = table
         .rows
@@ -687,6 +690,28 @@ fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
             .area_effect(),
         None,
         "the smoke emitter is not a gameplay area on the item"
+    );
+
+    // The flak record's own silent end is the same vocabulary with its own
+    // bound: the ramp no longer blocks it, and its `RANGE 900` is what ends it.
+    let flak = registry
+        .get(
+            &cs_sim::weapons::OrdnanceId::try_new(
+                cs_types::content::ContentId::from_source(
+                    cs_types::content::ContentKind::Weapon,
+                    "wep_26",
+                )
+                .expect("a weapon id"),
+            )
+            .expect("the weapon namespace"),
+        )
+        .expect("wep_26 registered as a flyable component")
+        .as_projectile()
+        .expect("a proximity flak record is a projectile");
+    assert_eq!(
+        flak.fuse(),
+        FuseRule::ExpiresAtRange { range_m: 900.0 },
+        "the flak record's measured end is its own RANGE, not a defaulted fuse"
     );
 
     // The claim this stage resolves is on no catalogue row and in no kept-claim
