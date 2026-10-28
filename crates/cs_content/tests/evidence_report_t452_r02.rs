@@ -3,12 +3,12 @@
 //! named `accept_t452_r02_*`: it is not part of the acceptance suite and fails
 //! loudly when its inputs are missing.
 //!
-//! 1. `cargo test --workspace --locked -- accept_t452_r02_ --include-ignored 2>&1 |
+//! 1. `cargo test -p cs_content --locked --test cs_content_tests -- accept_t452_r02_ --include-ignored 2>&1 |
 //!    tee private/evidence/T452-R02/cargo-test.log` (note the exit status)
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/T452-R02 \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_t452_r02_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test -p cs_content --locked --test cs_content_tests -- accept_t452_r02_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
 //!      cargo test --locked -p cs_content --test cs_content_tests evidence_report_t452_r02 -- --ignored
 //!    ```
@@ -16,11 +16,12 @@
 //!    --artifact-root private/evidence/T452-R02 --require-pass`
 //! 4. Commit a copy as `docs/findings/evidence/T452-R02.json`.
 //!
-//! `behavior.json` is a second production observation: the mount layout
-//! the two screens declare, the per-component rows, the per-claim row counts and
-//! the table-level unknown, as
-//! [`read_original_component_table`] returns them. Identifiers, numbers and
-//! digests only — no original content.
+//! `behavior.json` is a second production observation: every classified row's
+//! measured effect action and duration, area radius/lifetime and their sources,
+//! end of flight, lost-target rule, clustered launch, kept claims and resolved
+//! claims, as [`measure_component_behavior`] returns them over
+//! [`read_original_component_table`]. Identifiers, numbers and digests only —
+//! no original content.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -256,7 +257,7 @@ fn evidence_report_t452_r02_writes_the_acceptance_report() {
         avian: locked_version("avian3d"),
     };
     let report = format!(
-        "{{\n \"schema_version\": 1,\n \"task_id\": \"T452.04\",\n \"candidate_tree\": {},\n \
+        "{{\n \"schema_version\": 1,\n \"task_id\": \"T452-R02\",\n \"candidate_tree\": {},\n \
          \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \
          \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \
          \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \
@@ -298,13 +299,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_content/tests/evidence_report_t452_04.rs)"
+             (crates/cs_content/tests/evidence_report_t452_r02.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/T452.04` written relative to the
+/// root, so a path like `private/evidence/T452-R02` written relative to the
 /// workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
