@@ -3475,6 +3475,127 @@ pub fn read_original_equipment_rule_census(
     Ok(original_equipment_rule_census(&census, &records))
 }
 
+// ------------- the hardpoint box price and the gate table (T452-R.03) --------
+
+/// The handler the purchase screen's hardpoint rows dispatch to (callbacks
+/// `E 2259..2261`): `-1` counts the non-zero box counts, a row formats the
+/// side's count through string `1176`/`1177`, and the weight/cost row computes
+/// [`ORIGINAL_HARDPOINT_WEIGHT_PER_BOX`] / [`ORIGINAL_HARDPOINT_COST_PER_BOX`]
+/// times the count.
+///
+/// **Measured, `static`** (never `verified_original`).
+pub const ORIGINAL_HARDPOINT_ROW_CALLBACK_VA: u64 = 0x40_b2b4;
+
+/// The instruction window inside [`ORIGINAL_HARDPOINT_ROW_CALLBACK_VA`] that
+/// computes `price * count`: it picks the side's box count (`0x64cbac` or
+/// `0x64cbb0`), then `and edx, 0xffffffba; add edx, 0x1e0; imul edx, ecx` —
+/// `480` for `E 2260` (weight) and `480 - 70 = 410` for `E 2261` (cost).
+pub const ORIGINAL_HARDPOINT_PRICE_VA: u64 = 0x40_b2ff;
+
+/// The purchase-weight totalizer: it adds `480 * (record + 0x34 + record +
+/// 0x38)` — the composite `(count sum) * 15 * 8 * 4` — to the airframe, engine,
+/// gun and armor terms. It does not read `record + 0xa8` (the rocket slots).
+pub const ORIGINAL_PLANE_WEIGHT_TOTAL_VA: u64 = 0x40_5550;
+
+/// The purchase-cost totalizer: it adds `410 * (record + 0x34 + record +
+/// 0x38)` — the composite `(count sum) * 41 * 5 * 2` — to the same terms. It
+/// does not read `record + 0xa8` either.
+pub const ORIGINAL_PLANE_COST_TOTAL_VA: u64 = 0x40_5680;
+
+/// The hardpoint point get/set handler (`E 2245`): get reads the draft
+/// record's box count (`0x64cbac` point 0, `0x64cbb0` point 1 — the draft
+/// record at `0x64cb78` plus the same offsets the committed record uses,
+/// [`ORIGINAL_HARDPOINT_BOX_COUNT_OFFSETS`]); set writes the count and fills
+/// the side's four draft rocket slots (`0x64cc20 + 16 * point`, the draft
+/// record's `+0xa8` array) with a random `0`/`1` (the two starting rocket ids)
+/// or `11` (the none id) when the count is 0.
+pub const ORIGINAL_HARDPOINT_POINT_CALLBACK_VA: u64 = 0x40_ad0f;
+
+/// The Instant Action rocket-name handler (`E 2031`): it reports a slot's
+/// rocket id through `0x40ffa0`, and answers `-1` when the slot index is not
+/// below the box count — `record + 0x34` for slots 0..4, `record + 0x38` for
+/// slots 4..8 — proving the two record fields are per-side counts of enabled
+/// rocket boxes.
+pub const ORIGINAL_ROCKET_SLOT_NAME_CALLBACK_VA: u64 = 0x40_9aec;
+
+/// The record offsets (of the 204-byte plane record) holding the enabled
+/// rocket-box counts of the two hardpoint sides (`DT[2]`).
+///
+/// **Measured, `static`**: read as counts by
+/// [`ORIGINAL_ROCKET_SLOT_NAME_CALLBACK_VA`] and priced by
+/// [`ORIGINAL_PLANE_WEIGHT_TOTAL_VA`] / [`ORIGINAL_PLANE_COST_TOTAL_VA`].
+pub const ORIGINAL_HARDPOINT_BOX_COUNT_OFFSETS: [u32; 2] = [0x34, 0x38];
+
+/// The weight the purchase surface charges per enabled rocket box, in the
+/// engine's weight unit (the same unit the airframe, engine, gun and armor
+/// rows price; its conversion to kilograms is not measured here).
+///
+/// **Measured, `static`**: [`ORIGINAL_HARDPOINT_PRICE_VA`] multiplies the
+/// side's box count by this for `E 2260`, and
+/// [`ORIGINAL_PLANE_WEIGHT_TOTAL_VA`] adds it per counted box. The loaded
+/// rocket type contributes nothing — no purchase path reads a type-dependent
+/// value.
+pub const ORIGINAL_HARDPOINT_WEIGHT_PER_BOX: u32 = 480;
+
+/// The cost the purchase surface charges per enabled rocket box.
+///
+/// **Measured, `static`**: the same instruction selects `410` for `E 2261`,
+/// and [`ORIGINAL_PLANE_COST_TOTAL_VA`] adds it per counted box.
+pub const ORIGINAL_HARDPOINT_COST_PER_BOX: u32 = 410;
+
+/// What the purchase surface charges for hardpoints — the measured answer to
+/// "the hardpoint weight and cost".
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalHardpointPrice {
+    /// Weight units charged per enabled rocket box
+    /// ([`ORIGINAL_HARDPOINT_WEIGHT_PER_BOX`]).
+    pub weight_per_box: u32,
+    /// Cost charged per enabled rocket box
+    /// ([`ORIGINAL_HARDPOINT_COST_PER_BOX`]).
+    pub cost_per_box: u32,
+    /// The record fields holding the two box counts
+    /// ([`ORIGINAL_HARDPOINT_BOX_COUNT_OFFSETS`]).
+    pub box_count_offsets: [u32; 2],
+    /// How many hardpoint sides the record carries (`DT[2]`).
+    pub sides: u32,
+    /// Rocket boxes each side holds at most (the `RKA[8]` slots split
+    /// 4 + 4).
+    pub boxes_per_side: u32,
+}
+
+/// The measured hardpoint price: the purchase surface charges
+/// [`ORIGINAL_HARDPOINT_WEIGHT_PER_BOX`] weight and
+/// [`ORIGINAL_HARDPOINT_COST_PER_BOX`] cost for every enabled rocket box, and
+/// the rocket type loaded into a box changes neither — no instruction in the
+/// purchase rows or the totals reads the rocket slots (`record + 0xa8`) or
+/// any per-type field. There is no per-type hardpoint weight or cost table in
+/// the image to pin; the measured per-row values are the flat per-box price
+/// and this absence.
+#[must_use]
+pub const fn original_hardpoint_price() -> OriginalHardpointPrice {
+    OriginalHardpointPrice {
+        weight_per_box: ORIGINAL_HARDPOINT_WEIGHT_PER_BOX,
+        cost_per_box: ORIGINAL_HARDPOINT_COST_PER_BOX,
+        box_count_offsets: ORIGINAL_HARDPOINT_BOX_COUNT_OFFSETS,
+        sides: 2,
+        boxes_per_side: 4,
+    }
+}
+
+impl OriginalHardpointPrice {
+    /// The weight `box_count` enabled boxes add on one side.
+    #[must_use]
+    pub const fn weight(&self, box_count: u32) -> u32 {
+        self.weight_per_box * box_count
+    }
+
+    /// The cost `box_count` enabled boxes add on one side.
+    #[must_use]
+    pub const fn cost(&self, box_count: u32) -> u32 {
+        self.cost_per_box * box_count
+    }
+}
+
 // ------------------------------- the per-component launch table (T452.04) ----
 
 /// The retail container that holds the two ordnance screens (task T452.04).
