@@ -25,7 +25,7 @@ use cs_app::ordnance::{
     ORIGINAL_ORDNANCE_UNIT_MASS_KG, OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
     OriginalRegistrationOutcome, OriginalRegistrationReport, T452_MEASURED_BEHAVIOUR_CLAIM,
-    T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED, T452_SILENT_EXPIRY_TASK, lower_ordnance,
+    T452_PER_BOX_WEIGHT_CLAIM, T452_SILENT_EXPIRY_BLOCKED, lower_ordnance,
     measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
     step_ordnance_session,
 };
@@ -554,11 +554,13 @@ fn accept_t452_media_silence_a_record_without_fire_sound_registers_and_plays_not
     );
 }
 
-/// The measured end of flight the runtime cannot express is a claim, not a
-/// defaulted `Impact` or `Timed` fuse.
+/// The measured end of flight the runtime could not express is now a fuse: a
+/// record whose measured `RANGE` end is silent lowers to
+/// `FuseRule::ExpiresAtRange` with its own bound (task #2175), instead of the
+/// claim the earlier stage had to record for it.
 #[test]
-fn accept_t452_register_a_silent_flight_end_is_a_claim_not_a_fuse() {
-    let error = measured_ordnance_declaration(
+fn accept_t452_register_a_silent_flight_end_lowers_to_the_measured_range_end() {
+    let declared = measured_ordnance_declaration(
         &blocked_row(),
         &blocked_record(),
         &blocked_media(),
@@ -566,17 +568,15 @@ fn accept_t452_register_a_silent_flight_end_is_a_claim_not_a_fuse() {
         &provenance(),
         TICKS_PER_SECOND,
     )
-    .expect_err("the record's measured end of flight has no runtime variant");
-    let blocker = error
-        .iter()
-        .find(|blocker| blocker.claim == T452_SILENT_EXPIRY_BLOCKED)
-        .unwrap_or_else(|| panic!("the silent-expiry claim is named: {error:?}"));
-    assert_eq!(blocker.field, "fuse");
-    assert_eq!(blocker.resolving_task, T452_SILENT_EXPIRY_TASK);
-    assert!(
-        blocker.affects.contains("silent removal"),
-        "the claim states what the measurement found: {}",
-        blocker.affects
+    .expect("the record's measured end of flight is expressible");
+    let component = lower_ordnance(&declared).expect("the measured record lowers");
+    let projectile = component
+        .as_projectile()
+        .expect("an area-denial engine is a projectile");
+    assert_eq!(
+        projectile.fuse(),
+        FuseRule::ExpiresAtRange { range_m: 1000.0 },
+        "the fuse is the record's own RANGE, not a defaulted Impact or Timed clock"
     );
 }
 
@@ -603,23 +603,22 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
     assert_eq!(report.declared, 16);
     assert_eq!(report.outcomes.len(), 16);
 
-    // The measurements this stage can express: thirteen ids register. They
-    // are the full-inheritance records, the timer-fused flare, the torpedo,
-    // and the three `ACCELERATION` records whose lateral-remainder ramp is
-    // now expressible.
+    // The measurements this stage can express: fifteen ids register. They are
+    // the full-inheritance records, the timer-fused flare, the torpedo, the
+    // three `ACCELERATION` records whose lateral-remainder ramp is
+    // expressible, and the smoke and flak records whose measured silent range
+    // end task #2175 added to the fuse vocabulary.
     assert_eq!(
         report.registered_records(),
         vec![
             "wep_04", "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11",
-            "wep_14", "wep_15", "wep_24", "wep_25", "wep_27",
+            "wep_13", "wep_14", "wep_15", "wep_24", "wep_25", "wep_26", "wep_27",
         ],
         "the ids whose measured values the runtime vocabulary expresses"
     );
 
-    // The three that cannot be expressed are blocked with the measured
-    // value's claim, its content and its resolving task — never defaulted.
-    // `wep_26`'s ramp lowered too; what still keeps it out is its silent end
-    // of flight.
+    // The one that cannot be expressed is blocked with the measured value's
+    // claim, its content and its resolving task — never defaulted.
     let mut blocked: Vec<(&str, Vec<&str>)> = Vec::new();
     for outcome in &report.outcomes {
         if let OriginalRegistrationOutcome::Blocked { record, blockers } = outcome {
@@ -633,9 +632,10 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
         }
     }
     let expected = [
-        ("wep_12", T452_SILENT_EXPIRY_BLOCKED),
-        ("wep_13", T452_SILENT_EXPIRY_BLOCKED),
-        ("wep_26", T452_SILENT_EXPIRY_BLOCKED),
+        // `wep_12`'s tangler field is measured to outlive the item that
+        // creates it, which the runtime's bounded area refuses: its own
+        // follow-up, not the silent expiry task #2175 resolved.
+        ("wep_12", cs_content::ordnance::T452_R02_TANGLER_EFFECT),
     ];
     assert_eq!(blocked.len(), expected.len(), "{blocked:?}");
     for (record, claim) in expected {
@@ -648,15 +648,13 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
             "{record} must name {claim}, got {claims:?}"
         );
     }
-    // The flak record's ramp expresses now; a missing launch sound is a
-    // measured silence, not a blocker.
-    let (_, flak) = blocked
-        .iter()
-        .find(|(name, _)| *name == "wep_26")
-        .expect("wep_26 is blocked");
+    // No record is blocked on the silent expiry any more: the fuse vocabulary
+    // expresses the measured end (task #2175).
     assert!(
-        !flak.iter().any(|claim| claim.contains("silent_launch")),
-        "a missing launch sound is a measured silence, not a blocker: {flak:?}"
+        blocked
+            .iter()
+            .all(|(_, claims)| !claims.contains(&T452_SILENT_EXPIRY_BLOCKED)),
+        "the measured range end is expressible: {blocked:?}"
     );
 
     // A registered id is a *runtime component*, not a catalogue entry: its
