@@ -261,10 +261,10 @@ pub struct PlaytestState {
     /// state or an out-of-range timestep). Zero in every run that flies; it is
     /// counted rather than silently skipped.
     pub original_step_errors: u64,
-    /// Fixed ticks on which the driver handed the player's law an input
-    /// carrying the ground blow's world-sweep fill (task #2214). It counts the
-    /// fill being applied, not a hit: a probe that met nothing is still a
-    /// filled input. Nothing in the law reads it yet — the consumer is #2107.
+    /// Records handed a ground-blow probe: each (record, fixed tick) on which
+    /// the driver stepped a law with an input carrying the world-sweep fill,
+    /// player and AI alike (tasks #2214, #2224). It counts the fill being
+    /// applied, not a hit: a probe that met nothing is still a filled input.
     pub groundblow_probes: u64,
 }
 
@@ -619,10 +619,9 @@ type FlyingRecord = (
 ///   torque-driven rigid body reproduces, so while this law is active the law
 ///   owns attitude and the body integrates no torque (`world_torque` is
 ///   reported for instruments only and is never submitted).
-/// * **overlay the ground blow's segment probe** on the player's input, from
+/// * **overlay the ground blow's segment probe** on every record's input, from
 ///   the world sweep [`world_sweep::fill_groundblow_probes`] cast earlier in
-///   this same tick (task #2214). The law does not read it yet (#2107 does),
-///   so the filled input changes no trajectory; each application is counted in
+///   this same tick (tasks #2214, #2224); each application is counted in
 ///   [`PlaytestState::groundblow_probes`].
 ///
 /// A refused step (a non-finite state) is counted in
@@ -648,17 +647,9 @@ fn drive_original_flight(
         flight.state.orientation = to_quaternion(rotation.0);
         flight.state.velocity_mps = velocity.0.to_array().map(f64::from);
         // The ground blow's world sweep (#2214): the probe the fill cast from
-        // this tick's pre-step pose, overlaid on the player's input. Nothing in
-        // the law reads it yet (#2107 does), so the trajectory is unchanged.
-        let input = world_sweep::overlay_groundblow_probe(
-            flight.input(),
-            flight.is_player,
-            entity,
-            &probes,
-        );
-        if flight.is_player {
-            state.groundblow_probes += 1;
-        }
+        // this tick's pre-step pose, overlaid on every record's input.
+        let input = world_sweep::overlay_groundblow_probe(flight.input(), entity, &probes);
+        state.groundblow_probes += 1;
         let step = {
             let record = &mut *flight;
             record.model.step(&mut record.state, input, dt_s)

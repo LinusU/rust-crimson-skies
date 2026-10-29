@@ -322,11 +322,11 @@ fn accept_groundblow_fill_population_is_the_marked_colliders() {
     assert_eq!(own.entity, sea, "the marked sea tile is what answered");
 }
 
-/// The driver's overlay is the one place the fill reaches the law: the player's
-/// input carries the sweep's hit, a record with no hit keeps `None`, and a
-/// non-player's input is untouched (the port fills the player's probe only).
+/// The driver's overlay is the one place the fill reaches the law: a record's
+/// input carries the sweep's hit for its own entity, and a record with no hit
+/// keeps `None`.
 #[test]
-fn accept_groundblow_fill_overlays_the_players_probe_only() {
+fn accept_groundblow_fill_overlays_each_records_own_probe() {
     let player = Entity::from_raw_u32(21).expect("an entity id");
     let other = Entity::from_raw_u32(22).expect("an entity id");
     let hit = SegmentProbeHit {
@@ -342,7 +342,7 @@ fn accept_groundblow_fill_overlays_the_players_probe_only() {
     let input = OriginalInput::full_throttle(true);
     assert_eq!(input.segment_probe, None);
 
-    let filled = overlay_groundblow_probe(input, true, player, &probes);
+    let filled = overlay_groundblow_probe(input, player, &probes);
     assert_eq!(filled.segment_probe, Some(hit));
     // The overlay adds the probe and changes no command.
     assert_eq!(filled.throttle, input.throttle);
@@ -361,23 +361,23 @@ fn accept_groundblow_fill_overlays_the_players_probe_only() {
         ..input
     };
     assert_eq!(
-        overlay_groundblow_probe(stale, true, player, &probes).segment_probe,
+        overlay_groundblow_probe(stale, player, &probes).segment_probe,
         Some(hit)
     );
 
     // A tick whose sweep found no contact is `None`, not a guessed hit.
     assert_eq!(
-        overlay_groundblow_probe(input, true, player, &GroundBlowProbes::default()).segment_probe,
+        overlay_groundblow_probe(input, player, &GroundBlowProbes::default()).segment_probe,
         None
     );
     // Another record's hit is not the player's.
     assert_eq!(
-        overlay_groundblow_probe(input, true, other, &probes).segment_probe,
+        overlay_groundblow_probe(input, other, &probes).segment_probe,
         None
     );
-    // A non-player record is not overlaid at all.
-    let ai = overlay_groundblow_probe(OriginalInput::full_throttle(false), false, player, &probes);
-    assert_eq!(ai.segment_probe, None);
+    // An AI record is overlaid like the player's (#2224), and keeps its seat.
+    let ai = overlay_groundblow_probe(OriginalInput::full_throttle(false), player, &probes);
+    assert_eq!(ai.segment_probe, Some(hit));
     assert!(!ai.is_player);
 }
 
@@ -394,7 +394,7 @@ fn orientation(rotation: Quat) -> cs_types::space::Quaternion {
 /// container into one private cache path, which is not safe in parallel.
 static RETAIL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn retail_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn retail_lock() -> std::sync::MutexGuard<'static, ()> {
     RETAIL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -402,7 +402,7 @@ fn retail_lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// M01 composed headless, with the launch cinematic (4818 fixed ticks of held
 /// control) removed so the law and the sweep fly from the first boundary.
-fn compose() -> App {
+pub(super) fn compose() -> App {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plan");
     let stage = stage_for(&root, &plan).expect("stage");
@@ -495,7 +495,7 @@ fn nearest_swept_collider_m(app: &mut App, point: Vec3) -> f32 {
 /// M01's hand-over pose sits outside the world container's water tiles
 /// (recorded in the task's finding), so a 400 m probe there meets nothing; this
 /// puts the aircraft over water the world really carries.
-fn above_the_flat_sea(app: &mut App) -> (Entity, Vec3, f32) {
+pub(super) fn above_the_flat_sea(app: &mut App) -> (Entity, Vec3, f32) {
     let colliders: Vec<Entity> = app
         .world_mut()
         .query_filtered::<Entity, With<PlaytestSea>>()
@@ -534,19 +534,19 @@ fn above_the_flat_sea(app: &mut App) -> (Entity, Vec3, f32) {
 /// horizontal reach (`altitude / tan(60 deg)` = 87 m) keeps every contact
 /// within ±(the run's drift) of the tile's middle: the run stays over the one
 /// tile instead of leaving it.
-const DIVE_ALTITUDE_M: f32 = 150.0;
-const PROBE_BACKOFF_M: f32 = 86.602_54;
+pub(super) const DIVE_ALTITUDE_M: f32 = 150.0;
+pub(super) const PROBE_BACKOFF_M: f32 = 86.602_54;
 
 /// The dive's nose: 60 degrees below the horizon along `-Z`, so a 150 m drop is
 /// a 173 m chord — well inside the 400 m probe — and the run's horizontal drift
 /// stays small.
-fn dive_nose() -> Vec3 {
+pub(super) fn dive_nose() -> Vec3 {
     Quat::from_rotation_x(-60_f32.to_radians()) * Vec3::NEG_Z
 }
 
 /// Puts `player` at `position` flying `nose` (the unit nose direction) at
 /// `speed`, as a test's controlled start.
-fn place(app: &mut App, player: Entity, position: Vec3, nose: Vec3, speed: f32) {
+pub(super) fn place(app: &mut App, player: Entity, position: Vec3, nose: Vec3, speed: f32) {
     let rotation = Quat::from_rotation_arc(Vec3::NEG_Z, nose.normalize());
     let mut body = app.world_mut().entity_mut(player);
     *body.get_mut::<Position>().expect("a body pose") = Position(position);
@@ -632,8 +632,8 @@ fn accept_groundblow_fill_m01_fills_the_probe_from_the_production_world() {
     assert_eq!(elevation, 400.0, "the retail `groundblow_elev` is 400 m");
     assert_eq!(
         app.world().resource::<GroundBlowProbes>().cast_this_tick,
-        1,
-        "one player record casts one probe per fixed tick"
+        2,
+        "the player's record and M01's one AI record each cast one probe per fixed tick"
     );
 
     // The hand-over pose is outside the port's world geometry: no swept

@@ -628,8 +628,8 @@ impl GroundBlowProbes {
     }
 }
 
-/// Casts the ground-blow probe for every flying player record and stores it in
-/// [`GroundBlowProbes`] (task #2214).
+/// Casts the ground-blow probe for every flying record, player and AI, and
+/// stores it in [`GroundBlowProbes`] (tasks #2214, #2224).
 ///
 /// The segment is cast from the same pre-step pose the driver is about to seed
 /// its law from (`Position`/`Rotation`), along the body's nose, for the
@@ -649,7 +649,7 @@ pub fn fill_groundblow_probes(
     probes.hits.clear();
     probes.cast_this_tick = 0;
     for (entity, flight, position, rotation, rule) in &records {
-        if !flight.is_player || rule.is_some_and(|rule| rule.crash.is_some()) {
+        if rule.is_some_and(|rule| rule.crash.is_some()) {
             continue;
         }
         let segment = ground_blow_segment(
@@ -670,25 +670,22 @@ pub fn fill_groundblow_probes(
 }
 
 /// The input one flying record's law steps with: `input` with the ground blow's
-/// world-sweep answer overlaid for the player's seat (task #2214).
+/// world-sweep answer overlaid, for every seat (tasks #2214, #2224).
 ///
 /// [`fill_groundblow_probes`] casts the probe earlier in the same tick and
 /// [`GroundBlowProbes`] carries its answer; this is the one place that hands it
 /// to the law, so a caller (the flight driver, or a test using the same pose)
-/// cannot disagree about which records get it. A non-player record's input is
-/// returned unchanged — the port fills the player's probe only — and a record
-/// whose sweep found no contact stays `None`, which is the original's zero
-/// amount rather than a record.
+/// cannot disagree about which records get it. The original casts the probe
+/// for every vehicle it runs the force block for, so an AI record is overlaid
+/// exactly like the player's. A record whose sweep found no contact stays
+/// `None`, which is the original's zero amount rather than a record.
 #[must_use]
 pub fn overlay_groundblow_probe(
     mut input: OriginalInput,
-    is_player: bool,
     entity: Entity,
     probes: &GroundBlowProbes,
 ) -> OriginalInput {
-    if is_player {
-        input.segment_probe = probes.hit(entity);
-    }
+    input.segment_probe = probes.hit(entity);
     input
 }
 
