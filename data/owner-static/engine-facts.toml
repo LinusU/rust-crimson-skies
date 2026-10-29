@@ -8563,3 +8563,160 @@ name = "maneuver_chooser.const_draw_scale"
 va = 0x00603598
 bytes = "00010038"
 fact = "the float 3.0518509e-05 (1/32767, bits 0x38000100; the 2026-10-29 tangler finding wrote 32767.7) the draw multiplies rand() by before the summed weights"
+
+# Task #2208 (HIT-RECORD-CONTACT-POINT): what writes the hit record's
+# position [record+0xc] on the contact path, and what that point is on the
+# target's collision volume. Finding
+# docs/findings/2026-10-29-hit-record-contact-point.md.
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.segment_built"
+va = 0x005af854
+bytes = "8d46548d4de88d56488945fc894df88955f48b5df48b4df88b55fcd903d801d94304d84104d94308d84108d9cad91ad95a04d95a08"
+fact = "the per-frame projectile update builds the query segment end in place: rocket+0x54 = rocket+0x48 + the tick's displacement (fld [ebx]/fadd [ecx] per axis then fstp [edx]); so the swept segment is this tick's own flight path, position to position+moved"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.query_call"
+va = 0x005b047e
+bytes = "83c6485650e8388af1ff"
+fact = "the contact resolution 0x5b03f0 (called at 0x5af89a with (weapon, rocket, &rocket+0x54)) runs the scene query 0x4c8ec0(scene_db, &rocket+0x48, arg3=&rocket+0x54, &list 0x9c71d8): the segment is the projectile's swept segment from its node position to the tick-end position"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.query_call_slow"
+va = 0x005b054f
+bytes = "83c6485652e86789f1ff"
+fact = "the second query site inside 0x5b03f0 (the [rocket+0x78] contact-queue path) issues the identical query 0x4c8ec0(db, &rocket+0x48, &rocket+0x54, 0x9c6c50): both record lists are built from the same swept segment"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.class_dispatch"
+va = 0x004c9ac8
+bytes = "8b46348d48ff83f909550f87d7020000ff248de09d4c00"
+fact = "the per-node test 0x4c9a00 dispatches on the node's class byte [node+0x34]: lea ecx,[eax-1]; cmp ecx,9; ja reject; jmp [ecx*4+0x4c9de0]; class values 1..10 each take a jump-table target, anything else is skipped"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.jump_table"
+va = 0x004c9de0
+bytes = "899d4c00af9d4c00af9d4c00af9d4c00df9a4c00729c4c00129d4c00769d4c009c9d4c00d79d4c00"
+fact = "the ten class handlers of 0x4c9a00 (image data, little-endian targets 0x4c9d89, 0x4c9daf, 0x4c9daf, 0x4c9daf, 0x4c9adf, 0x4c9c72, 0x4c9d12, 0x4c9d76, 0x4c9d9c, 0x4c9dd7): classes 5/6/7 are containers that recurse into [node+0x5c] children; the leaf classes run the bound test and then a shape test on the node"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.node_surface_write"
+va = 0x004c9e4f
+bytes = "a1f4e971008970248b4624b90000200085c175058b4e40"
+fact = "the record tail write stamps the element with the hit node at +0x24 (mov [eax+0x24],esi, eax=[0x71e9f4] the record tail) and the node's surface row at +0x28: [node+0x40] normally, or the chain walked at 0x4c9e68..0x4c9e88 when node flag 0x200000 is set"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.tail_advance"
+va = 0x004c9e96
+bytes = "8b15f4e97100a1f0e9710083c22c8915f4e971008a08fec15e8808"
+fact = "each accepted node appends exactly one 44-byte element: tail [0x71e9f4] += 0x2c and the count byte at [0x71e9f0] is incremented, so the element stride is 0x2c and elements start at list+4"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.box_test_call"
+va = 0x004cc1c4
+bytes = "8b0df4e9710068c4e8710068b8e87100518d54242852e891100900"
+fact = "nodes carrying flag 0x20 in [node+0x24] take the bound-box contact test: 0x55d270(bound_verts, record_tail, seg_start 0x71e8b8, seg_end 0x71e8c4) tests the segment against the node's eight stored bound corners as six quad faces; a pierced face writes the record"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.soup_call"
+va = 0x004ca238
+bytes = "68c4e8710068b8e871005250e877270900"
+fact = "the leaf class handlers without flag 0x20 call 0x55c9c0(node, record, seg_start 0x71e8b8, seg_end 0x71e8c4), the polygon-soup test over the node's [node+0x3c] face list: the target's collision volume is then its authored mesh, not a box"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.poly_point_write"
+va = 0x0055d7d8
+bytes = "d95e0cd94204d86004d8c9d84004d95e10d942088b5604d8600881e2ffffff7fd8c9d84008d95c242c8b44242c894614"
+fact = "0x55d6c0 (segment vs convex face) is the writer of [record+0xc..0x14]: per axis it computes seg_start + t*(seg_end-seg_start) at the face-plane crossing t and stores x at +0xc (fstp [esi+0xc]), y at +0x10, z at +0x14, so the record position is exactly the point where the swept segment pierces the accepted face, on the segment itself"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.poly_normal_write"
+va = 0x0055d713
+bytes = "d954242cd91ed9442410decad8cbdee9d954240cd95e04"
+fact = "the same 0x55d6c0 writes the accepted face's normal into record+0x00..0x0b ahead of the point, so the record carries the contact surface orientation the burst and effect paths consume"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.first_face_wins"
+va = 0x0055d31e
+bytes = "740d5f5e5db8010000005b83c408c3"
+fact = "the bound-box test 0x55d270 returns success on the FIRST quad face (of the six built from the node's eight bound corners) that 0x55d6c0 accepts, not the minimum-t face: for a segment that crosses a box volume completely, which pierced face fills the record depends on the authored corner/face order"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.box_surface_clear"
+va = 0x0055d27f
+bytes = "c7472000000000"
+fact = "the box test clears record+0x20 to 0 before testing faces, so a bound-box contact carries no per-face surface object; the surface-object field only distinguishes polygon-soup hits"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.mesh_surf_write"
+va = 0x0055cdc6
+bytes = "8b46148b108b4d0c895120"
+fact = "the polygon-soup path writes record+0x20 = [[face+0x14]] (mov eax,[esi+0x14]; mov edx,[eax]; mov [ecx+0x20],edx): the accepted face's surface descriptor pointer, which 0x5ad330 reads to decide whether the contact is solid"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.world_xform"
+va = 0x0055cde7
+bytes = "8d510c8945088955108b45108b5d08d900d80b"
+fact = "on a soup hit 0x55c9c0 multiplies record+0xc by the node's world matrix [[0x6379e0]] in place (lea edx,[ecx+0xc] then the row-multiply at 0x55cdf6..0x55ce4e, translation row +0x24..0x2c added for the point, and record+0x00's normal rotated without translation at 0x55ce51..0x55cea9): the stored position is world space"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.distance_fill"
+va = 0x004c8f0a
+bytes = "8d56105255e86cf90600d95620"
+fact = "after the traversal 0x4c8ec0 computes each element's +0x1c as the distance from the query segment start (ebp) to the element's point (&esi+0x10 = element0+0xc) via 0x538880: the sort key is distance along the segment, so across nodes the earliest pierced face wins"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.nearest_index"
+va = 0x004c8f5b
+bytes = "8a4c241c5f5b880e5e33c05dc3"
+fact = "0x4c8ec0 ends by storing the index of the nearest element into [list] (mov [esi],cl, cl the tracked winner) and [list+1] the count, so the list head names the geometrically nearest contact, not the first found"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.effect_only_check"
+va = 0x005ad367
+bytes = "8b42203bc50f84ac0000008b402083f8010f85a0000000"
+fact = "0x5ad330 inspects the nearest element's surface object [element+0x20]: a zero pointer or a surface whose [surf+0x20]!=1 returns the element as the contact; a surface with [surf+0x20]==1 is effect-only — the picker spawns its impact effect via 0x4edc10 and rescans the list for the nearest solid contact (0x5ad3e1..0x5ad412) or returns 0 when that was the only record"
+
+[[hit_record_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "hit_record.nearest_pick"
+va = 0x005ad3f9
+bytes = "d8511cdfe0f6c4417509ddd88be9d9411c8816"
+fact = "the rescan in 0x5ad330 compares element+0x1c distances with fcom and keeps the minimum: the contact 0x5b03f0 hands the burst paths is the nearest solid surface contact, where 'nearest' is the distance from the segment start filled by 0x4c8ec0's sort pass"
