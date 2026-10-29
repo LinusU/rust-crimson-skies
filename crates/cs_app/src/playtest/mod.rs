@@ -41,6 +41,7 @@ pub mod retail;
 pub mod scene;
 pub mod smoke;
 pub mod visuals;
+pub mod world_sweep;
 
 use std::path::PathBuf;
 
@@ -48,6 +49,7 @@ use avian3d::prelude::{
     AngularVelocity, Gravity, LinearVelocity, PhysicsPlugins, Position, Rotation,
 };
 use bevy::app::{AppExit, PostUpdate, RunFixedMainLoop, RunFixedMainLoopSystems};
+use bevy::ecs::schedule::SystemSet;
 use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::{
@@ -259,6 +261,11 @@ pub struct PlaytestState {
     /// state or an out-of-range timestep). Zero in every run that flies; it is
     /// counted rather than silently skipped.
     pub original_step_errors: u64,
+    /// Fixed ticks on which the driver handed the player's law an input
+    /// carrying the ground blow's world-sweep fill (task #2214). It counts the
+    /// fill being applied, not a hit: a probe that met nothing is still a
+    /// filled input. Nothing in the law reads it yet — the consumer is #2107.
+    pub groundblow_probes: u64,
 }
 
 impl Default for PlaytestState {
@@ -278,6 +285,7 @@ impl Default for PlaytestState {
             spawn_m: scene::SPAWN_POSITION_M,
             label: PLAYTEST_LABEL,
             original_step_errors: 0,
+            groundblow_probes: 0,
         }
     }
 }
@@ -365,6 +373,21 @@ pub struct PlaytestCameraMarker;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlaytestPlugin;
 
+/// The two fixed-update steps that fly an original-content record, in order.
+///
+/// The ground blow's world sweep (task #2214) casts each flying player
+/// record's probe from the tick's pre-step pose, and the law's driver flies
+/// with it. They are separate systems because the driver holds the body's
+/// `Rotation` mutably while the sweep has to read it, and they are named here
+/// so a caller (the acceptance tests) can insert a step between them.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OriginalFlightSet {
+    /// [`world_sweep::fill_groundblow_probes`].
+    GroundBlowFill,
+    /// [`drive_original_flight`].
+    OriginalFlight,
+}
+
 impl Plugin for PlaytestPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
@@ -390,14 +413,23 @@ impl Plugin for PlaytestPlugin {
         ));
         app.init_resource::<PlaytestRequests>()
             .init_resource::<PlaytestState>()
+            .init_resource::<world_sweep::GroundBlowProbes>()
             .insert_resource(PlaytestCamera::new())
             .add_systems(Startup, setup_scene)
             // The retail scene's original law runs on the fixed tick, before
-            // the F23 adapter drains this tick's force requests.
+            // the F23 adapter drains this tick's force requests. The ground
+            // blow's world sweep (#2214) casts the probe from the same
+            // pre-step pose and has to run first: its query reads the pose the
+            // driver holds mutably, so the two cannot be one system.
             .add_systems(
                 FixedUpdate,
-                // The launch cinematic leaves the law unstepped (#1663).
-                drive_original_flight.run_if(crate::mission_session::player_has_control),
+                (
+                    world_sweep::fill_groundblow_probes.in_set(OriginalFlightSet::GroundBlowFill),
+                    drive_original_flight.in_set(OriginalFlightSet::OriginalFlight),
+                )
+                    .chain()
+                    // The launch cinematic leaves the law unstepped (#1663).
+                    .run_if(crate::mission_session::player_has_control),
             )
             .add_systems(
                 RunFixedMainLoop,
@@ -587,6 +619,11 @@ type FlyingRecord = (
 ///   torque-driven rigid body reproduces, so while this law is active the law
 ///   owns attitude and the body integrates no torque (`world_torque` is
 ///   reported for instruments only and is never submitted).
+/// * **overlay the ground blow's segment probe** on the player's input, from
+///   the world sweep [`world_sweep::fill_groundblow_probes`] cast earlier in
+///   this same tick (task #2214). The law does not read it yet (#2107 does),
+///   so the filled input changes no trajectory; each application is counted in
+///   [`PlaytestState::groundblow_probes`].
 ///
 /// A refused step (a non-finite state) is counted in
 /// [`PlaytestState::original_step_errors`] instead of being flown.
@@ -595,6 +632,7 @@ fn drive_original_flight(
     mut requests: ResMut<ForceRequests>,
     mut state: ResMut<PlaytestState>,
     mut aircraft: Query<FlyingRecord>,
+    probes: Res<world_sweep::GroundBlowProbes>,
     mut feel: Option<ResMut<crate::force_feedback::PlayerFlightFeel>>,
 ) {
     let dt_s = time.timestep().as_secs_f64();
@@ -609,7 +647,14 @@ fn drive_original_flight(
         ];
         flight.state.orientation = to_quaternion(rotation.0);
         flight.state.velocity_mps = velocity.0.to_array().map(f64::from);
-        let input = flight.input();
+        let mut input = flight.input();
+        if flight.is_player {
+            // The ground blow's world sweep (#2214): the probe the fill cast
+            // from this tick's pre-step pose. Nothing in the law reads it yet
+            // (#2107 does), so the trajectory is unchanged.
+            input.segment_probe = probes.hit(entity);
+            state.groundblow_probes += 1;
+        }
         let step = {
             let record = &mut *flight;
             record.model.step(&mut record.state, input, dt_s)
@@ -812,7 +857,11 @@ fn update_telemetry(
     };
 }
 
-fn to_quaternion(rotation: Quat) -> Quaternion {
+/// An Avian rotation as the flight law's own quaternion: normalised, then
+/// widened to `f64`. The playtest's flight driver, the ground blow's fill and
+/// the tests that recompute either all convert the body's `Rotation` this way.
+#[must_use]
+pub fn to_quaternion(rotation: Quat) -> Quaternion {
     let [x, y, z, w] = rotation.normalize().to_array().map(f64::from);
     let length = (x * x + y * y + z * z + w * w).sqrt();
     Quaternion::try_new([x / length, y / length, z / length, w / length])

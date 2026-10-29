@@ -194,6 +194,11 @@ impl PlaytestOriginalFlight {
     /// sign" as an open unknown), so this negation makes the original law obey
     /// the project's control contract; it is not a claim about the original's
     /// axis. Pitch and yaw already agree with the contract and pass through.
+    ///
+    /// The ground blow's segment probe is left empty here: this record has no
+    /// physics world to query. The playtest's fixed-tick driver overlays it
+    /// from [`crate::playtest::world_sweep`] (#2214), immediately before the
+    /// law steps; nothing in the law reads it yet (#2107 does).
     #[must_use]
     pub fn input(&self) -> OriginalInput {
         OriginalInput {
@@ -205,9 +210,8 @@ impl PlaytestOriginalFlight {
             engine_out: false,
             is_player: self.is_player,
             hold_attitude: self.hold_attitude,
-            // The ground blow's world sweep (#2210's seam): this record has no
-            // physics world to query, so it leaves the probe empty. The
-            // completing query is #2214; the consumer is #2107.
+            // The driver overlays the ground blow's world sweep (#2214); a
+            // caller with no world states no probe rather than a guessed hit.
             segment_probe: None,
         }
     }
