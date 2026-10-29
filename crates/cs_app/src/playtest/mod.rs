@@ -47,7 +47,7 @@ use std::path::PathBuf;
 use avian3d::prelude::{
     AngularVelocity, Gravity, LinearVelocity, PhysicsPlugins, Position, Rotation,
 };
-use bevy::app::{AppExit, RunFixedMainLoop, RunFixedMainLoopSystems};
+use bevy::app::{AppExit, PostUpdate, RunFixedMainLoop, RunFixedMainLoopSystems};
 use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::{
@@ -55,6 +55,7 @@ use bevy::prelude::{
     Resource, Startup, Time, Transform, Update, Vec3, With, World,
 };
 use bevy::time::{Fixed, Real, TimeUpdateStrategy, Virtual};
+use bevy::transform::TransformSystems;
 use cs_content::cameras::{AspectRatio, DeclaredCameraModes, declared_synthetic_camera_modes};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::control::LocalSeatId;
@@ -438,12 +439,27 @@ impl Plugin for PlaytestPlugin {
                     crate::camera::effects::emit_targeting_events
                         .after(crate::targeting::drive_targeting_schedule),
                     crate::camera::effects::present_game_events,
-                    crate::ui::hud::presentation::drive_hud_presentation,
-                    // After `follow_camera`: the offset lands on the pose the
-                    // session computed this frame, not the previous frame's.
-                    apply_presented_shake.after(follow_camera),
+                    // After `advance_radio`: the subtitle row lays out the line
+                    // the radio queue voices this frame, not the previous
+                    // frame's.
+                    crate::ui::hud::presentation::drive_hud_presentation
+                        .after(crate::audio::loops::advance_radio),
                 )
                     .chain(),
+            )
+            // F52-W2-wire: the presented shake lands on the pose the frame
+            // actually draws. `follow_camera` wrote the chase pose in
+            // `Update`; the mission's view passes — cockpit eye, external
+            // cameras, the crash hold — overwrite the transform in
+            // `PostUpdate`, so an `Update` offset would never reach those
+            // views. In a world without them (the plain playtest) the
+            // `.after`s order nothing and the offset is still this frame's.
+            .add_systems(
+                PostUpdate,
+                apply_presented_shake
+                    .after(crate::mission_session::drive_cockpit_camera)
+                    .after(crate::mission_session::drive_external_camera)
+                    .before(TransformSystems::Propagate),
             )
             // After `record_collisions`: a contact that began this tick is a
             // report the emitter presents in the same tick, not the next one.
@@ -872,10 +888,11 @@ fn follow_camera(
 const SHAKE_METERS: f32 = 0.5;
 
 /// Applies the frame's presented camera shake to the playtest camera
-/// (F52-W2-wire). Scheduled after `follow_camera`, so the offset lands on the
-/// pose the camera session computed this frame; a frame whose presented
-/// shake is `0.0` — reduced motion on, no session or nothing shaken — leaves
-/// the pose untouched.
+/// (F52-W2-wire). Scheduled in `PostUpdate` after `follow_camera` and the
+/// mission's view passes, so the offset lands on the pose this frame draws —
+/// including the cockpit and external views, which rewrite the transform
+/// after `Update`; a frame whose presented shake is `0.0` — reduced motion
+/// on, no session or nothing shaken — leaves the pose untouched.
 fn apply_presented_shake(
     presented: Res<crate::camera::effects::PresentedEffects>,
     camera: Res<PlaytestCamera>,
