@@ -39,7 +39,11 @@
 //!    increment, damping runs as `exp(-damp * dt)` and the attitude rotates by
 //!    **`2 * |omega| * dt`** per step — the original's quaternion exponential
 //!    does not halve the angle, which is why the steady rates are about twice
-//!    the naive value;
+//!    the naive value; between the level-off term and the stall the **ground
+//!    blow** ([`OriginalFlightModel::ground_blow`], `0x48c220`) turns the
+//!    frame's segment-probe hit into a torque term and, for a surface ahead of
+//!    the nose within `groundblow_elev`, also steers the velocity toward the
+//!    nose;
 //! 8. `v += a * dt`, then `pos += v * dt` (semi-implicit), with a floor on the
 //!    nose-ward speed for AI only;
 //! 9. the fake-dynamics branch ([`DynamicsKind::Fake`]: an AI more than 1000 m
@@ -130,6 +134,26 @@ pub const LIFT_MIN_SPEED_MPS: f64 = 2.4384;
 pub const FALL_OFF: f64 = 0.205;
 /// The bank coupling constant `bank_off` (`0x6289fc`).
 pub const BANK_OFF: f64 = 0.165;
+
+/// The ground blow's velocity-alignment rate per unit amount (`0x622bbc`,
+/// 2.0): the alignment turns the velocity toward the nose by
+/// `1 - f(dt * rate * amount)`, `f` the decay of [`decay_factor`].
+pub const GROUND_BLOW_ALIGN_RATE: f64 = 2.0;
+
+/// The player's backfire scale (`0x6036ac`, `-0.05`): when the accumulated
+/// torque points against the blow (`T . B < 0`) the torque keeps this fraction
+/// of its size and the amount is zeroed, so the velocity is not steered
+/// (`0x48c2f8`..`0x48c315`).
+pub const GROUND_BLOW_BACKFIRE: f64 = -0.05;
+
+/// [`decay_factor`]'s polynomial below this argument (`0x6034a8`, `0.1`); at or
+/// above it the original reads its `exp` table instead.
+pub const DECAY_POLYNOMIAL_BELOW: f64 = 0.1;
+/// The polynomial's quadratic coefficient (`0x6032e0`, `0.5`).
+pub const DECAY_QUADRATIC: f64 = 0.5;
+/// The polynomial's cubic coefficient (`0x607bd4`, `0.166666`, the image's own
+/// rounded value, not `1/6`).
+pub const DECAY_CUBIC: f64 = 0.166_666;
 
 /// The `level_off_rate` default the image's default table (`0x478a00`)
 /// gives: no `vehicle.zrd` record states the key, so the importer supplies
@@ -470,8 +494,8 @@ pub struct OriginalGlobals {
     /// position along the body's backward axis; world units are metres
     /// (`2026-10-29-groundblow-world-segment-sweep.md` sections 1 and 2).
     ///
-    /// Nothing in this law reads it yet: the consumer is #2107, which also
-    /// needs the probe's hit ([`OriginalInput::segment_probe`]).
+    /// Read by [`OriginalFlightModel::ground_blow`], the force block's `elev`:
+    /// the segment length and the `(elev - chord) / elev` scale of the amount.
     pub groundblow_elev_m: f64,
     /// The shared ground-blow gain (`groundblow_mag`, retail 10): it weights
     /// the player's alignment term and, under `ai_groundblow`, every other
@@ -621,9 +645,10 @@ impl OriginalState {
 /// The record itself is 0x2c bytes
 /// (`docs/findings/2026-10-29-groundblow-world-segment-sweep.md` section 4);
 /// this carries the three facts the force block and the player's skip gate
-/// read, and nothing else. The consumer is #2107: **nothing in this law reads
-/// [`OriginalInput::segment_probe`] yet**, so filling it cannot change how M01
-/// flies until that task lands.
+/// read, and nothing else. [`OriginalFlightModel::ground_blow`] consumes it
+/// (`0x48c220`); filling it changes the step exactly as the original's own
+/// probe does, so a caller that cannot answer the world sweep must leave
+/// [`OriginalInput::segment_probe`] `None` rather than guess a hit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SegmentProbeHit {
     /// The chord from the probe's start to the contact point, metres
@@ -694,10 +719,12 @@ pub struct OriginalInput {
     /// along the body's backward axis (`-V[+0x198]`) and reads the nearest
     /// contact of the world sweep `0x4c8ec0`. That query needs the world
     /// database's nodes, which this law does not have; the frame's caller
-    /// fills this from the session's own physics world (#2214 fills it).
+    /// fills this from the session's own physics world (#2214 fills it for the
+    /// player at the playtest flight step).
     ///
-    /// **Nothing in this law reads it yet.** The force block that consumes it
-    /// is #2107, so a filled probe changes no trajectory today.
+    /// The step consumes it in [`OriginalFlightModel::ground_blow`]: for every
+    /// non-player and for the player while fake dynamics are off, the hit adds
+    /// the original's torque term and may turn the velocity toward the nose.
     pub segment_probe: Option<SegmentProbeHit>,
 }
 
@@ -1166,7 +1193,10 @@ impl OriginalFlightModel {
         let back = rotate_vector([0.0, 0.0, 1.0], orientation);
         let nose = scale(back, -1.0);
 
-        let velocity = state.velocity_mps;
+        // The ground blow may rewrite the velocity in the middle of step 7
+        // (`V+0x924` at `0x48c41b`); the integration below starts from that
+        // value, while the aerodynamics above already ran on the old one.
+        let mut velocity = state.velocity_mps;
         let speed = norm(velocity);
         let velocity_hat = if speed > 0.0 {
             scale(velocity, 1.0 / speed)
@@ -1226,17 +1256,21 @@ impl OriginalFlightModel {
         let (angular_velocity_radps, world_torque) = if input.hold_attitude {
             ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
         } else {
-            let delta = self.rotation_increment(
+            let (delta, aligned_velocity) = self.rotation_increment(
                 input,
                 state.level_off,
                 &aero,
                 speed,
                 [right, up, back],
                 nose,
+                velocity,
                 velocity_hat,
                 dt_s,
                 self.dynamics == DynamicsKind::Fake,
             );
+            if let Some(aligned) = aligned_velocity {
+                velocity = aligned;
+            }
             let damped = scale(
                 add(momentum_before, delta),
                 (-airframe.ang_momentum_damp * dt_s).exp(),
@@ -1393,6 +1427,10 @@ impl OriginalFlightModel {
 
     /// Steps 7's control terms: every term is already multiplied by `dt` and
     /// is expressed in world space.
+    ///
+    /// The second element of the result is the ground blow's velocity write
+    /// (`V+0x924`..`V+0x934`, `0x48c41b`..`0x48c45e`) when the block steered
+    /// the velocity, so `step` integrates from the aligned vector.
     #[allow(clippy::too_many_arguments)]
     fn rotation_increment(
         &self,
@@ -1402,10 +1440,11 @@ impl OriginalFlightModel {
         speed: f64,
         axes: [[f64; 3]; 3],
         nose: [f64; 3],
+        velocity: [f64; 3],
         velocity_hat: [f64; 3],
         dt_s: f64,
         fake: bool,
-    ) -> [f64; 3] {
+    ) -> ([f64; 3], Option<[f64; 3]>) {
         let airframe = &self.airframe;
         let globals = &self.globals;
         let [right, up, back] = axes;
@@ -1491,6 +1530,25 @@ impl OriginalFlightModel {
             increment = add(increment, level);
         }
 
+        // Ground blow (`0x48c220`), after the level-off term and before the
+        // stall: called for every non-player, and for the player only while
+        // its fake-dynamics switch (`V+0x384`) is clear (`0x48cf7e`).
+        let mut aligned_velocity = None;
+        if !input.is_player || !fake {
+            let (blow, aligned) = self.ground_blow(
+                input.is_player,
+                input.segment_probe,
+                back,
+                nose,
+                increment,
+                velocity,
+                speed,
+                dt_s,
+            );
+            increment = add(increment, blow);
+            aligned_velocity = aligned;
+        }
+
         // Stall, for the player only (`0x48cfa3`): along `r`, the rotation
         // from the body +Z axis to world up (`0x48d05f..0x48d09e`), strip the
         // part of the increment that opposes `r` (`-(dL . r) / (r . r)` when
@@ -1508,11 +1566,131 @@ impl OriginalFlightModel {
             );
         }
 
-        increment
+        (increment, aligned_velocity)
+    }
+
+    /// The ground blow (`0x48c220` with its probe `0x48bf60`): the term the
+    /// original adds after the level-off and before the stall
+    /// (`0x48cf7e`..`0x48cf95`).
+    ///
+    /// `accumulated` is the torque `T` the step has built so far; the player's
+    /// branch reads it once, for the `d = T . B` sign test. The result is the
+    /// increment for `T` and, when the block steered the velocity, the new
+    /// `V+0x924` to integrate from (`0x48c36c`..`0x48c45e`).
+    ///
+    /// The hit's three facts arrive in [`OriginalInput::segment_probe`], so
+    /// this is the whole force block and it queries nothing:
+    /// * `amount = (elev - |point - position|) / elev * sqrt(Z . N)`
+    ///   (`0x48c13a`), zero when the probe found nothing, when the face does
+    ///   not point back along the body's third axis, or when the player's
+    ///   owner gate discards the hit;
+    /// * `B = normalize(N x Z) * amount` (`0x48c161`), `N` the record's
+    ///   **unnormalised** normal, so `sqrt(Z . N)` keeps the `sqrt(area)`
+    ///   scale;
+    /// * the player adds `B * (T . B) * groundblow_mag`, or, when `T . B < 0`,
+    ///   `B * (T . B) * -0.05 * groundblow_mag` with `amount` zeroed; every
+    ///   other vehicle adds `B * ai_groundblow * groundblow_mag`
+    ///   (`0x48c2c5`..`0x48c345`);
+    /// * the non-zero amount turns the velocity toward the nose by
+    ///   `1 - f(dt * 2 * amount)`, `f` = [`decay_factor`], and rescales the
+    ///   result by the pre-alignment speed (`0x48c3a1`..`0x48c434`).
+    ///
+    /// Not modelled, because this law has no state for them and no caller of
+    /// this crate can set them: `V+0x358 == 4` (pilot incapacitation,
+    /// `0x48c22b`) returns at once; a **non-player's** blow is skipped while
+    /// the clock is before `V+0xac`, the 1.0 s collision-grace deadline the
+    /// contact response writes (`0x48c241`); and the same vehicle's `0.15`
+    /// damping while the clock is before `V+0xb4` (`0x48c317`) is unreachable:
+    /// no site in the image gives `+0xb4` a non-zero value
+    /// (`2026-10-29-groundblow-world-segment-sweep.md` section 6). The
+    /// `V+0x924` write is gated on the `suspend` console flag `[0x64f66e]`
+    /// (`0x48c3fa`), which is zero outside that developer command
+    /// (`0x43db4d` sets it, `0x464693`/`0x4654fa` clear it).
+    #[allow(clippy::too_many_arguments)]
+    fn ground_blow(
+        &self,
+        is_player: bool,
+        probe: Option<SegmentProbeHit>,
+        back: [f64; 3],
+        nose: [f64; 3],
+        accumulated: [f64; 3],
+        velocity: [f64; 3],
+        speed: f64,
+        dt_s: f64,
+    ) -> ([f64; 3], Option<[f64; 3]>) {
+        let Some(hit) = probe else {
+            return ([0.0; 3], None);
+        };
+        let elevation = self.globals.groundblow_elev_m;
+        // `d = dot(V[+0x198], record normal)` at `0x48c0ed`: the *un-negated*
+        // third row, so the face the segment runs toward gives `d > 0`. A hit
+        // with `d <= 0`, or an unordered `d`, returns amount 0 at `0x48c126`.
+        let approach = dot(back, hit.normal);
+        if approach <= 0.0 || approach.is_nan() {
+            return ([0.0; 3], None);
+        }
+        // The player's hit-owner gate (`0x48c036`..`0x48c0e9`): a hit owned by
+        // a registered vehicle that is not on its taxi path (`V+0xcc == 0`)
+        // is discarded (`0x48c0ac`..`0x48c0e5`); scenery, an unresolved
+        // vehicle node and an on-path vehicle keep it.
+        if is_player && hit.owner == (SegmentProbeOwner::Vehicle { on_path: false }) {
+            return ([0.0; 3], None);
+        }
+        // `amount = (elev - |point - position|) / elev * sqrt(d)` (`0x48c13a`).
+        let amount = (elevation - hit.distance_m) / elevation * approach.sqrt();
+        // `B = normalize(N x Z) * amount` (`0x48c161`). `0x422690` leaves a
+        // zero vector alone, so a normal parallel to the body's third axis
+        // gives no torque and only the amount survives.
+        let blow = scale(unit(cross(hit.normal, back)), amount);
+
+        let mut amount = amount;
+        let factor = if is_player {
+            let against = dot(accumulated, blow);
+            if against >= 0.0 {
+                against * self.globals.groundblow_mag
+            } else {
+                amount = 0.0;
+                against * GROUND_BLOW_BACKFIRE * self.globals.groundblow_mag
+            }
+        } else {
+            self.globals.ai_groundblow * self.globals.groundblow_mag
+        };
+
+        // The velocity alignment (`0x460700`): normalise the current velocity,
+        // lerp it toward the nose by `1 - f`, scale by the old speed. A zero
+        // velocity returns at `0x48c39b` without a write.
+        let direction = unit(velocity);
+        let aligned = if norm(direction) <= f64::EPSILON {
+            None
+        } else {
+            let decay = decay_factor(dt_s * GROUND_BLOW_ALIGN_RATE * amount);
+            Some(scale(
+                add(scale(direction, decay), scale(nose, 1.0 - decay)),
+                speed,
+            ))
+        };
+
+        (scale(blow, factor), aligned)
     }
 }
 
 // ------------------------------------------------------------- utilities ---
+
+/// The original's decay factor `f(x)` (`0x460410`), the one the towing,
+/// velocity-alignment and momentum-damping sites call: `exp(-x)` from the
+/// lazily filled table at `0x75cd18`, and below [`DECAY_POLYNOMIAL_BELOW`] the
+/// third-order polynomial `1 + x * ((0.5 - 0.166666 x) x - 1)`, i.e.
+/// `1 - x + x^2/2 - x^3/6` with the image's own rounded cubic coefficient.
+///
+/// A non-positive or non-finite argument takes the `exp` branch, exactly as the
+/// `x <= 0`/unordered test at `0x460414` does.
+fn decay_factor(x: f64) -> f64 {
+    if x > 0.0 && x < DECAY_POLYNOMIAL_BELOW {
+        1.0 + x * ((DECAY_QUADRATIC - DECAY_CUBIC * x) * x - 1.0)
+    } else {
+        (-x).exp()
+    }
+}
 
 fn slew(current: f64, target: f64, step: f64) -> f64 {
     if target < current {
@@ -2485,25 +2663,318 @@ mod tests {
         );
     }
 
-    /// A filled probe changes no step and no state: #2107 adds the consumer, so
-    /// until then M01 must fly exactly as it did without one.
+    /// The step a caller gets from `input`, on a fresh copy of `state`.
+    fn stepped(
+        model: &OriginalFlightModel,
+        state: &OriginalState,
+        input: OriginalInput,
+    ) -> (OriginalState, OriginalStep) {
+        let mut state = state.clone();
+        let step = model
+            .step(&mut state, input, DT)
+            .expect("the declared step is valid");
+        (state, step)
+    }
+
+    /// A level, hands-off aircraft at 300 m with the given world velocity.
+    fn probing_state(velocity: [f64; 3]) -> OriginalState {
+        let mut state = OriginalState::at(300.0, Quaternion::IDENTITY, 0.0, 1e9);
+        state.velocity_mps = velocity;
+        state
+    }
+
+    /// A probe hit with the given unnormalised normal, chord and owner.
+    fn hit(normal: [f64; 3], distance_m: f64, owner: SegmentProbeOwner) -> SegmentProbeHit {
+        SegmentProbeHit {
+            distance_m,
+            normal,
+            owner,
+        }
+    }
+
+    /// The hit the level, `+X`-moving geometry turns into `amount = 10` with a
+    /// zero torque vector: `N` is parallel to the body's third axis, so
+    /// `normalize(N x Z)` is zero and only the velocity steering survives.
+    fn head_on_hit() -> SegmentProbeHit {
+        hit([0.0, 0.0, 400.0], 200.0, SegmentProbeOwner::World)
+    }
+
+    /// The hit whose torque vector is `+X * 15`: `d = dot(Z, N) = 400`,
+    /// `sqrt(d) = 20`, chord 100 gives `amount = (400 - 100) / 400 * 20 = 15`.
+    fn surf_hit() -> SegmentProbeHit {
+        hit([0.0, 300.0, 400.0], 100.0, SegmentProbeOwner::World)
+    }
+
+    const DT: f64 = 0.01;
+
+    /// `amount` steers the velocity toward the nose: normalise the velocity,
+    /// lerp it toward the nose by `1 - f(dt * 2 * amount)` and scale by the old
+    /// speed (`0x460700`, `0x48c3a1`..`0x48c434`). With a head-on normal there
+    /// is no torque at all, so the whole difference between the two steps is
+    /// the steering.
     #[test]
-    fn accept_groundblow_probe_filled_probe_changes_no_trajectory() {
-        let banked = Quaternion::from_axis_angle(
-            cs_types::space::UnitVec3::FORWARD,
-            cs_types::space::Radians(0.5),
-        )
-        .expect("a banked attitude is a unit quaternion");
-        let record = SegmentProbeHit {
-            distance_m: 250.0,
-            normal: [3.0, 0.0, 12.0],
-            owner: SegmentProbeOwner::Vehicle { on_path: false },
+    fn accept_ground_blow_amount_turns_the_velocity_toward_the_nose() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([100.0, 0.0, 0.0]);
+        let plain = OriginalInput {
+            is_player: true,
+            ..OriginalInput::default()
         };
+        let probed = OriginalInput {
+            segment_probe: Some(head_on_hit()),
+            ..plain
+        };
+        let (control, bare) = stepped(&model, &state, plain);
+        let (blown, step) = stepped(&model, &state, probed);
+
+        // amount = 10, so f = exp(-0.01 * 2 * 10) = exp(-0.2) and the new
+        // velocity direction is f * X + (1 - f) * -Z, times the 100 m/s.
+        let decay = (-0.2_f64).exp();
+        let expected = [(decay * 100.0) - 100.0, 0.0, -(1.0 - decay) * 100.0];
+        for (axis, want) in expected.iter().enumerate() {
+            let delta = blown.velocity_mps[axis] - control.velocity_mps[axis];
+            assert!(
+                (delta - want).abs() < 1e-9,
+                "axis {axis}: {delta} != {want}"
+            );
+        }
+        // The steering keeps the pre-alignment speed as the scale: the lerp of
+        // two unit vectors is shorter than one, which is what the original's
+        // un-re-normalised result does too.
+        assert!((decay * 100.0 - 81.873_075_307_798_19).abs() < 1e-9);
+        assert!(-(1.0 - decay) * 100.0 < 0.0, "the nose is -Z");
+
+        // `N x Z` vanishes, so the force block adds no torque in either run.
+        assert_eq!(step.world_torque, bare.world_torque);
+    }
+
+    /// The player's torque is `B * (T . B) * groundblow_mag` with `T` the
+    /// increment built **before** the block runs: a pitch command gives
+    /// `T = X * pitch_torque * dt`, the probe gives `B = X * 15`, and the
+    /// damping and the reported world torque follow.
+    #[test]
+    fn accept_ground_blow_player_torque_uses_the_accumulated_dot() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([0.0, 0.0, -100.0]);
+        let plain = OriginalInput {
+            pitch: 1.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        let probed = OriginalInput {
+            segment_probe: Some(surf_hit()),
+            ..plain
+        };
+        let (_, bare) = stepped(&model, &state, plain);
+        let (_, step) = stepped(&model, &state, probed);
+
+        let pitch = model.airframe.pitch_torque * 1.0 * DT;
+        let torque_dot = pitch * 15.0;
+        assert!((torque_dot - 0.495).abs() < 1e-12);
+        let delta = pitch + 15.0 * torque_dot * model.globals.groundblow_mag;
+        let damped = delta * (-model.airframe.ang_momentum_damp * DT).exp();
+        let expected = damped / DT;
+        assert!(
+            (step.world_torque[0] - expected).abs() < 1e-6,
+            "torque {:?}, expected {expected} about X",
+            step.world_torque
+        );
+        assert!(step.world_torque[1].abs() < 1e-12 && step.world_torque[2].abs() < 1e-12);
+        assert!((expected - 7_066.017_534_018_654).abs() < 1e-6);
+        assert!(
+            bare.world_torque[0] < expected / 1000.0,
+            "the block is what makes the torque grow"
+        );
+    }
+
+    /// `T . B < 0` keeps only `-0.05` of the torque and zeroes the amount, so
+    /// the velocity is not steered at all (`0x48c2ff`..`0x48c315`).
+    #[test]
+    fn accept_ground_blow_player_backfire_scales_the_negative_dot_and_drops_the_steering() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([0.0, 0.0, -100.0]);
+        let plain = OriginalInput {
+            pitch: 1.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        // The other face of the same surface: `B` flips to -X, so the pitch
+        // increment now points against the blow.
+        let probed = OriginalInput {
+            segment_probe: Some(hit([0.0, -300.0, 400.0], 100.0, SegmentProbeOwner::World)),
+            ..plain
+        };
+        let (control, bare) = stepped(&model, &state, plain);
+        let (blown, step) = stepped(&model, &state, probed);
+
+        let pitch = model.airframe.pitch_torque * 1.0 * DT;
+        let delta =
+            pitch + (-15.0) * (pitch * -15.0) * GROUND_BLOW_BACKFIRE * model.globals.groundblow_mag;
+        let expected = delta * (-model.airframe.ang_momentum_damp * DT).exp() / DT;
+        assert!((step.world_torque[0] - expected).abs() < 1e-6);
+        assert!((expected - -350.004_866_745_037_7).abs() < 1e-6);
+        assert!(step.world_torque[0] < 0.0 && bare.world_torque[0] > 0.0);
+        // The amount is zeroed, so the steering is the identity write: the same
+        // velocity the control run integrated from.
+        assert_eq!(blown.velocity_mps, control.velocity_mps);
+    }
+
+    /// The player's owner gate discards exactly one resolution: a hit owned by
+    /// a registered vehicle off its taxi path (`V+0xcc == 0`). Scenery, an
+    /// unresolved vehicle node, an on-path vehicle and every hit for a
+    /// non-player keep it (`0x48c036`..`0x48c0e9`).
+    #[test]
+    fn accept_ground_blow_player_discards_a_vehicle_hit_off_its_path_only() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([0.0, 0.0, -100.0]);
+        let plain = OriginalInput {
+            pitch: 1.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        let (control, bare) = stepped(&model, &state, plain);
+
+        for owner in [
+            SegmentProbeOwner::World,
+            SegmentProbeOwner::UnresolvedVehicleNode,
+            SegmentProbeOwner::Vehicle { on_path: true },
+        ] {
+            let probed = OriginalInput {
+                segment_probe: Some(hit([0.0, 300.0, 400.0], 100.0, owner)),
+                ..plain
+            };
+            let (_, step) = stepped(&model, &state, probed);
+            assert!(
+                step.world_torque[0] > 7000.0,
+                "{owner:?} must keep the hit, torque {:?}",
+                step.world_torque
+            );
+            assert_ne!(step, bare, "{owner:?} must change the step");
+        }
+
+        // Off its path: discarded for the player, amount 0, no torque, no
+        // steering, so the step and the state are the control's.
+        let discarded = OriginalInput {
+            segment_probe: Some(hit(
+                [0.0, 300.0, 400.0],
+                100.0,
+                SegmentProbeOwner::Vehicle { on_path: false },
+            )),
+            ..plain
+        };
+        let (blown, step) = stepped(&model, &state, discarded);
+        assert_eq!(step, bare);
+        assert_eq!(blown, control);
+
+        // The same hit fires for a non-player: the gate is the player's alone.
+        let ai_plain = OriginalInput {
+            pitch: 1.0,
+            is_player: false,
+            ..OriginalInput::default()
+        };
+        let ai_probed = OriginalInput {
+            segment_probe: Some(hit(
+                [0.0, 300.0, 400.0],
+                100.0,
+                SegmentProbeOwner::Vehicle { on_path: false },
+            )),
+            ..ai_plain
+        };
+        let (_, ai_bare) = stepped(&model, &state, ai_plain);
+        let (_, ai_step) = stepped(&model, &state, ai_probed);
+        assert!(ai_step.world_torque[0] > ai_bare.world_torque[0] + 700.0);
+    }
+
+    /// A non-player's term is `B * ai_groundblow * groundblow_mag` with no
+    /// `T . B` test at all, and it gets the same velocity steering.
+    #[test]
+    fn accept_ground_blow_ai_term_uses_the_ai_gain_and_the_same_steering() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([60.0, 0.0, -80.0]);
+        let plain = OriginalInput {
+            // A non-player: `OriginalInput::default()` is the player's law.
+            is_player: false,
+            ..OriginalInput::default()
+        };
+        let probed = OriginalInput {
+            segment_probe: Some(surf_hit()),
+            ..plain
+        };
+        let (control, bare) = stepped(&model, &state, plain);
+        let (blown, step) = stepped(&model, &state, probed);
+
+        let delta = 15.0 * model.globals.ai_groundblow * model.globals.groundblow_mag;
+        let expected = delta * (-model.airframe.ang_momentum_damp * DT).exp() / DT;
+        assert!((step.world_torque[0] - expected).abs() < 1e-6);
+        assert!((expected - 7_134.220_683_755_355).abs() < 1e-6);
+        assert_eq!(bare.world_torque, [0.0; 3]);
+
+        // amount = 15, dt * 2 * amount = 0.3, f = exp(-0.3): the same lerp the
+        // player gets, on the AI's own velocity (0.6, 0, -0.8) * 100.
+        let decay = (-0.3_f64).exp();
+        let expected_velocity = [
+            (0.6 * decay) * 100.0,
+            0.0,
+            (-0.8 * decay - (1.0 - decay)) * 100.0,
+        ];
+        for (axis, want) in expected_velocity.iter().enumerate() {
+            let actual =
+                blown.velocity_mps[axis] - control.velocity_mps[axis] + state.velocity_mps[axis];
+            assert!(
+                (actual - want).abs() < 1e-9,
+                "axis {axis}: {actual} != {want}"
+            );
+        }
+        assert!((expected_velocity[0] - 44.449_093_240_903_07).abs() < 1e-9);
+    }
+
+    /// The amount is `(elev - chord) / elev * sqrt(dot(Z, N))` with `N` the
+    /// record's **unnormalised** normal: doubling `|N|` doubles `sqrt` (the
+    /// `sqrt(area)` scale) and a shorter chord raises it linearly. The amount
+    /// is read back out of the steering, inverted from `f = exp(-dt * 2 *
+    /// amount)`, so the assertions go through the production step only.
+    #[test]
+    fn accept_ground_blow_amount_keeps_the_unnormalised_normal_and_the_chord() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([100.0, 0.0, 0.0]);
+        let plain = OriginalInput {
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        for (normal, chord, expected_amount) in [
+            // A face of |N| = 100, then the same face four times larger.
+            ([0.0, 0.0, 100.0], 200.0, 0.5 * 10.0),
+            ([0.0, 0.0, 400.0], 200.0, 0.5 * 20.0),
+            // ... and a quarter of the chord at |N| = 400.
+            ([0.0, 0.0, 400.0], 100.0, 0.75 * 20.0),
+        ] {
+            let probed = OriginalInput {
+                segment_probe: Some(hit(normal, chord, SegmentProbeOwner::World)),
+                ..plain
+            };
+            let (control, _) = stepped(&model, &state, plain);
+            let (blown, _) = stepped(&model, &state, probed);
+            // The steering leaves the velocity's third component at
+            // -(1 - f) * speed with the nose at -Z.
+            let shortfall = -blown.velocity_mps[2] / 100.0;
+            let decay = 1.0 - shortfall;
+            assert!(decay > 0.0 && decay < 1.0, "{decay} is not a decay");
+            let amount = -decay.ln() / (DT * GROUND_BLOW_ALIGN_RATE);
+            assert!(
+                (amount - expected_amount).abs() < 1e-6,
+                "{normal:?} at {chord} m: amount {amount} != {expected_amount}"
+            );
+            assert_ne!(control.velocity_mps[2], blown.velocity_mps[2]);
+        }
+    }
+
+    /// Nothing fires when the probe found nothing or when the face points away
+    /// from the body's third axis: those steps are the caller's step, tick
+    /// after tick, for both seats.
+    #[test]
+    fn accept_ground_blow_no_hit_or_an_against_normal_changes_nothing() {
+        let model = OriginalFlightModel::full(airframe(), globals());
         for is_player in [true, false] {
-            let model = OriginalFlightModel::full(airframe(), globals());
-            let mut without = OriginalState::at(300.0, banked, 0.8, 1e9);
-            without.velocity_mps = [30.0, -12.0, -120.0];
-            let mut with = without.clone();
             let plain = OriginalInput {
                 roll: 0.3,
                 pitch: -0.4,
@@ -2512,20 +2983,98 @@ mod tests {
                 is_player,
                 ..OriginalInput::default()
             };
-            let probed = OriginalInput {
-                segment_probe: Some(record),
-                ..plain
-            };
-            for tick in 0..200 {
-                let bare = model
-                    .step(&mut without, plain, 0.01)
-                    .expect("the plain step is valid");
-                let filled = model
-                    .step(&mut with, probed, 0.01)
-                    .expect("the probed step is valid");
-                assert_eq!(filled, bare, "tick {tick} differs (is_player {is_player})");
+            for probe in [
+                None,
+                Some(hit([0.0, 0.0, -400.0], 100.0, SegmentProbeOwner::World)),
+                Some(hit([0.0, 0.0, 0.0], 100.0, SegmentProbeOwner::World)),
+            ] {
+                let mut control = probing_state([30.0, -12.0, -120.0]);
+                let mut probed = control.clone();
+                let filled = OriginalInput {
+                    segment_probe: probe,
+                    ..plain
+                };
+                for tick in 0..200 {
+                    let bare = model
+                        .step(&mut control, plain, DT)
+                        .expect("the plain step is valid");
+                    let step = model
+                        .step(&mut probed, filled, DT)
+                        .expect("the probed step is valid");
+                    assert_eq!(step, bare, "tick {tick} (is_player {is_player})");
+                }
+                assert_eq!(probed, control, "is_player {is_player}");
             }
-            assert_eq!(with, without, "is_player {is_player}");
         }
+    }
+
+    /// The call site is the player's fake-dynamics gate (`V+0x384`) only: the
+    /// player's blow is skipped when fake dynamics are on, a non-player's is
+    /// not (`0x48cf7e`..`0x48cf95`).
+    #[test]
+    fn accept_ground_blow_fake_player_skips_the_blow_and_a_fake_ai_does_not() {
+        let mut model = OriginalFlightModel::full(airframe(), globals());
+        model.dynamics = DynamicsKind::Fake;
+        let state = probing_state([0.0, 0.0, -100.0]);
+        let plain = OriginalInput {
+            pitch: 1.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        let probed = OriginalInput {
+            segment_probe: Some(surf_hit()),
+            ..plain
+        };
+        let (control, bare) = stepped(&model, &state, plain);
+        let (blown, step) = stepped(&model, &state, probed);
+        assert_eq!(step, bare, "the player's fake step ran the blow");
+        assert_eq!(blown, control);
+
+        // The same model and hit for a non-player: the fake flag does not gate
+        // a non-player's blow.
+        let ai_plain = OriginalInput {
+            pitch: 1.0,
+            is_player: false,
+            ..OriginalInput::default()
+        };
+        let (_, ai_bare) = stepped(&model, &state, ai_plain);
+        let (_, ai_step) = stepped(
+            &model,
+            &state,
+            OriginalInput {
+                segment_probe: Some(surf_hit()),
+                ..ai_plain
+            },
+        );
+        let just_the_pitch = model.airframe.pitch_torque * DT;
+        let just_the_pitch = just_the_pitch * (-model.airframe.ang_momentum_damp * DT).exp() / DT;
+        assert!((ai_bare.world_torque[0] - just_the_pitch).abs() < 1e-6);
+        assert!(
+            (ai_step.world_torque[0] - (just_the_pitch + 7_134.220_683_755_355)).abs() < 1e-6,
+            "AI torque {:?}",
+            ai_step.world_torque
+        );
+    }
+
+    /// The torque is added before the steering, so a zero velocity still gets
+    /// the term; only the steering's own zero-length guard (`0x48c39b`) stops
+    /// the write.
+    #[test]
+    fn accept_ground_blow_zero_velocity_keeps_the_torque_without_a_steer() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = OriginalState::at(300.0, Quaternion::IDENTITY, 0.0, 1e9);
+        let plain = OriginalInput {
+            is_player: false,
+            ..OriginalInput::default()
+        };
+        let probed = OriginalInput {
+            segment_probe: Some(surf_hit()),
+            ..plain
+        };
+        let (control, bare) = stepped(&model, &state, plain);
+        let (blown, step) = stepped(&model, &state, probed);
+        assert_eq!(bare.world_torque, [0.0; 3]);
+        assert!((step.world_torque[0] - 7_134.220_683_755_355).abs() < 1e-6);
+        assert_eq!(blown.velocity_mps, control.velocity_mps);
     }
 }
