@@ -25,9 +25,8 @@ use bevy::prelude::{ChildOf, Entity, GlobalTransform, Vec3, World};
 use cs_app::ordnance::{
     OrdnanceConsumption, OrdnanceEngagement, OrdnanceEventKind, OrdnanceLaunch, OrdnanceLaunchId,
     OrdnanceLauncherBinding, OrdnanceOrder, OrdnanceSession, OrdnanceStep,
-    OriginalRegistrationOutcome, T452_SILENT_EXPIRY_BLOCKED, lower_ordnance,
-    measured_ordnance_declaration, read_and_register_measured_ordnance, register_measured_ordnance,
-    step_ordnance_session,
+    T452_SILENT_EXPIRY_BLOCKED, lower_ordnance, measured_ordnance_declaration,
+    read_and_register_measured_ordnance, register_measured_ordnance, step_ordnance_session,
 };
 use cs_app::scene::SceneGeneration;
 use cs_app::weapons::MountPoseBinding;
@@ -528,22 +527,14 @@ fn accept_t452_silent_retail_the_measured_smoke_record_is_consumed_at_range() {
             blocker.record, blocker.field
         );
     }
-    // The ids that stay blocked are blocked for their own measured gaps.
-    let claims_of = |record: &str| -> Vec<&str> {
-        report
-            .outcomes
-            .iter()
-            .find_map(|outcome| match outcome {
-                OriginalRegistrationOutcome::Blocked {
-                    record: name,
-                    blockers,
-                } if name == record => Some(blockers.iter().map(|b| b.claim.as_str()).collect()),
-                OriginalRegistrationOutcome::Blocked { .. }
-                | OriginalRegistrationOutcome::Registered { .. } => None,
-            })
-            .unwrap_or_else(|| panic!("{record} is blocked: {:?}", report.blocked_records()))
-    };
-    assert_eq!(claims_of("wep_12"), vec![T452_R02_TANGLER_EFFECT]);
+    // The ids that stay blocked are blocked for their own measured gaps; the
+    // tangler record this stage once left blocked registers with its measured
+    // field now (task T452-REG-TANGLER-RUNTIME).
+    assert!(
+        report.registered_records().contains(&"wep_12"),
+        "the measured tangler field registers: {:?}",
+        report.blocked_records()
+    );
     assert!(
         report.registered_records().contains(&"wep_26"),
         "the flak record's silent end was its last unexpressible value: {:?}",
@@ -643,10 +634,10 @@ fn accept_t452_silent_retail_the_measured_smoke_record_is_consumed_at_range() {
 }
 
 /// The measured claims T452-R.02 left on these records are the *other* stages'
-/// to resolve, and this stage touches none of them: the tangler field stays a
-/// blocker for `wep_12` with its own task, and the smoke record registers with
-/// no gameplay area — its emitter is a stun cone, not the runtime's bounded
-/// area, whichever stage expresses that.
+/// to resolve, and this stage touches none of them: the tangler record
+/// registers with its measured field (task T452-REG-TANGLER-RUNTIME, whose
+/// claim is resolved there), and the smoke record registers with no gameplay
+/// area — its emitter is a stun cone, not the runtime's bounded area.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
@@ -657,23 +648,34 @@ fn accept_t452_silent_retail_the_kept_claims_are_not_touched() {
     let report = read_and_register_measured_ordnance(&root, &mut registry, TICKS_PER_SECOND)
         .expect("the installation's records read");
 
-    // The tangler claim stays a blocker for wep_12: its area outlives the item
-    // (follow-up T452-REG-TANGLER-EFFECT), which this stage does not address.
+    // The tangler effect is measured and expressed now (task
+    // T452-REG-TANGLER-RUNTIME), so `wep_12` registers with its field and the
+    // claim this stage once left to a follow-up is no longer kept.
     let tangler = table
         .rows
         .iter()
         .find(|row| row.record == "wep_12")
         .expect("the installation declares wep_12");
+    let behavior = cs_content::ordnance::measure_component_behavior(tangler);
+    assert!(behavior.resolves_claim(T452_R02_TANGLER_EFFECT));
+    assert!(!behavior.names_claim(T452_R02_TANGLER_EFFECT));
     assert!(
-        cs_content::ordnance::measure_component_behavior(tangler)
-            .names_claim(T452_R02_TANGLER_EFFECT)
+        report.registered_records().contains(&"wep_12"),
+        "the tangler record registers: {:?}",
+        report.blocked_records()
     );
     assert!(
-        report.blockers().iter().any(|blocker| {
-            blocker.record == "wep_12"
-                && blocker.claim == T452_R02_TANGLER_EFFECT
-                && blocker.resolving_task == "T452-REG-TANGLER-EFFECT"
-        }),
+        report
+            .tangler_fields
+            .iter()
+            .any(|field| field.record == "wep_12" && field.radius_m == 10.0),
+        "the measured field is reported with the record"
+    );
+    assert!(
+        !report
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.claim == T452_R02_TANGLER_EFFECT),
         "{:?}",
         report.blockers()
     );

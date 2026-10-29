@@ -37,7 +37,11 @@
 //! tangler field ledger ([`TanglerLedger`], task #2196): its vocabulary is
 //! `cs_content`'s ([`cs_content::ordnance::TanglerFieldDeclaration`]) and
 //! `cs_sim` may not depend on `cs_content`, so the ledger that applies it per
-//! tick lives at this boundary, which sees both.
+//! tick lives at this boundary, which sees both. Task #2186 gives that ledger
+//! a production producer: a registered component with a measured
+//! [`measured_tangler_field`] opens its field at fire time from the launch
+//! order's own pose, and a recorded `wep_12` registers with that field instead
+//! of the one-shot bounded area the runtime's `AreaEffect` expresses.
 //!
 //! [`session_ordnance_audit`] is the one reader that walks a whole live
 //! session at once: it reports, per registered component, which channels reach
@@ -55,7 +59,7 @@ use cs_content::ordnance::{
     DeclaredLostTargetBehavior, DeclaredNitroActivationRule, DeclaredNitroParameters,
     DeclaredNitroRefusedRecovery, DeclaredOrdnance, DeclaredOrdnanceDetails,
     DeclaredOrdnanceFamily, DeclaredProjectile, DeclaredProximityFuse, DeclaredStackLoad,
-    DeclaredStatusEffect, TangleStatus, TanglerFieldDeclaration,
+    DeclaredStatusEffect, OriginalComponentLaunch, TangleStatus, TanglerFieldDeclaration,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
@@ -1266,7 +1270,9 @@ pub struct OrdnanceSessionTick {
     pub areas_refused: Option<OrdnanceRuntimeError>,
     /// Tangler fields that reached their expiry boundary this tick.
     pub tangler_expired: Vec<ExpiredTanglerField>,
-    /// The tangler fields this tick's orders opened, in order.
+    /// The tangler fields opened this tick, in order: one per `Tangler` order,
+    /// plus the field a launch opens at fire time for a component registered
+    /// with [`OrdnanceSession::register_tangler_field`].
     pub tangler_opened: Vec<TanglerFieldId>,
     /// One entry per live tangler field this tick, with every victim it
     /// re-tangled. An empty `applied` list is "nobody was inside".
@@ -1372,6 +1378,11 @@ pub struct OrdnanceSession {
     /// The measured tangler fields and the tangle timers they leave on actors
     /// (task #2196). Session-confined like every other ledger here.
     tangler: TanglerLedger,
+    /// The measured tangler field each registered component opens at fire time
+    /// (task #2186), keyed by the component's id. A launch of a keyed id opens
+    /// that field from the launch order's own pose; an id with no entry opens
+    /// none.
+    tangler_fields: BTreeMap<OrdnanceId, TanglerFieldDeclaration>,
     resolved_through: Option<Tick>,
     closed: bool,
 }
@@ -1419,6 +1430,7 @@ impl OrdnanceSession {
             effects: Vec::new(),
             events: Vec::new(),
             tangler: TanglerLedger::new(session_id, tick, rate),
+            tangler_fields: BTreeMap::new(),
             resolved_through: None,
             closed: false,
         })
@@ -1583,6 +1595,23 @@ impl OrdnanceSession {
         self.tangle_status(target).is_some()
     }
 
+    /// Whether one actor may boost right now, as the measured tangle rules it.
+    ///
+    /// The measured fact (`docs/findings/2026-10-28-t452-tangler-effect.md`,
+    /// `[[tangler_fact]]` `tangler.boost_refuse`): the boost setter `0x4b2110`
+    /// refuses to enable while the tangle flag is set, and the status routine
+    /// calls it with `false` whenever the flag is touched, so a tangle refuses
+    /// a boost and ends one in progress. This is the measured half of that
+    /// consequence in the narrowest form the runtime can carry: a flight
+    /// producer passes it to `FlightState::boost_available`. What a tangle does
+    /// to the rest of a flight model — the force scalar's physical identity —
+    /// stays the named claim
+    /// [`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR).
+    #[must_use]
+    pub fn boost_allowed(&self, target: &ActorId) -> bool {
+        !self.is_tangled(target)
+    }
+
     /// Every tangled actor right now, in ascending actor order.
     #[must_use]
     pub fn tangled(&self) -> Vec<TangleState> {
@@ -1599,6 +1628,66 @@ impl OrdnanceSession {
     #[must_use]
     pub const fn tangler(&self) -> &TanglerLedger {
         &self.tangler
+    }
+
+    /// The measured tangler field one component opens at fire time, if it opens
+    /// one.
+    #[must_use]
+    pub fn tangler_field_for(&self, ordnance: &OrdnanceId) -> Option<&TanglerFieldDeclaration> {
+        self.tangler_fields.get(ordnance)
+    }
+
+    /// Every component that opens a measured tangler field, in ascending id
+    /// order.
+    #[must_use]
+    pub fn tangler_field_ids(&self) -> Vec<OrdnanceId> {
+        self.tangler_fields.keys().cloned().collect()
+    }
+
+    /// Declares that a component opens `declaration`'s measured tangler field
+    /// when it is launched (task #2186).
+    ///
+    /// This is the fire-time producer: the measured field is created at fire
+    /// time by the record's own fire path (T452-R.02 §1, `0x4b94e0`), so the
+    /// launch order that fires the component is the one place a field can
+    /// honestly open. The opening tick and the centre are the launch's, never
+    /// a clock or a pose invented here.
+    ///
+    /// The declaration must be the measured shape this runtime can fly: a
+    /// field created at fire time and re-applied every tick. A declaration
+    /// that says otherwise is refused by name rather than flown as something
+    /// it is not.
+    ///
+    /// Registering the same id twice replaces the declaration: a reload that
+    /// re-reads the same record must not accumulate fields, and the field
+    /// ledger itself is per-launch.
+    ///
+    /// # Errors
+    ///
+    /// [`TanglerFieldRegistrationError::Closed`] for a closed session,
+    /// [`TanglerFieldRegistrationError::NotCreatedAtFireTime`] or
+    /// [`TanglerFieldRegistrationError::NotReappliedEveryTick`] for a
+    /// declaration this runtime does not express.
+    pub fn register_tangler_field(
+        &mut self,
+        ordnance: &OrdnanceId,
+        declaration: TanglerFieldDeclaration,
+    ) -> Result<(), TanglerFieldRegistrationError> {
+        if self.closed {
+            return Err(TanglerFieldRegistrationError::Closed);
+        }
+        if !declaration.created_at_fire_time {
+            return Err(TanglerFieldRegistrationError::NotCreatedAtFireTime {
+                record: declaration.record,
+            });
+        }
+        if !declaration.reapplied_every_tick {
+            return Err(TanglerFieldRegistrationError::NotReappliedEveryTick {
+                record: declaration.record,
+            });
+        }
+        self.tangler_fields.insert(ordnance.clone(), declaration);
+        Ok(())
     }
 
     /// Registers one actor's declared loadout.
@@ -1756,6 +1845,7 @@ impl OrdnanceSession {
         self.engagements.clear();
         self.components.clear();
         self.launched_units.clear();
+        self.tangler_fields.clear();
         let mirrors = despawn_ordnance_mirrors(world);
         self.runtime = OrdnanceRuntime::new(
             self.session_id,
@@ -2082,6 +2172,46 @@ impl std::fmt::Display for TanglerFieldRefusal {
 }
 
 impl std::error::Error for TanglerFieldRefusal {}
+
+/// Why a session refused a measured tangler field at registration.
+///
+/// A field is only expressible when it is the measured shape: created at fire
+/// time by the component's own launch, and re-applied to every actor inside on
+/// every tick. Anything else is refused here rather than flown as a field the
+/// measurement does not describe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TanglerFieldRegistrationError {
+    /// The session has been closed and accepts nothing.
+    Closed,
+    /// The declaration's field is not created at fire time.
+    NotCreatedAtFireTime {
+        /// The record that declared it.
+        record: String,
+    },
+    /// The declaration's field is not re-applied every tick.
+    NotReappliedEveryTick {
+        /// The record that declared it.
+        record: String,
+    },
+}
+
+impl std::fmt::Display for TanglerFieldRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("the session is closed"),
+            Self::NotCreatedAtFireTime { record } => write!(
+                f,
+                "{record}'s field is not created at fire time, so no launch order can open it"
+            ),
+            Self::NotReappliedEveryTick { record } => write!(
+                f,
+                "{record}'s field is not re-applied every tick, which is not the measured field"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TanglerFieldRegistrationError {}
 
 /// The session's open tangler fields and the tangle timers they leave behind.
 ///
@@ -2453,8 +2583,10 @@ fn squared_distance(field: &OpenTanglerField, position: WorldPosition) -> f64 {
 /// Status expiry, then areas, then tangler fields, then orders, then the
 /// tangler application pass, then guidance, then motion, then the fuse
 /// decisions, then the mirror pass. An item launched on this tick is moved by
-/// the same step, and an item that triggers on this tick applies its effects
-/// on this tick — before the next advance retires it. A guided item that loses
+/// the same step, an item that triggers on this tick applies its effects
+/// on this tick — before the next advance retires it — and a component
+/// registered with a measured tangler field opens that field inside its own
+/// launch order, so the field exists on the tick the weapon fired. A guided item that loses
 /// its target with `Detonate` applies its declared blast on the guidance tick,
 /// before the motion advance, at the position the runtime last recorded, so an
 /// item that ends by losing its target answers exactly like one that triggers.
@@ -2638,6 +2770,27 @@ pub fn step_ordnance_session(
                             },
                         );
                         tick.events.push(event);
+                        // A measured tangler component opens its field on the
+                        // tick it fires (T452-R.02 §1: the fire path builds the
+                        // field object, `0x4b94e0`), from the pose the fire
+                        // path itself read. The centre is the launch origin the
+                        // effect above reports, never the launcher's actor
+                        // record or the world origin:
+                        // `T452_REG_TANGLER_FIELD_ORIGIN_CLAIM` keeps the part
+                        // the image does not pin.
+                        if let Some(declaration) =
+                            session.tangler_fields.get(&launch.ordnance).cloned()
+                        {
+                            let order = TanglerFieldOrder {
+                                declaration,
+                                owner: launch.shooter,
+                                centre: transform.origin,
+                            };
+                            match session.tangler.open(session.session_id, step.at, &order) {
+                                Ok(field) => tick.tangler_opened.push(field),
+                                Err(source) => tick.tangler_refused = Some(source),
+                            }
+                        }
                     }
                     Err(source) => tick
                         .orders_refused
@@ -4628,6 +4781,14 @@ pub struct OriginalRegistrationReport {
     /// The claims this stage keeps, per record, because the runtime cannot
     /// express the measured value behind them.
     pub claims_kept: Vec<(String, Vec<String>)>,
+    /// The measured tangler fields the registered records open at fire time,
+    /// one per registered record that declares a `TANGLER` field (task #2186).
+    ///
+    /// They are the producer's input to
+    /// [`OrdnanceSession::register_tangler_field`]: a record's field is
+    /// measured alongside the component, so the report carries both answers
+    /// and a caller never has to re-read the record to find the field.
+    pub tangler_fields: Vec<TanglerFieldDeclaration>,
 }
 
 impl OriginalRegistrationReport {
@@ -4769,6 +4930,34 @@ fn measured_damage(
         (None, None, None) => Ok((0.0, 0.0)),
         (armor, health, _) => Ok((armor.unwrap_or(0.0), health.unwrap_or(0.0))),
     }
+}
+
+/// Whether a measured record declares the `TANGLER` effect, whose measured
+/// area is a persistent per-tick field rather than a one-shot blast.
+fn is_tangler(row: &OriginalComponentLaunch) -> bool {
+    row.statuses.iter().any(|status| status.key == "TANGLER")
+}
+
+/// The measured `TANGLER` field a record declares, through the production
+/// lowering of its vocabulary.
+///
+/// The field exists only for a record whose measured area has a lifetime — a
+/// persistent field — and `None` for every other record: a blast applies once
+/// and has no field, and a record with no measured area opens nothing. The
+/// radius is the image's own default (T452-R.02 §1: no retail `wep_` record
+/// states `RADIUS`, so the record key is `None` and the lowering labels the
+/// radius `ImageDefault`), never a value chosen here.
+///
+/// The declaration is the producer's answer to "does this component open a
+/// field, and which one"; it is handed to
+/// [`OrdnanceSession::register_tangler_field`], which opens it from the launch
+/// order's pose at fire time.
+#[must_use]
+pub fn measured_tangler_field(row: &OriginalComponentLaunch) -> Option<TanglerFieldDeclaration> {
+    let area = cs_content::ordnance::measure_component_behavior(row).area?;
+    // A field persists for its measured `TIME`; a blast's area has none.
+    area.lifetime_s?;
+    cs_content::ordnance::lower_tangler_field(row, None)
 }
 
 /// Lowers **one** measured original record into a declared component.
@@ -5046,33 +5235,46 @@ pub fn measured_ordnance_declaration(
                 ),
             }),
             (Some(radius), Some(seconds)) => {
-                let ticks = seconds_to_ticks(seconds, ticks_per_second);
-                if ticks > lifetime_value {
-                    // `measured_area` yields a timed area **with a radius** only
-                    // for `TANGLER`, whose field re-applies its per-hit routine
-                    // every tick; `SMOKE_SCREEN`'s radius is a global key, not a
-                    // never forms an area here. The runtime's bounded area
-                    // applies once and cannot outlive its item, so the value
-                    // that cannot be expressed is the tangler field itself —
-                    // already the filed follow-up #2179.
-                    blockers.push(OriginalRegistrationBlocker::new(
-                        name,
-                        "area_effect.lifetime_ticks",
-                        cs_content::ordnance::T452_R02_TANGLER_EFFECT,
-                        "this record's bounded area: it is measured to last longer than the \
-                         item that creates it, because the effect field lives on its own, \
-                         which the runtime's area record refuses",
-                        "T452-REG-TANGLER-EFFECT",
-                    ));
+                // A `TANGLER` record's measured area is not the runtime's
+                // bounded blast area: it is a field the original creates at
+                // fire time whose tick re-applies the weapon's hit to every
+                // actor inside it (T452-R.02 §1). That shape has its own
+                // expression — [`measured_tangler_field`] and the session's
+                // [`TanglerLedger`] — so no one-shot `AreaEffect` is declared
+                // here and the field is never mis-flown as a blast that
+                // applies once at detonation.
+                if is_tangler(row) {
+                    None
+                } else {
+                    let ticks = seconds_to_ticks(seconds, ticks_per_second);
+                    if ticks > lifetime_value {
+                        // `measured_area` yields a timed area **with a radius**
+                        // only for `TANGLER`, whose field re-applies its
+                        // per-hit routine every tick; `SMOKE_SCREEN`'s radius
+                        // is a global key, not a record radius. The runtime's
+                        // bounded area applies once and cannot outlive its
+                        // item, so a record whose measured area is longer than
+                        // its own flight cannot be expressed as one.
+                        blockers.push(OriginalRegistrationBlocker::new(
+                            name,
+                            "area_effect.lifetime_ticks",
+                            T452_MEASURED_BEHAVIOUR_CLAIM,
+                            "this record's bounded area: it is measured to last longer than \
+                             the item that creates it, which the runtime's one-shot area \
+                             record refuses",
+                            "a #452 follow-up that measures a persistent area the runtime \
+                             can express",
+                        ));
+                    }
+                    Some(DeclaredAreaEffect {
+                        radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
+                        lifetime_ticks: measured_field(
+                            provenance,
+                            T452_MEASURED_BEHAVIOUR_CLAIM,
+                            ticks,
+                        ),
+                    })
                 }
-                Some(DeclaredAreaEffect {
-                    radius_m: measured_field(provenance, T452_MEASURED_BEHAVIOUR_CLAIM, radius),
-                    lifetime_ticks: measured_field(
-                        provenance,
-                        T452_MEASURED_BEHAVIOUR_CLAIM,
-                        ticks,
-                    ),
-                })
             }
             (None, _) => {
                 // A measured lifetime with no measured radius (the smoke
@@ -5221,6 +5423,7 @@ pub fn register_measured_ordnance(
 ) -> OriginalRegistrationReport {
     let mut outcomes = Vec::with_capacity(table.rows.len());
     let mut claims_kept = Vec::new();
+    let mut tangler_fields = Vec::new();
     for row in &table.rows {
         let name = row.record.as_str();
         let Some(record) = records.iter().find(|record| record.record == name) else {
@@ -5292,11 +5495,28 @@ pub fn register_measured_ordnance(
                     let family = component.family();
                     let ordnance = component.ordnance().clone();
                     match registry.register(component) {
-                        Ok(()) => outcomes.push(OriginalRegistrationOutcome::Registered {
-                            record: row.record.clone(),
-                            ordnance,
-                            family,
-                        }),
+                        Ok(()) => {
+                            // The field is measured with the component, so a
+                            // registered `TANGLER` record reports the field the
+                            // fire path will open along with the id, and the
+                            // two parts the measurement does not pin stay named
+                            // on it.
+                            if let Some(field) = measured_tangler_field(row) {
+                                for claim in
+                                    [field.status.claim, T452_REG_TANGLER_FIELD_ORIGIN_CLAIM]
+                                {
+                                    if !kept.iter().any(|existing| existing == claim) {
+                                        kept.push(claim.to_owned());
+                                    }
+                                }
+                                tangler_fields.push(field);
+                            }
+                            outcomes.push(OriginalRegistrationOutcome::Registered {
+                                record: row.record.clone(),
+                                ordnance,
+                                family,
+                            });
+                        }
                         Err(error) => outcomes.push(OriginalRegistrationOutcome::Blocked {
                             record: row.record.clone(),
                             blockers: vec![OriginalRegistrationBlocker::new(
@@ -5332,6 +5552,7 @@ pub fn register_measured_ordnance(
         declared: table.rows.len(),
         outcomes,
         claims_kept,
+        tangler_fields,
     }
 }
 
@@ -5402,9 +5623,16 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
              actor it strikes",
             cs_content::ordnance::T452_R05_STATUS_KIND_FOLLOW_UP,
         ),
-        cs_content::ordnance::T452_R02_TANGLER_EFFECT => (
-            "what this record's zero-damage TANGLER field does to a flight model",
+        cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR => (
+            "what the force scalar [ebp-8] that a tangle zeroes is in physical terms \
+             (the measured effect is \"the scalar is zero while tangled\", not \"thrust \
+             is zero\")",
             "T452-REG-TANGLER-EFFECT",
+        ),
+        T452_REG_TANGLER_FIELD_ORIGIN_CLAIM => (
+            "which world position the original's fire path hands the field constructor \
+             0x4b94e0 (the field's own +0x08 slot is measured, not the caller's source)",
+            "T452-REG-TANGLER-RUNTIME",
         ),
         T452_PER_BOX_WEIGHT_CLAIM => (
             "the flat per-enabled-box weight and cost this component's purchase charges, \

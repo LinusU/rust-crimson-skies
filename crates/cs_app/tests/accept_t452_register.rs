@@ -499,9 +499,19 @@ fn accept_t452_register_lowering_refuses_a_field_no_measurement_states() {
 /// content it affects and the task that resolves it — never silently dropped.
 #[test]
 fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
-    // The silent range end registers now (task #2175), so the blocked id is
-    // blocked for a value the runtime still cannot express: a tangler field
-    // measured to outlive the item that creates it.
+    // The silent range end registers (task #2175) and the tangler field
+    // registers (task #2186), so the blocked id here is blocked for a value the
+    // runtime still cannot express: a per-slot stack no record states.
+    let mut unstacked = blocked_row();
+    unstacked.record = "wep_14".to_owned();
+    unstacked.cluster = OriginalClusterShape::Undeclared;
+    let mut unstacked_record = blocked_record();
+    unstacked_record.record = "wep_14".to_owned();
+    let mut unstacked_media = blocked_media();
+    unstacked_media.record = "wep_14".to_owned();
+    let mut unstacked_ammo = blocked_ammo();
+    unstacked_ammo.record = "wep_14".to_owned();
+
     let mut tangler = blocked_row();
     tangler
         .statuses
@@ -510,20 +520,21 @@ fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
             duration_s: Some(2.0),
             duration_unit: Some("TIME".to_owned()),
         });
-    let table = table(vec![guided_row(), tangler]);
+
+    let table = table(vec![guided_row(), tangler, unstacked]);
     let mut registry = OrdnanceRegistry::new();
     let report: OriginalRegistrationReport = register_measured_ordnance(
         &table,
-        &[guided_record(), blocked_record()],
-        &[guided_media(), blocked_media()],
-        &[guided_ammo(), blocked_ammo()],
+        &[guided_record(), blocked_record(), unstacked_record],
+        &[guided_media(), blocked_media(), unstacked_media],
+        &[guided_ammo(), blocked_ammo(), unstacked_ammo],
         &provenance(),
         &mut registry,
         TICKS_PER_SECOND,
     );
-    assert_eq!(report.declared, 2);
-    assert_eq!(report.registered_records(), vec!["wep_05"]);
-    assert_eq!(report.blocked_records(), vec!["wep_12"]);
+    assert_eq!(report.declared, 3);
+    assert_eq!(report.registered_records(), vec!["wep_05", "wep_12"]);
+    assert_eq!(report.blocked_records(), vec!["wep_14"]);
     assert!(!report.is_complete());
     for blocker in report.blockers() {
         assert!(!blocker.record.is_empty());
@@ -532,6 +543,85 @@ fn accept_t452_register_every_id_is_registered_or_names_its_blocker() {
         assert!(!blocker.affects.is_empty());
         assert!(!blocker.resolving_task.is_empty());
     }
+}
+
+/// A `TANGLER` record registers with its measured field instead of the
+/// runtime's one-shot blast area, and the field's measured shape is reported
+/// with it (task T452-REG-TANGLER-RUNTIME).
+#[test]
+fn accept_t452_register_a_tangler_record_registers_with_its_measured_field() {
+    let mut tangler = blocked_row();
+    tangler
+        .statuses
+        .push(cs_content::ordnance::OriginalStatusEffectDeclaration {
+            key: "TANGLER",
+            duration_s: Some(2.0),
+            duration_unit: Some("TIME".to_owned()),
+        });
+    let table = table(vec![tangler]);
+    let mut registry = OrdnanceRegistry::new();
+    let report = register_measured_ordnance(
+        &table,
+        &[blocked_record()],
+        &[blocked_media()],
+        &[blocked_ammo()],
+        &provenance(),
+        &mut registry,
+        TICKS_PER_SECOND,
+    );
+    assert_eq!(report.registered_records(), vec!["wep_12"]);
+    assert!(report.blockers().is_empty(), "{:?}", report.blockers());
+    assert_eq!(report.tangler_fields.len(), 1, "the field is reported");
+    let field = &report.tangler_fields[0];
+    assert_eq!(field.record, "wep_12");
+    assert_eq!(field.radius_m, 10.0, "the image's default RADIUS");
+    assert_eq!(field.lifetime_s, 2.0, "the record's own TIME");
+    assert!(field.created_at_fire_time && field.reapplied_every_tick);
+    assert!(field.includes_owner);
+
+    // The component the registry holds has no one-shot area: the field is the
+    // measured expression, not a blast that applies once at detonation.
+    let id = cs_sim::weapons::OrdnanceId::try_new(
+        cs_types::content::ContentId::from_source(cs_types::content::ContentKind::Weapon, "wep_12")
+            .expect("a weapon id"),
+    )
+    .expect("the weapon namespace");
+    let projectile = registry
+        .get(&id)
+        .and_then(cs_sim::weapons::OrdnanceComponent::as_projectile)
+        .expect("wep_12 registered as a flyable component");
+    assert_eq!(projectile.area_effect(), None);
+
+    // The claim the field's effect left open is resolved (its measured value
+    // lives in the finding and the field), and the parts the measurement does
+    // not pin stay named on the record's kept claims.
+    let kept = report
+        .claims_kept
+        .iter()
+        .find(|(record, _)| record == "wep_12")
+        .expect("wep_12 keeps its named claims");
+    assert!(
+        !kept
+            .1
+            .iter()
+            .any(|claim| claim == cs_content::ordnance::T452_R02_TANGLER_EFFECT),
+        "the resolved effect claim is not kept: {:?}",
+        kept.1
+    );
+    assert!(
+        kept.1
+            .iter()
+            .any(|claim| claim == cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR),
+        "the scalar's identity stays named: {:?}",
+        kept.1
+    );
+    assert!(
+        kept.1
+            .iter()
+            .any(|claim| claim == cs_app::ordnance::T452_REG_TANGLER_FIELD_ORIGIN_CLAIM),
+        "the field origin stays named: {:?}",
+        kept.1
+    );
 }
 
 /// A record with no declared `FIRE` `SOUND` is a measured silence: it registers,
@@ -633,22 +723,23 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
     assert_eq!(report.declared, 16);
     assert_eq!(report.outcomes.len(), 16);
 
-    // The measurements this stage can express: fifteen ids register. They are
-    // the full-inheritance records, the timer-fused flare, the torpedo, the
-    // three `ACCELERATION` records whose lateral-remainder ramp is
-    // expressible, and the smoke and flak records whose measured silent range
-    // end task #2175 added to the fuse vocabulary.
+    // The measurements this stage can express: every one of the sixteen ids
+    // registers. They are the full-inheritance records, the timer-fused flare,
+    // the torpedo, the three `ACCELERATION` records whose lateral-remainder
+    // ramp is expressible, the smoke and flak records whose measured silent
+    // range end task #2175 added to the fuse vocabulary, and `wep_12` whose
+    // tangler field task T452-REG-TANGLER-RUNTIME gave a runtime.
     assert_eq!(
         report.registered_records(),
         vec![
             "wep_04", "wep_05", "wep_06", "wep_07", "wep_08", "wep_09", "wep_10", "wep_11",
-            "wep_13", "wep_14", "wep_15", "wep_24", "wep_26", "wep_25", "wep_27",
+            "wep_12", "wep_13", "wep_14", "wep_15", "wep_24", "wep_26", "wep_25", "wep_27",
         ],
         "the ids whose measured values the runtime vocabulary expresses"
     );
 
-    // The one that cannot be expressed is blocked with the measured value's
-    // claim, its content and its resolving task — never defaulted.
+    // Nothing is blocked: every measured value now has an expression, and no
+    // id is defaulted to make it register.
     let mut blocked: Vec<(&str, Vec<&str>)> = Vec::new();
     for outcome in &report.outcomes {
         if let OriginalRegistrationOutcome::Blocked { record, blockers } = outcome {
@@ -661,31 +752,42 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
             ));
         }
     }
-    let expected = [
-        // `wep_12`'s tangler field is measured to outlive the item that
-        // creates it, which the runtime's bounded area refuses: its own
-        // follow-up, not the silent expiry task #2175 resolved.
-        ("wep_12", cs_content::ordnance::T452_R02_TANGLER_EFFECT),
-    ];
-    assert_eq!(blocked.len(), expected.len(), "{blocked:?}");
-    for (record, claim) in expected {
-        let (_, claims) = blocked
-            .iter()
-            .find(|(name, _)| *name == record)
-            .unwrap_or_else(|| panic!("{record} is blocked: {blocked:?}"));
-        assert!(
-            claims.contains(&claim),
-            "{record} must name {claim}, got {claims:?}"
-        );
-    }
-    // No record is blocked on the silent expiry any more: the fuse vocabulary
-    // expresses the measured end (task #2175).
+    assert!(blocked.is_empty(), "{blocked:?}");
+    assert!(report.is_complete(), "sixteen of sixteen register");
+    // No record names the claims the last two stages resolved.
     assert!(
         blocked
             .iter()
             .all(|(_, claims)| !claims.contains(&T452_SILENT_EXPIRY_BLOCKED)),
         "the measured range end is expressible: {blocked:?}"
     );
+    assert!(
+        blocked
+            .iter()
+            .all(|(_, claims)| !claims.contains(&cs_content::ordnance::T452_R02_TANGLER_EFFECT)),
+        "the measured tangler field is expressible: {blocked:?}"
+    );
+
+    // The tangler record reports its measured field alongside the component,
+    // and the component itself carries no one-shot blast area.
+    let tangler = report
+        .tangler_fields
+        .iter()
+        .find(|field| field.record == "wep_12")
+        .expect("wep_12 reports its measured field");
+    assert_eq!(tangler.radius_m, 10.0, "the image's default RADIUS");
+    assert_eq!(tangler.lifetime_s, 2.0, "the record's own TIME");
+    assert!(tangler.created_at_fire_time && tangler.reapplied_every_tick);
+    let wep_12 = cs_sim::weapons::OrdnanceId::try_new(
+        cs_types::content::ContentId::from_source(cs_types::content::ContentKind::Weapon, "wep_12")
+            .expect("a weapon id"),
+    )
+    .expect("the weapon namespace");
+    let tangler_component = registry
+        .get(&wep_12)
+        .and_then(|component| component.as_projectile())
+        .expect("wep_12 registered as a flyable component");
+    assert_eq!(tangler_component.area_effect(), None);
 
     // A registered id is a *runtime component*, not a catalogue entry: its
     // measured values are the record's own.
@@ -755,8 +857,9 @@ fn accept_t452_register_retail_the_measured_catalogue_registers_what_it_measures
         );
     }
     assert!(
-        !report.is_complete(),
-        "three measured values stay unexpressible"
+        report.is_complete(),
+        "every declared id registers: {:?}",
+        report.blocked_records()
     );
     for blocker in report.blockers() {
         assert!(
