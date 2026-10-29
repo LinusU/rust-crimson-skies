@@ -9276,3 +9276,162 @@ name = "groundblow_normal.sqrt_dot_scale"
 va = 0x0048c148
 bytes = "d9fa"
 fact = "sqrt(dot(back,N)) is not sqrt(cos) on retail geometry: N is the unnormalised edge cross product, so the term is sqrt(|N|)*sqrt(cos) with |N| the face parallelogram area — 537..393216 m2 on M01 water tiles (23x..627x) and 19469..75963 m2 on the measured island strips (140x..276x); a unit normal understates the assist by two to three orders of magnitude"
+
+# What a node's runtime class type (node+0x34) is and where it comes from
+# (#2213, GROUNDBLOW-CLASS-TYPE; finding
+# docs/findings/2026-10-29-groundblow-class-type.md). The same row shape as the
+# tables above: `va` is where the cited window starts, `bytes` are the image's
+# own bytes there, and `fact` is what they say. The `class.message_*` rows are
+# data, not code.
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.node_alloc"
+va = 0x004cc4f0
+bytes = "8b0d14d4620083f9ff7514e860b000008b0d14d4620083f9ff0f84ec00000053558bc199568b3510d46200f7fe578be88bc199f7fea1187c72008b0ca833c08d1c528d1cdbd1e32bdac1e3028b9419d00000008d3419c1e208c1fa08891514d46200b9340000008bfef3aba1187c72008b0ca88bac19d000"
+fact = "0x4cc4f0 takes a slot from the 212-byte node table ([0x727c18] rows, 212 arithmetic, [0x62d414] the free cursor) and zeroes the whole 208-byte info record (mov ecx,0x34 then rep stosd = 52 dwords) before or-ing 0x2000000 into its node_index word at +0xd0, so a fresh node's +0x34 can only be what its class constructor writes"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.object3d_ctor"
+va = 0x004d1330
+bytes = "56e8bab1ffff8bf085f675206814cc620068350100006818d162006800040000e8db3ff4ff83c41033c05ec368900000006a01c7463405000000ff15b401a20056894638"
+fact = "0x4d1330 is the object3d node constructor: it allocates (0x4cc4f0), writes node+0x34 = 5 (c7463405000000), mallocs the 0x90-byte class record into node+0x38 and links it — a runtime-built object3d node is class 5"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.lod_ctor"
+va = 0x004e05e0
+bytes = "56e80abffeff8bf06a5c6a01c7463406000000ff15b401a2"
+fact = "0x4e05e0 is the lod node constructor: node+0x34 = 6 (c7463406000000) and a 0x5c-byte class record — the LOD kind keeps its own class constant on a runtime build"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.camera_ctor"
+va = 0x004d21b0
+bytes = "57bf0100000068e801000057897e34ff15b401a2"
+fact = "0x4d2180 (the camera node constructor) does mov edi,1 then mov [esi+0x34],edi (897e34) and mallocs the 0x1e8-byte camera record, so a runtime-built camera node is class 1"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.copy_dispatch"
+va = 0x004d849b
+bytes = "f74024000000040f85bb0000008b48344983f90a0f878f000000ff248d68854d0050e89efcffff83c4048bf05ec350e8"
+fact = "0x4d8470 is the node copy: a slot whose +0x24 carries 0x4000000 is refused, then the copy dispatches on the source's node+0x34 (mov ecx,[eax+0x34]; dec ecx; cmp ecx,0xa; ja error; jmp [ecx*4+0x4d8568]) and calls that class's copy, so a copy keeps its class"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.copy_table"
+va = 0x004d8568
+bytes = "d6844d0024854d0044854d0044854d00bc844d00c9844d000a854d00fd844d00e3844d00f0844d0017854d00"
+fact = "the eleven-entry copy table (values 1..11): 1->0x4d84d6, 2->0x4d8524, 3->0x4d8544, 4->0x4d8544, 5->0x4d84bc (the object3d copy, which calls 0x4d1330 and so writes class 5), 6->0x4d84c9, 7->0x4d850a, 8->0x4d84fd, 9->0x4d84e3, 10->0x4d84f0, 11->0x4d8517"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.info_copy"
+va = 0x004d7bcf
+bytes = "8b4624c1e80283e0015057e8514effff8bd883c40885db742456566800d9620068750300006858d962006800040000e8"
+fact = "0x4d7b90 copies the info record field by field, one flag bit at a time (here bit 2 of +0x24 -> 0x4ccf00, then the next bit -> its own setter, each with its own error string); the class word +0x34 is not among the fields it writes — the constructor already set it"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.slot_read"
+va = 0x004e2964
+bytes = "2bcf8d04498d04c0d1e02bc1c1e0028b4c24208b15187c7200516a01508b04aa50ff15f801a20083c41083f8"
+fact = "0x4e2890 reads the GameZ node array: the size arithmetic lea/lea/shl/sub/shl = 212 bytes per slot, then fread(buf,1,size,file) through [0xa201f8] straight into the runtime row — the 208-byte NodeCsC record, whose +0x34 stores node_type, lands in the node slot unchanged"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.loader_dispatch"
+va = 0x004e2ba0
+bytes = "515355568b7424148b46345733ff83f80a897c24100f87c80600008b5c241c8b2d0002a200ff2485ac324e00"
+fact = "0x4e2ba0 is the per-node class-data loader: mov eax,[esi+0x34]; cmp eax,0xa; ja 0x4e3283 (the Unrecognized node class type error); jmp [eax*4+0x4e32ac] — the loader dispatches on the same word the intersections query switches on"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.loader_table"
+va = 0x004e32ac
+bytes = "e0314e00902d4e004a2f4e00fa2e4e009b2e4e00832c4e00bb2c4e0083324e0083324e00fd2c4e00cc2b4e00"
+fact = "the eleven-entry kind table for values 0..10: 0->0x4e31e0 (no class data, children only), 1->0x4e2d90 (0x1e8 = 488 = CAMERA_DATA_BYTES), 2->0x4e2f4a (0xcc = 204 = WORLD_DATA_BYTES), 3->0x4e2efa (0xf8 = 248 = WINDOW_DATA_BYTES), 4->0x4e2e9b (0x1c = 28 = DISPLAY_DATA_BYTES), 5->0x4e2c83 (0x90 = 144 = OBJECT3D_DATA_BYTES), 6->0x4e2cbb (0x5c = 92 = LOD_DATA_BYTES), 7->0x4e3283 (refused), 8->0x4e3283 (refused), 9->0x4e2cfd (0x100 = 256 = LIGHT_DATA_BYTES), 10->0x4e2bcc (0x94 = 148, the sound record the CS format does not define)"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.loader_postpass"
+va = 0x004e2a7c
+bytes = "8b467085c075088d5674895670eb1e83f801750b8d868c000000894670eb0e83f80275098d8ea4000000894e708b463c85c07c0503c389463c8b563c52e8b2d607008b4c24248946"
+fact = "the loader's per-node post-pass rewrites +0x70 (0 -> node+0x74, 1 -> node+0x8c, 2 -> node+0xa4, the stored box the narrow phase copies), makes the +0x3c mesh index absolute (add eax,ebx) and resolves it, and zeroes +0x48 — it never writes +0x34"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.name_register"
+va = 0x004d045f
+bytes = "e8ccf4ffff89308b0cbdb8cf62008b0985c9750b8b14bdfc"
+fact = "0x4d0430(node, list) makes a node findable by name: it takes a list entry (0x4cf930), stores the node in it ([entry] = node) and links it into the per-list head at [0x62cfb8 + list*4]; after every kind's record is read the node loader registers the node with list 7 and again in its kind's own list (0xb for object3d), which is how a plane's node is found later by name"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.name_lookup"
+va = 0x004d0320
+bytes = "a100eb710053555633d233ed85c0578bf8745c8b7424148b078a188acb3a1e751c84c974148a5801"
+fact = "0x4d0320 walks the list at [0x71eb00] comparing each entry's name byte by byte (the hand-inlined strcmp from 0x4d0339), moves the found entry to the head and returns the node it holds; 0x4d0280(name, 7) reaches it for the node-by-name lookup"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.plane_node_lookup"
+va = 0x00477850
+bytes = "568b7424088b460885c075158b4604506a07e8198a050083c40885c0894608743d6a016a0150e8250d06008b"
+fact = "0x477850 resolves a plane record's node: if [record+8] is not cached it looks the record's name ([record+4]) up through 0x4d0280(name, 7), stores it back at [record+8], and then copies it with 0x4d85a0(node,1,1) — so the aircraft's node is the loaded plane container's node of that name, copied with its class"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.node_copy_entry"
+va = 0x004d85a0
+bytes = "8b44240485c0751f6814cc6200683f0600006858d9620068"
+fact = "0x4d85a0 is the copy thunk the plane path calls: it stashes the copy's two switches in [0x62d418]/[0x727c20], calls 0x4d8470(node) and restores them, so a plane node's copy goes through the per-class copy table"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.vehicle_type_read"
+va = 0x0047c275
+bytes = "56e8b53405008b483483c40483f90274108b15ac"
+fact = "in the vehicle record loader 0x47c210 the node the plane record yielded is read with mov ecx,[eax+0x34] and compared against 2 (the world class, which skips the world-add call) — vehicle-side code reads the same class word"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.vehicle_type_switch"
+va = 0x0047c32b
+bytes = "85c0746c8b5624f6c60174648b4e3483f905751df60008754e83c030eb325f5e33c05b8b4df464890d000000008be55dc383f90175070580000000eb1383f9087525f6c2047420f6400404741a83c008"
+fact = "the same loader switches on the node's class type: 5 takes the object3d data at +0x30 (unless the class data's bit 3 is set), 1 takes the camera data at +0x80, and 8 takes +0x8 only when the node's flag 0x400 and the class data's +4 bit 2 are both set — the same 5/1/8 class dispatch the intersections query uses"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.message_unrecognized"
+va = 0x0062e6b0
+bytes = "67436c73426c6f636b526561644e6f646528293a20556e7265636f676e697a6564206e6f646520636c61737320747970653a0a20206e6f6465203d20257320636c6173735f74797065203d2025640a004572726f722072656164"
+fact = "gClsBlockReadNode(): Unrecognized node class type: node = %s class_type = %d — the loader's own name for node+0x34 is class_type, which is the name the ground-blow findings use for it"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.message_file"
+va = 0x0062e354
+bytes = "443a5c7a69707065725c67616d657a5c7a636c6173735c636c735f7a62642e63"
+fact = "D:\\zipper\\gamez\\zclass\\cls_zbd.c — the source file every error in the node-array loader is stamped with, so the loader that reads the slots and dispatches on +0x34 is cls_zbd.c"
