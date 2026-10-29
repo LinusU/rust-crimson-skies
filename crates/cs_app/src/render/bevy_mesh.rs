@@ -76,7 +76,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::render::render_resource::{Face, FrontFace};
 use cs_assets::install::sha256;
-use cs_content::mesh::{CollisionMesh, MeshPresentationUnknown, RenderMesh};
+use cs_content::mesh::{CollisionFace, CollisionMesh, MeshPresentationUnknown, RenderMesh};
 use cs_types::evidence::ContentHash;
 
 /// Which per-corner attribute a refusal is about.
@@ -362,8 +362,10 @@ pub struct GroupReport {
 /// [`cs_content::mesh::RenderMesh::collision`] view, whose positions are the
 /// **stored** values the reader decoded. This adapter applies the one
 /// canonicalisation the engine's physics consumer needs
-/// ([`SUBNORMAL_POSITION_CLAIM`]) and hands back the pair a triangle-mesh
-/// collider is built from, so a collider sees exactly the values
+/// ([`SUBNORMAL_POSITION_CLAIM`]) and hands back the buffers a triangle-mesh
+/// collider is built from — positions, index triples, and the stored-face
+/// side table ([`ColliderMesh::faces`]) the polygon-soup sweep tests beside
+/// them (task #2217) — so a collider sees exactly the values
 /// `TrimeshFromMesh` would have read out of the drawn upload — subnormal
 /// position flush included — while indexing a different set of triangles.
 ///
@@ -374,6 +376,67 @@ pub struct GroupReport {
 pub struct ColliderMesh {
     vertices: Vec<[f32; 3]>,
     indices: Vec<[u32; 3]>,
+    /// The stored faces [`Self::face_of`] names, canonicalised with the
+    /// vertices — the collision view's own side table (task #2217).
+    faces: Vec<CollisionFace>,
+    /// `faces` slot per collision triangle, `None` where the stored mesh had
+    /// no face record to keep.
+    face_of: Vec<Option<u32>>,
+}
+
+/// The stored-face side table one mesh-derived collider entity carries
+/// (task #2217): the [`CollisionFace`] records its collision triangles stand
+/// in for, keyed back by [`ColliderFaces::face_of`] in solver-triangle order.
+///
+/// The original's polygon-soup query (`0x55c9c0` → `0x55d6c0`) intersects the
+/// stored polygon — the whole outline, or a strip step's three corners — not
+/// the ear-clipped triangles a [`Collider`] holds, so the record's normal is
+/// the stored face's own edge cross product and its two-sided bit is the
+/// accept gate's override. The collider's triangle buffer is untouched; this
+/// component is what a triangle index resolves back to. A collider whose
+/// mesh stored no polygon record — a synthetic or probe-built mesh — carries
+/// an empty table, and the sweep keeps its per-triangle behaviour there.
+#[derive(bevy::prelude::Component, Clone, Debug, Default, PartialEq)]
+pub struct ColliderFaces {
+    faces: Vec<CollisionFace>,
+    face_of: Vec<Option<u32>>,
+}
+
+impl ColliderFaces {
+    /// The side table `collision` carries, cloned beside the entity that
+    /// holds the collider.
+    #[must_use]
+    pub fn of(collision: &ColliderMesh) -> Self {
+        Self {
+            faces: collision.faces.clone(),
+            face_of: collision.face_of.clone(),
+        }
+    }
+
+    /// The face table slot collision triangle `triangle` stands in for.
+    #[must_use]
+    pub fn face_index(&self, triangle: usize) -> Option<u32> {
+        self.face_of.get(triangle).copied().flatten()
+    }
+
+    /// The stored face record a [`Self::face_index`] slot names.
+    #[must_use]
+    pub fn face(&self, index: u32) -> Option<&CollisionFace> {
+        self.faces.get(index as usize)
+    }
+
+    /// Every stored face the collider's triangles stand in for.
+    #[must_use]
+    pub fn faces(&self) -> &[CollisionFace] {
+        &self.faces
+    }
+
+    /// The collision-triangle → face table map, aligned with
+    /// [`ColliderMesh::indices`].
+    #[must_use]
+    pub fn face_of(&self) -> &[Option<u32>] {
+        &self.face_of
+    }
 }
 
 impl ColliderMesh {
@@ -385,6 +448,10 @@ impl ColliderMesh {
     /// a [`Mesh`] it wrote by hand. The pair is stated together so a caller
     /// cannot hand in vertices its indices do not name: they are one view, and
     /// [`Self::of`] is the same pair read out of a stored mesh.
+    ///
+    /// Hand-authored geometry has no stored polygon record, so the view's
+    /// face table is empty — a consumer keeps per-triangle behaviour on it,
+    /// exactly as it does on a stored mesh's unresolved triangles.
     #[must_use]
     pub fn new(vertices: Vec<[f32; 3]>, indices: Vec<[u32; 3]>) -> Self {
         Self {
@@ -393,6 +460,8 @@ impl ColliderMesh {
                 .map(|position| position.map(canonicalise_position_component))
                 .collect(),
             indices,
+            faces: Vec::new(),
+            face_of: Vec::new(),
         }
     }
 
@@ -402,16 +471,26 @@ impl ColliderMesh {
     /// same rule the drawn upload applies, so both views of one mesh agree
     /// bit-for-bit on every position they share — including on the subnormal
     /// extent that would otherwise overflow parry's binned BVH builder
-    /// ([`SUBNORMAL_POSITION_CLAIM`]).
+    /// ([`SUBNORMAL_POSITION_CLAIM`]). The face table's corner positions are
+    /// the same stored positions, canonicalised under the same rule, so a
+    /// face's corners and the vertices its triangles name agree bit-for-bit
+    /// too.
     #[must_use]
     pub fn of(collision: &CollisionMesh) -> Self {
+        let canonicalise = |position: &[f32; 3]| position.map(canonicalise_position_component);
         Self {
-            vertices: collision
-                .positions()
-                .iter()
-                .map(|position| position.map(canonicalise_position_component))
-                .collect(),
+            vertices: collision.positions().iter().map(canonicalise).collect(),
             indices: collision.indices().to_vec(),
+            faces: collision
+                .faces()
+                .iter()
+                .map(|face| CollisionFace {
+                    polygon: face.polygon,
+                    corners: face.corners.iter().map(canonicalise).collect(),
+                    raw_flags: face.raw_flags,
+                })
+                .collect(),
+            face_of: collision.face_of().to_vec(),
         }
     }
 
@@ -425,6 +504,20 @@ impl ColliderMesh {
     #[must_use]
     pub fn indices(&self) -> &[[u32; 3]] {
         &self.indices
+    }
+
+    /// The stored faces [`Self::face_of`] names — the records the original's
+    /// polygon-soup query intersects (task #2217).
+    #[must_use]
+    pub fn faces(&self) -> &[CollisionFace] {
+        &self.faces
+    }
+
+    /// Which [`Self::faces`] record each collision triangle stands in for,
+    /// aligned with [`Self::indices`].
+    #[must_use]
+    pub fn face_of(&self) -> &[Option<u32>] {
+        &self.face_of
     }
 
     /// Triangles this view carries, degenerate ones included.
