@@ -42,3 +42,40 @@ Task #781. Code: `crates/cs_app/src/camera/effects.rs`,
 4. **Shake amplitude (`SHAKE_PER_DAMAGE`) and flash from damage are designed**;
    the original's values are unknown.
 5. Presentation never reaches `Settings::gameplay_inputs()`; unchanged.
+
+## F52-W2-wire (#2140): the draw-loop wiring
+
+`camera::effects::emit_combat_events` (in `FixedLast`, after contact
+recording) turns aircraft-layer contacts into `Impact`, accepted shots and
+ordnance launches into `WeaponFlash`, and published hits on the player victim
+into `PlayerHit`; `emit_targeting_events` (in `Update`, after
+`drive_targeting_schedule`) emits `TargetChanged`. `present_game_events`
+drains the `GameEventQueue` once per rendered frame through
+`EffectFrame::present` and the live session into `PresentedEffects`;
+`apply_presented_shake` offsets the camera pose `follow_camera` computed this
+frame. `drive_hud_presentation` lays the active radio line's subtitle and the
+presented flash into `PresentedHud`; `SubtitleHudPlugin` draws them in
+windowed compositions. `present_captured_frame` filters every delivered
+screenshot before it is measured or saved, recording `FrameFilterReport`.
+`AudioOutput::leveled` wraps the device in `BusLevelDevice` for the whole
+`mix_session` pass and for every direct call site routed through
+`with_live_device` (launch voices, ambient voices, measured voices); the
+briefing voice scales through `apply_bus_level` on its own device.
+`run_playtest` and `run_windowed` install the session through
+`install_live_presentation` before the first frame and flush it at teardown.
+
+Remaining limits:
+
+- **`MenuAudio` and the cinematic probe drivers own separate devices** outside
+  the live session (`open_audible_device` directly, not the world's
+  `AudioOutput`): menu music/cues and cinematic playback do not pass through
+  `apply_bus_level` yet. Filed as follow-ups.
+- **Camera shake magnitude (`SHAKE_METERS`) and its phase are designed**; the
+  original's shake is unrecovered.
+- **The flash veil's alpha (`FLASH_MAX_ALPHA`) and the subtitle style are
+  designed**; no original HUD reference is measured.
+- **Gun-shot flash is wired at the `WeaponScheduleReport`/`MissionOrdnanceReport`
+  seam**: a shot an engine-side producer accepts without writing those reports
+  would not flash.
+- Presentation still never reaches `Settings::gameplay_inputs()`; the
+  `accept_f52_w2_wire_` tests prove it.
