@@ -15,7 +15,9 @@ use cs_app::accessibility::motion::Effect;
 use cs_app::accessibility::session::SettingsSession;
 use cs_app::audio::{AudioEmitterBinding, AudioMixing, AudioPlugin, AudioSession, AudioSpatial};
 use cs_app::camera::effects::{EffectFrame, GameEvent};
-use cs_app::render::presentation::{FilterError, LivePresentation, filter_frame, present_frame};
+use cs_app::render::presentation::{
+    FilterError, LivePresentation, PresentationSessionCell, filter_frame, present_frame,
+};
 use cs_app::scene::SceneGenerations;
 use cs_app::ui::hud::presentation::{HudPresentation, SubtitleLine};
 use cs_content::audio::{AudioBus as SettingsBus, AudioLevel, declared_synthetic_audio_catalog};
@@ -85,14 +87,16 @@ fn accept_f52_w2_an_undrawable_event_is_reported_not_swallowed() {
 fn accept_f52_w2_the_colour_filter_changes_the_drawn_frame_and_never_alpha() {
     let mut session = session_at("filter");
     let original = [200_u8, 40, 40, 255, 10, 220, 30, 128];
-    let mut live = LivePresentation(session_at("filter-live"));
+    let mut live = LivePresentation::new(
+        session_at("filter-live"),
+        &PresentationSessionCell::default(),
+    );
 
     let mut frame = original;
     present_frame(&live, &mut frame).expect("filter off");
     assert_eq!(frame, original, "off leaves the frame untouched");
 
-    live.0
-        .apply(|s| s.presentation.colour_filter = ColourFilter::Monochrome)
+    live.apply(|s| s.presentation.colour_filter = ColourFilter::Monochrome)
         .expect("apply");
     present_frame(&live, &mut frame).expect("filter on");
     assert_ne!(frame, original);
@@ -209,15 +213,14 @@ fn accept_f52_w2_the_bus_level_reaches_the_mixer_and_a_change_applies_next_pass(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    let mut live = LivePresentation(session_at("audio"));
-    live.0
-        .apply(|s: &mut Settings| {
-            s.presentation.bus_levels.insert(
-                SettingsBus::Engine,
-                AudioLevel::try_new(0.5).expect("level"),
-            );
-        })
-        .expect("apply");
+    let mut live = LivePresentation::new(session_at("audio"), &PresentationSessionCell::default());
+    live.apply(|s: &mut Settings| {
+        s.presentation.bus_levels.insert(
+            SettingsBus::Engine,
+            AudioLevel::try_new(0.5).expect("level"),
+        );
+    })
+    .expect("apply");
     app.insert_resource(live);
 
     let last_gain = |spy: &RecordingAudioDevice| {
@@ -236,7 +239,6 @@ fn accept_f52_w2_the_bus_level_reaches_the_mixer_and_a_change_applies_next_pass(
 
     app.world_mut()
         .resource_mut::<LivePresentation>()
-        .0
         .apply(|s| {
             s.presentation.bus_levels.insert(
                 SettingsBus::Engine,

@@ -1000,7 +1000,7 @@ pub fn run_playtest(
     session: crate::accessibility::session::SettingsSession,
 ) -> Result<(), PlaytestError> {
     let (mut app, handle) = windowed_app(request.smoke.as_ref(), request.retail.as_ref())?;
-    crate::render::presentation::install_live_presentation(&mut app, session);
+    let session_cell = crate::render::presentation::install_live_presentation(&mut app, session);
     if let Some(content) = app.world().get_resource::<RetailContent>() {
         println!("playtest sources: {}", content.manifest_json());
     }
@@ -1008,15 +1008,16 @@ pub fn run_playtest(
         println!("playtest flight: {}", flight.json());
     }
     let exit = app.run();
-    // The session comes back out of the world for its own end before any `?`
-    // below can return early: `teardown` flushes a staged change and only a
-    // successful one closes it, so the flush runs — and its error is named —
-    // on every path past this point.
-    let mut live = app
-        .world_mut()
-        .remove_resource::<crate::render::presentation::LivePresentation>()
-        .expect("the run's live presentation session stays installed until teardown");
-    let flushed = live.0.teardown().map_err(PlaytestError::Settings);
+    // The session comes back through its cell for its own end before any `?`
+    // below can return early: `App::run` left this handle an empty app, so the
+    // resource returned it when the run's world dropped — `teardown` flushes
+    // a staged change and only a successful one closes it, so the flush runs
+    // — and its error is named — on every path past this point (#2141).
+    let flushed = session_cell
+        .take()
+        .expect("the run's live presentation session returns when its world drops")
+        .teardown()
+        .map_err(PlaytestError::Settings);
     if let (Some(handle), Some(smoke_request)) = (&handle, &request.smoke) {
         smoke::finish(handle, smoke_request)?;
     }

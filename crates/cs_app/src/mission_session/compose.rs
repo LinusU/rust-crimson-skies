@@ -2423,8 +2423,10 @@ pub fn run_windowed(
     // The live accessibility session, installed before the first frame so
     // every presenter — effects, subtitles, colour filter, bus levels — reads
     // the file's settings (F52-W2-wire). Inserted after the fallible build so
-    // an early refusal never holds it; it comes back out at teardown below.
-    crate::render::presentation::install_live_presentation(&mut app, session);
+    // an early refusal never holds it; `App::run` leaves this handle an empty
+    // app, so the session comes back through the cell the resource returns it
+    // to when its world drops (F52-W2-evidence, #2141).
+    let session_cell = crate::render::presentation::install_live_presentation(&mut app, session);
     let exit = app.run();
     let smoked: Result<(), MissionCompositionError> = match (&smoke_handle, smoke) {
         (Some(handle), Some(request)) => {
@@ -2462,15 +2464,15 @@ pub fn run_windowed(
     });
     let left = left_cell.take();
     teardown(&mut app);
-    // The session comes back out of the world for its own end before any `?`
-    // below can return early: `teardown` flushes a staged change and only a
-    // successful one closes it, so the flush runs — and its error is named —
-    // on every path past this point (F52-W2-wire).
-    let flushed = app
-        .world_mut()
-        .remove_resource::<crate::render::presentation::LivePresentation>()
-        .expect("the run's live presentation session stays installed until teardown")
-        .0
+    // The session comes back through its cell for its own end before any `?`
+    // below can return early: `App::run` left this handle an empty app, so the
+    // resource returned it when the run's world dropped — `teardown` flushes
+    // a staged change and only a successful one closes it, so the flush runs
+    // — and its error is named — on every path past this point (F52-W2-wire,
+    // #2141).
+    let flushed = session_cell
+        .take()
+        .expect("the run's live presentation session returns when its world drops")
         .teardown()
         .map_err(MissionCompositionError::Settings);
     captured.map_err(MissionCompositionError::Capture)?;

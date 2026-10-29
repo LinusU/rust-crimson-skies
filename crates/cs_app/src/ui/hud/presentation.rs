@@ -171,7 +171,7 @@ pub fn drive_hud_presentation(
         .collect();
     presented.hud = live.as_deref().map_or_else(
         || PresentedHud::default().hud,
-        |live| HudPresentation::from_session(&live.0, &lines),
+        |live| HudPresentation::from_session(live.session(), &lines),
     );
     presented.flash = effects
         .as_deref()

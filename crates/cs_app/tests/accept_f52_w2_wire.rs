@@ -352,7 +352,6 @@ fn accept_f52_w2_wire_subtitles_follow_the_radio_line_and_the_switch() {
     // next frame's HUD.
     app.world_mut()
         .resource_mut::<LivePresentation>()
-        .0
         .apply(|settings| settings.presentation.subtitles = false)
         .expect("switching subtitles off is valid");
     app.update();

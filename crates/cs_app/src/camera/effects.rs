@@ -329,5 +329,5 @@ pub fn present_game_events(
     let events = queue.drain();
     presented.frame = live
         .as_deref()
-        .map(|live| EffectFrame::present(&live.0, &events));
+        .map(|live| EffectFrame::present(live.session(), &events));
 }

@@ -10,21 +10,91 @@
 //! is asserted); see `docs/findings/2026-10-27-f52-w2-presentation-output.md`.
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use bevy::prelude::Resource;
-use cs_content::settings::{ColourFilter, Presentation};
+use cs_content::settings::{ColourFilter, Presentation, Settings};
 
-use crate::accessibility::session::SettingsSession;
+use crate::accessibility::session::{ApplyError, SettingsSession};
+
+/// The shared slot a [`LivePresentation`] returns its session through when
+/// its world drops the resource.
+///
+/// `App::run` leaves the caller an **empty** app — the run's world is moved
+/// into the runner and dropped with it — so a windowed entry that wants the
+/// session back cannot read it from `World` afterwards. This cell is the
+/// channel it takes instead: the same boundary
+/// [`crate::mission_session::MissionLeftCell`] crosses for the mission end
+/// (F52-W2-evidence, #2141).
+#[derive(Clone, Debug, Default)]
+pub struct PresentationSessionCell(Arc<Mutex<Option<SettingsSession>>>);
+
+impl PresentationSessionCell {
+    /// The session a dropped [`LivePresentation`] returned, once it did.
+    #[must_use]
+    pub fn take(&self) -> Option<SettingsSession> {
+        self.0.lock().ok().and_then(|mut slot| slot.take())
+    }
+}
 
 /// Resource: the run's one live settings session.
 #[derive(Resource, Debug)]
-pub struct LivePresentation(pub SettingsSession);
+pub struct LivePresentation {
+    /// The live session — `Some` for the resource's whole life: only the
+    /// [`Drop`] below takes it, to hand it to `cell`.
+    session: Option<SettingsSession>,
+    /// The return slot `Drop` fills.
+    cell: PresentationSessionCell,
+}
 
 impl LivePresentation {
+    /// Builds the resource a run installs, paired with the cell it returns
+    /// its session to when the world drops it.
+    #[must_use]
+    pub fn new(session: SettingsSession, cell: &PresentationSessionCell) -> Self {
+        Self {
+            session: Some(session),
+            cell: cell.clone(),
+        }
+    }
+
+    /// The session itself, for a presenter that reads beyond the
+    /// presentation record (effects, subtitles, bus levels).
+    #[must_use]
+    pub fn session(&self) -> &SettingsSession {
+        self.session
+            .as_ref()
+            .expect("an installed live presentation carries its session")
+    }
+
     /// The presentation settings as they are right now.
     #[must_use]
-    pub const fn presentation(&self) -> &Presentation {
-        self.0.presentation()
+    pub fn presentation(&self) -> &Presentation {
+        self.session
+            .as_ref()
+            .expect("an installed live presentation carries its session")
+            .presentation()
+    }
+
+    /// Applies `change` through the session's own `apply` — the same call the
+    /// Preferences overlay makes.
+    ///
+    /// # Errors
+    ///
+    /// [`ApplyError`] as [`SettingsSession::apply`] reports it.
+    pub fn apply(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), ApplyError> {
+        self.session
+            .as_mut()
+            .expect("an installed live presentation carries its session")
+            .apply(change)
+    }
+}
+
+impl Drop for LivePresentation {
+    fn drop(&mut self) {
+        if let (Some(session), Ok(mut slot)) = (self.session.take(), self.cell.0.lock()) {
+            *slot = Some(session);
+        }
     }
 }
 
@@ -160,6 +230,16 @@ pub fn present_captured_frame(
 /// frame (F52-W2-wire). `run_playtest` and `run_windowed` install it before
 /// the first frame; a test installs it into the same headless app the
 /// schedule drives.
-pub fn install_live_presentation(app: &mut bevy::prelude::App, session: SettingsSession) {
-    app.insert_resource(LivePresentation(session));
+///
+/// Returns the [`PresentationSessionCell`] the resource returns the session
+/// through when its world drops it — a caller that runs the app to the end
+/// reads the session back from the cell, never from the emptied `World`
+/// `App::run` leaves behind (F52-W2-evidence, #2141).
+pub fn install_live_presentation(
+    app: &mut bevy::prelude::App,
+    session: SettingsSession,
+) -> PresentationSessionCell {
+    let cell = PresentationSessionCell::default();
+    app.insert_resource(LivePresentation::new(session, &cell));
+    cell
 }
