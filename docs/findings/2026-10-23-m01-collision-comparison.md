@@ -57,7 +57,7 @@ does not act on the body's motion, only a crash does.
 | no beach impact at t=34..36, no 60 degree throw | speed 110 -> 78 m/s, path +61 degrees | #1852 (owner's finer capture of V+0x924 over t=34..36); the response law of #1849 is a normal impulse with restitution 0.6 and has no extra term |
 | trajectory after t=40 unrelated | original climbs to 1925 m at t=70 | consequence of the above |
 | ground-blow look-ahead (`groundblow_elev` 400, `groundblow_mag` 10) not applied | unknown whether the measured flight is affected | **closed by #2107** (2026-10-29): the term is applied from the frame's segment probe, and it does affect the measured flight from t≈38 — see the addendum below |
-| contact damage uncompared | the original survives both measured contacts | since #1983 the same window's nine contacts spend 1049 of the designed 1200 hull (six of them on the world collider); whether the original would call any of them fatal is unmeasured — the pool and the per-contact range stay the designed/retail values, `2026-10-23-crash-e-01-world-collider-is-terrain.md` |
+| contact damage uncompared | the original survives both measured contacts | since #1983 the same window's nine contacts spend 1049 of the designed 1200 hull (six of them on the world collider); whether the original would call any of them fatal is unmeasured — the pool and the per-contact range stay the designed/retail values, `2026-10-23-crash-e-01-world-collider-is-terrain.md`. The 1049/nine-contact figure predates the props/objects colliders; the flight now spends 581 over three contacts without the ground blow and 267 over two with it (2026-10-29 addendum) |
 
 Heading agrees in the first seconds (positions at t=10 are 58 m apart, mostly altitude).
 Nothing is tuned.
