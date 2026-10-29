@@ -5107,6 +5107,11 @@ fn smoke_script(
                             .probe_refusals
                             .push(format!("the open-state apply failed: {error}"));
                     }
+                } else {
+                    data.measurements
+                        .presentation
+                        .probe_refusals
+                        .push("no live presentation session".to_owned());
                 }
                 enqueue_presentation_probe(
                     &mut data,
@@ -5173,7 +5178,15 @@ fn smoke_script(
                     presentation.live.as_deref_mut(),
                     data.presentation_restore.take(),
                 ) {
-                    let _ = live.apply(|settings| settings.presentation = *restored);
+                    // A failed restore leaves later phases' frames under the
+                    // flipped state — named like every other refusal, never
+                    // dropped silent.
+                    if let Err(error) = live.apply(|settings| settings.presentation = *restored) {
+                        data.measurements
+                            .presentation
+                            .probe_refusals
+                            .push(format!("the restore apply failed: {error}"));
+                    }
                 }
                 data.phase = Phase::Guns;
                 data.phase_start = frame + 1;
