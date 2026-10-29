@@ -80,7 +80,13 @@ pub const AIRFRAME_FIELDS: [&str; 15] = [
 
 /// The flat field names the global record produces; the mirror of
 /// `cs_sim::flight::original::GLOBAL_FIELDS`.
-pub const GLOBAL_FIELDS: [&str; 17] = [
+///
+/// The last three are the ground blow's constants
+/// (`docs/findings/2026-10-29-groundblow-world-segment-sweep.md`, task #2210):
+/// `groundblow_elev` is the probe length in **metres** (the world's unit), so
+/// its vocabulary name says so; `groundblow_mag` and `ai_groundblow` are the
+/// player's and the AI's gains, dimensionless.
+pub const GLOBAL_FIELDS: [&str; 20] = [
     "nom_gravity",
     "lift_aoa_0_deg",
     "lift_aoa_1_deg",
@@ -98,6 +104,9 @@ pub const GLOBAL_FIELDS: [&str; 17] = [
     "yaw_fade_in_mph",
     "yaw_max_mph",
     "yaw_fade_out_mph",
+    "groundblow_elev_m",
+    "groundblow_mag",
+    "ai_groundblow",
 ];
 
 /// The `player.zrd` keys the law reads but never uses: they are recorded with
@@ -1261,6 +1270,15 @@ impl OriginalDocuments {
             ("stall_mag", "stall_mag"),
             ("yaw_low_speed", "yaw_low_speed"),
             ("yaw_high_speed", "yaw_high_speed"),
+            // The ground blow (task #2210, finding
+            // `2026-10-29-groundblow-world-segment-sweep.md` section 1): the
+            // probe `0x48bf60` reads `groundblow_elev` at `0x71c420`, and
+            // `0x48c220` scales by `groundblow_mag` (player) or
+            // `ai_groundblow` (every other vehicle). Each key is a one-element
+            // list in retail `player.zrd`.
+            ("groundblow_elev_m", "groundblow_elev"),
+            ("groundblow_mag", "groundblow_mag"),
+            ("ai_groundblow", "ai_groundblow"),
         ] {
             values.push(self.global_scalar(document, field, key)?);
         }

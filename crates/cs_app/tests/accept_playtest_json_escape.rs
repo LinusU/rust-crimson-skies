@@ -149,6 +149,9 @@ fn fixture_globals() -> OriginalGlobals {
         yaw_low_speed: 1.0,
         yaw_high_speed: 2.0,
         yaw_fade_mph: [1.0, 2.0, 3.0],
+        groundblow_elev_m: 400.0,
+        groundblow_mag: 10.0,
+        ai_groundblow: 0.5,
     }
 }
 

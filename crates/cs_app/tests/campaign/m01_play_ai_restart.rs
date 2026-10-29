@@ -203,6 +203,9 @@ fn synthetic_ai_airframe() -> MissionAiAirframe {
         ("yaw_fade_in_mph", 10.0),
         ("yaw_max_mph", 50.0),
         ("yaw_fade_out_mph", 400.0),
+        ("groundblow_elev_m", 400.0),
+        ("groundblow_mag", 10.0),
+        ("ai_groundblow", 0.5),
     ])
     .expect("the declared globals are complete");
     MissionAiAirframe {

@@ -280,8 +280,10 @@ pub const AIRFRAME_FIELDS: [&str; 15] = [
 ///
 /// Speed keys keep the document's miles per hour in their name
 /// ([`MPH_TO_MPS`] converts them) and angle keys keep degrees, so no consumer
-/// can mistake a stored value's unit.
-pub const GLOBAL_FIELDS: [&str; 17] = [
+/// can mistake a stored value's unit. `groundblow_elev_m` is metres because
+/// that is the world's unit (`2026-10-29-groundblow-world-segment-sweep.md`
+/// section 2); the two ground-blow gains are dimensionless.
+pub const GLOBAL_FIELDS: [&str; 20] = [
     "nom_gravity",
     "lift_aoa_0_deg",
     "lift_aoa_1_deg",
@@ -299,6 +301,9 @@ pub const GLOBAL_FIELDS: [&str; 17] = [
     "yaw_fade_in_mph",
     "yaw_max_mph",
     "yaw_fade_out_mph",
+    "groundblow_elev_m",
+    "groundblow_mag",
+    "ai_groundblow",
 ];
 
 /// Reads `fields` against `declared`: every name must be declared, finite and
@@ -460,6 +465,18 @@ pub struct OriginalGlobals {
     pub yaw_high_speed: f64,
     /// The rudder authority speeds, mph (`yaw_fade_in`/`yaw_max`/`yaw_fade_out`).
     pub yaw_fade_mph: [f64; 3],
+    /// The ground blow's probe length, **metres** (`groundblow_elev`, retail
+    /// 400). The probe `0x48bf60` casts a segment this long from the body's
+    /// position along the body's backward axis; world units are metres
+    /// (`2026-10-29-groundblow-world-segment-sweep.md` sections 1 and 2).
+    ///
+    /// Nothing in this law reads it yet: the consumer is #2107, which also
+    /// needs the probe's hit ([`OriginalInput::segment_probe`]).
+    pub groundblow_elev_m: f64,
+    /// The player's ground-blow gain (`groundblow_mag`, retail 10).
+    pub groundblow_mag: f64,
+    /// A non-player's ground-blow gain (`ai_groundblow`, retail 0.5).
+    pub ai_groundblow: f64,
 }
 
 impl OriginalGlobals {
@@ -494,6 +511,9 @@ impl OriginalGlobals {
                 get("yaw_max_mph"),
                 get("yaw_fade_out_mph"),
             ],
+            groundblow_elev_m: get("groundblow_elev_m"),
+            groundblow_mag: get("groundblow_mag"),
+            ai_groundblow: get("ai_groundblow"),
         })
     }
 }
@@ -592,6 +612,54 @@ impl OriginalState {
     }
 }
 
+/// What the world segment sweep's hit record gives the ground-blow force block
+/// (`0x48c0ed`..`0x48c155`), in the record's own conventions.
+///
+/// The record itself is 0x2c bytes
+/// (`docs/findings/2026-10-29-groundblow-world-segment-sweep.md` section 4);
+/// this carries the three facts the force block and the player's skip gate
+/// read, and nothing else. The consumer is #2107: **nothing in this law reads
+/// [`OriginalInput::segment_probe`] yet**, so filling it cannot change how M01
+/// flies until that task lands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SegmentProbeHit {
+    /// The chord from the probe's start to the contact point, metres
+    /// (`|p0 - point|`, `0x5388d0` at `0x48c131`; record `+0x0c` is the
+    /// point). The sweep picks its nearest record by the same chord
+    /// (`+0x1c`, squared), so this is the record `0x4c8ec0` selected.
+    pub distance_m: f64,
+    /// The hit face's normal, **unnormalised**: the record's raw edge cross
+    /// product (`0x55d6d2`..`0x55d73a`), whose magnitude is the face's
+    /// parallelogram area. The force block's `sqrt(dot)` therefore scales by
+    /// `sqrt(area)`; normalising here would disagree with the original.
+    pub normal: [f64; 3],
+    /// What the hit's owner node resolved to, which is what the player's skip
+    /// gate (`0x48c036`..`0x48c0e9`) tests.
+    pub owner: SegmentProbeOwner,
+}
+
+/// The hit owner's resolution, as the player's ground-blow skip gate sees it
+/// (`docs/findings/2026-10-29-groundblow-world-segment-sweep.md` section 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentProbeOwner {
+    /// No owner node, or one whose `node+0x28` does not carry the
+    /// `0x40000000` "belongs to a vehicle" bit: scenery, terrain, water. The
+    /// gate keeps the hit.
+    World,
+    /// An owner node that carries the vehicle bit but that the registry
+    /// (`0x71dab8`, `0x4afee0`) did not resolve, even down its first-child
+    /// chain. The gate keeps the hit.
+    UnresolvedVehicleNode,
+    /// An owner node that resolved to a vehicle. `on_path` is that vehicle's
+    /// `+0xcc` byte, which the record loader sets when the record carried a
+    /// path: a player's ground blow **discards** the hit when it is `false`
+    /// and keeps it when it is `true`.
+    Vehicle {
+        /// The resolved vehicle's `V+0xcc` byte.
+        on_path: bool,
+    },
+}
+
 /// One frame's commands, clamped to their declared ranges before use
 /// (`FLIGHT-PHYSICS`: "Clamp human controls to their declared ranges").
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -615,6 +683,19 @@ pub struct OriginalInput {
     /// [`HOLD_ATTITUDE_TOOL_VA`] measures a top speed this way. Production
     /// flight leaves it `false`.
     pub hold_attitude: bool,
+    /// The ground blow's segment-probe hit for this frame, or `None` when the
+    /// world sweep found no contact or the caller ran no probe.
+    ///
+    /// The original's probe `0x48bf60` casts a segment
+    /// [`OriginalGlobals::groundblow_elev_m`] long from the body's position
+    /// along the body's backward axis (`-V[+0x198]`) and reads the nearest
+    /// contact of the world sweep `0x4c8ec0`. That query needs the world
+    /// database's nodes, which this law does not have; the frame's caller
+    /// fills this from the session's own physics world (task #2210's seam).
+    ///
+    /// **Nothing in this law reads it yet.** The force block that consumes it
+    /// is #2107, so a filled probe changes no trajectory today.
+    pub segment_probe: Option<SegmentProbeHit>,
 }
 
 impl Default for OriginalInput {
@@ -628,6 +709,7 @@ impl Default for OriginalInput {
             engine_out: false,
             is_player: true,
             hold_attitude: false,
+            segment_probe: None,
         }
     }
 }
@@ -2305,7 +2387,13 @@ mod tests {
     }
 
     fn globals() -> OriginalGlobals {
-        OriginalGlobals::from_values(&[
+        OriginalGlobals::from_values(&global_fields()).expect("the declared globals are complete")
+    }
+
+    /// The fixture that stands in for retail `player.zrd`, with the ground
+    /// blow on at its retail values.
+    fn global_fields() -> Vec<(&'static str, f64)> {
+        vec![
             ("nom_gravity", 20.0),
             ("lift_aoa_0_deg", 5.0),
             ("lift_aoa_1_deg", 9.0),
@@ -2323,7 +2411,118 @@ mod tests {
             ("yaw_fade_in_mph", 10.0),
             ("yaw_max_mph", 50.0),
             ("yaw_fade_out_mph", 400.0),
-        ])
-        .expect("the declared globals are complete")
+            ("groundblow_elev_m", 400.0),
+            ("groundblow_mag", 10.0),
+            ("ai_groundblow", 0.5),
+        ]
+    }
+
+    /// The three ground-blow globals reach the law as data, at retail's
+    /// 400 m / 10 / 0.5, and a list that omits one is refused by name instead
+    /// of defaulted (`2026-10-29-groundblow-world-segment-sweep.md` section 1).
+    #[test]
+    fn accept_groundblow_probe_globals_carry_the_retail_ground_blow_values() {
+        let globals = globals();
+        assert_eq!(globals.groundblow_elev_m, 400.0);
+        assert_eq!(globals.groundblow_mag, 10.0);
+        assert_eq!(globals.ai_groundblow, 0.5);
+
+        for name in ["groundblow_elev_m", "groundblow_mag", "ai_groundblow"] {
+            let mut fields = global_fields();
+            fields.retain(|(field, _)| *field != name);
+            assert_eq!(
+                OriginalGlobals::from_values(&fields),
+                Err(OriginalParamsError::MissingField { name }),
+                "{name} must be required, never defaulted"
+            );
+        }
+    }
+
+    /// The seam carries exactly the record's facts, in the record's own
+    /// conventions, through the law's input boundary unchanged.
+    #[test]
+    fn accept_groundblow_probe_input_carries_the_sweep_record() {
+        let record = SegmentProbeHit {
+            distance_m: 123.5,
+            // The face's raw cross product: `|N|` is its area, not 1.
+            normal: [0.0, 40.0, 6.0],
+            owner: SegmentProbeOwner::Vehicle { on_path: true },
+        };
+        // Out of range on every stick so the law's own clamp really runs.
+        let input = OriginalInput {
+            roll: -7.0,
+            pitch: 9.0,
+            yaw: 3.0,
+            throttle: 4.0,
+            segment_probe: Some(record),
+            ..OriginalInput::default()
+        }
+        .clamped();
+        assert_eq!(input.segment_probe, Some(record));
+        assert_eq!((input.roll, input.pitch, input.yaw), (-1.0, 1.0, 1.0));
+        assert_eq!(input.throttle, 1.0);
+
+        // No probe by default: the original casts one every frame it runs, but
+        // a caller that says nothing must not be read as "there is a hit".
+        assert_eq!(OriginalInput::default().segment_probe, None);
+
+        // The three owner resolutions the player's skip gate distinguishes are
+        // three distinct values, and `on_path` is observable on its own.
+        assert_ne!(
+            SegmentProbeOwner::World,
+            SegmentProbeOwner::UnresolvedVehicleNode
+        );
+        assert_ne!(
+            SegmentProbeOwner::UnresolvedVehicleNode,
+            SegmentProbeOwner::Vehicle { on_path: false }
+        );
+        assert_ne!(
+            SegmentProbeOwner::Vehicle { on_path: false },
+            SegmentProbeOwner::Vehicle { on_path: true }
+        );
+    }
+
+    /// A filled probe changes no step and no state: #2107 adds the consumer, so
+    /// until then M01 must fly exactly as it did without one.
+    #[test]
+    fn accept_groundblow_probe_filled_probe_changes_no_trajectory() {
+        let banked = Quaternion::from_axis_angle(
+            cs_types::space::UnitVec3::FORWARD,
+            cs_types::space::Radians(0.5),
+        )
+        .expect("a banked attitude is a unit quaternion");
+        let record = SegmentProbeHit {
+            distance_m: 250.0,
+            normal: [3.0, 0.0, 12.0],
+            owner: SegmentProbeOwner::Vehicle { on_path: false },
+        };
+        for is_player in [true, false] {
+            let model = OriginalFlightModel::full(airframe(), globals());
+            let mut without = OriginalState::at(300.0, banked, 0.8, 1e9);
+            without.velocity_mps = [30.0, -12.0, -120.0];
+            let mut with = without.clone();
+            let plain = OriginalInput {
+                roll: 0.3,
+                pitch: -0.4,
+                yaw: 0.2,
+                throttle: 0.9,
+                is_player,
+                ..OriginalInput::default()
+            };
+            let probed = OriginalInput {
+                segment_probe: Some(record),
+                ..plain
+            };
+            for tick in 0..200 {
+                let bare = model
+                    .step(&mut without, plain, 0.01)
+                    .expect("the plain step is valid");
+                let filled = model
+                    .step(&mut with, probed, 0.01)
+                    .expect("the probed step is valid");
+                assert_eq!(filled, bare, "tick {tick} differs (is_player {is_player})");
+            }
+            assert_eq!(with, without, "is_player {is_player}");
+        }
     }
 }

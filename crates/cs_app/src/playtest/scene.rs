@@ -205,6 +205,10 @@ impl PlaytestOriginalFlight {
             engine_out: false,
             is_player: self.is_player,
             hold_attitude: self.hold_attitude,
+            // The ground blow's world sweep (#2210's seam): this record has no
+            // physics world to query, so it leaves the probe empty. The
+            // consumer and the completing query are #2107.
+            segment_probe: None,
         }
     }
 }

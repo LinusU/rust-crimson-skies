@@ -90,6 +90,7 @@ mod accept_f64_b_retail_import_surface;
 mod accept_flight_ai_parameter_randomisation;
 mod accept_flight_original_retail;
 mod accept_groundblow_normal_scale;
+mod accept_groundblow_probe;
 mod accept_groundblow_sweep;
 mod accept_hit_record_measurement;
 mod accept_m02_t2_world_group_missions;
