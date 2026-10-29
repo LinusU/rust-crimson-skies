@@ -30,10 +30,12 @@ measured engine facts).
    words `flags 0x24`, `unk040 0x28`, `unk044 0x2c`, `zone_id 0x30`, `node_type 0x34`). The
    reader `fread`s whole 212-byte slots verbatim into the runtime node table
    (`0x4e2890`…`0x4e298b`: the `212·n` arithmetic then `call [0xa201f8]`, `fread`), and its
-   per-node post-pass (`0x4e2a54`…`0x4e2b06`) rewrites exactly four fields — `+0x70` (the
-   stored-box pointer, `0`/`1`/`2` → `node+0x74`/`+0x8c`/`+0xa4`), `+0x3c` (the mesh index,
-   made absolute and resolved through `0x560170` into the mesh's polygon list), `+0x48`
-   (zeroed) and the `node_index` word at `+0xd0` — and then calls `0x4e2ba0`, which
+   per-node post-pass (`0x4e2a54`…`0x4e2b06`) rewrites only the fields that need an address in
+   this process — `+0x70` (the stored-box pointer, `0`/`1`/`2` →
+   `node+0x74`/`+0x8c`/`+0xa4`), `+0x3c` (the mesh index, made absolute and resolved through
+   `0x560170` into the mesh's polygon list), `+0x48` (zeroed), `+0x5c` (the children slot
+   array, allocated from the stored count at `+0x56`: `0x4e3253`…`0x4e3261`) and the
+   `node_index` word at `+0xd0` — and then calls `0x4e2ba0`, which
    **dispatches on `[node+0x34]` itself** to read the kind's own data record into
    `[node+0x38]`. There is no conversion table: `node+0x34` is the stored `node_type`.
 2. **From which retail field or rule: the stored `node_type` word** at offset `0x34` of the
@@ -88,8 +90,8 @@ measured engine facts).
      `0x0308871c` (7) and `0x0388031c` (1).
    * **Aircraft:** the vehicle's node is the plane container's node for that aircraft, looked
      up **by name** and **copied**. `0x477850` takes the plane record's name (`[record+4]`),
-     looks it up through `0x4d0280(name, 7)` → `0x4d0320` (a name-keyed walk of the list the
-     node loader fills with `0x4d0430(node, 7)`), and copies the result through
+     looks it up through `0x4d0280(7, name)` → `0x4d0320` (a name-keyed walk of the list the
+     node loader fills with `0x4d0430(7, node)`), and copies the result through
      `0x4d85a0` → `0x4d8470`. In `ZBD/planes.zbd` (3317 nodes) all **28 root nodes** are
      class 5, including M01's `bloodhawk` (slot 2363, flags `0x0308051c`, no mesh of its
      own; its five children `markers`/`healthy`/`shadow`/`destroyed`/`dontmove` are class 5,
@@ -137,18 +139,19 @@ measured engine facts).
 | `0x4e2964`…`0x4e2985` | the size arithmetic `lea eax,[ecx+ecx*2]; lea eax,[eax+eax*8]; shl eax,1; sub eax,ecx; shl eax,2` = **212·n**, then `fread(buf, 1, size, file)` through `[0xa201f8]` — the info records land in the runtime table unchanged |
 | `0x4e29cb`…`0x4e2a0d` | a slot that straddles a row boundary is zeroed and read in two pieces |
 | `0x4e2a54`…`0x4e2b06` | the per-node post-pass: `+0x70` box pointer fixup, `+0x3c` mesh index made absolute and resolved by `0x560170` into the node's polygon list, `+0x48 = 0`, `+0x34` **not written**, then `0x4e2ba0(node, file, base)` and the `+0xd0` index word's `0x3000000` bits set or cleared by its result |
-| `0x4e2ba0` | `fcn.004e2ba0(node, file, base)`: `mov eax,[esi+0x34]; cmp eax, 0xa; ja 0x4e3283; jmp [eax*4+0x4e32ac]`, then per kind `malloc`+`fread` the class record into `[node+0x38]` |
+| `0x4e2ba0` | `fcn.004e2ba0(node, file, base)`: `mov eax,[esi+0x34]; cmp eax, 0xa; ja 0x4e3283; jmp [eax*4+0x4e32ac]`, then per kind `malloc`+`fread` the class record into `[node+0x38]`; every branch ends at `0x4e31e0`, which allocates the children slot array from the stored count at `+0x56` into `+0x5c` (`0x4e3253`…`0x4e3261`) |
 | `0x4e32ac` | the eleven-entry table above; entry `5` is `0x4e2c83` (`push 0x90` then `fread`), entry `2` is `0x4e2f4a` (the world record the #727 finding measured) |
-| `0x4e2c6b`/`0x4e2c74` | after the record, the loader registers the node with `0x4d0430(node, 7)` and again in its kind's own list at `0x62cfb8` (`0xb` for object3d, `0xa`/`9`/`0x10`/`0xf`/`0xe` for the others), which is what makes it findable by name |
+| `0x4e2c6b`/`0x4e2c74` | after the record, the loader registers the node with `0x4d0430(7, node)` and again in its kind's own list at `0x62cfb8` (`0xb` for object3d, `0xa`/`9`/`0x10`/`0xf`/`0xe` for the others), which is what makes it findable by name |
 
-So a container node's class type is the file's; the loader writes the *other* per-node
-fields that need addresses in this process (`+0x70`, `+0x3c`, `+0xd0`) and nothing else.
+So a container node's class type is the file's; the loader writes only the *other* per-node
+fields that need an address in this process (`+0x70`, `+0x3c`, `+0x5c`, `+0x48`, `+0xd0`) and
+never the class word.
 
 ## 2. The runtime side: constructors write it, the copy preserves it
 
 | site | what it does |
 | --- | --- |
-| `0x4cc4f0` | the node allocator: a free slot from `[0x727c18]`'s 212-byte rows, `[0x62d414]` the next free index; `mov ecx, 0x34; rep stosd` zeroes 208 bytes, `or [slot+0xd0], 0x2000000` marks it live, `0x4d0430(node, 7)` registers it, `[slot+0x4c]=[slot+0x4e]=-1` (the area partition's default) |
+| `0x4cc4f0` | the node allocator: a free slot from `[0x727c18]`'s 212-byte rows, `[0x62d414]` the next free index; `mov ecx, 0x34; rep stosd` zeroes 208 bytes, `or [slot+0xd0], 0x2000000` marks it live, `0x4d0430(7, node)` registers it, `[slot+0x4c]=[slot+0x4e]=-1` (the area partition's default) |
 | `0x4d1363` | object3d constructor `0x4d1330`: `mov dword [esi+0x34], 5`, `malloc(0x90)` at `[+0x38]` |
 | `0x4e05ec` | lod constructor `0x4e05e0`: `mov dword [esi+0x34], 6`, `malloc(0x5c)`, then the LOD defaults (`1`, `0`, `1000.0`, `1000000.0`) |
 | `0x4d21bc` | camera constructor `0x4d2180`: `mov edi,1; … mov [esi+0x34], edi`, `malloc(0x1e8)` |
@@ -156,11 +159,11 @@ fields that need addresses in this process (`+0x70`, `+0x3c`, `+0xd0`) and nothi
 | `0x4d8568` | the copy table: `1→0x4d84d6`, `2→0x4d8524`, `3,4→0x4d8544`, `5→0x4d84bc`, `6→0x4d84c9`, `7→0x4d850a`, `8→0x4d84fd`, `9→0x4d84e3`, `10→0x4d84f0`, `11→0x4d8517` |
 | `0x4d84bc` | the object3d copy: `0x4d8160(node)` → `0x4d1330()` (constructor, writes 5) then `0x4d7b90(new, source)` |
 | `0x4d7b90` | the info copy: every flag-guarded field through its own setter — bit `0x04` → `0x4cca30` (active), `0x08` → `0x4ccf00`, `0x10` → `0x4cd210` (intersection), `0x20` → the bbox setter, and so on; the curve is the same per-bit dispatch #727 section D measured. **No store to `+0x34`** |
-| `0x4d850a`/`0x4d8450`, `0x4d8505`… | the kinds the copy also handles (`7`, `10`, `11`) — kind-typed copy routines of the same shape |
+| `0x4d8430`, `0x4d82a0`, `0x4d8140`, `0x4d8450` | the copy routines behind the table's `7`, `8`, `10` and `11` entries — same shape (class constructor, then the info copy); no CS container stores those kinds |
 
-`0x4d0430(node, list)` is how a node becomes findable by name: `0x4cf930()` takes an entry,
+`0x4d0430(list, node)` is how a node becomes findable by name: `0x4cf930()` takes an entry,
 `[entry] = node`, and the entry is linked into `[0x62cfb8 + list*4]`. `0x4d0320`
-(`0x4d0280(name, 7)` → it) walks that list comparing the name byte by byte and returns the
+(`0x4d0280(7, name)` → it) walks that list comparing the name byte by byte and returns the
 entry's node, moving the found entry to the head. That is the lookup the plane path uses.
 
 ## 3. Aircraft: the plane's own node, copied
@@ -168,7 +171,7 @@ entry's node, moving the found entry to the head. That is the lookup the plane p
 ```
 0x477850(record):
   if [record+8] != 0: node = [record+8]                       ; cached
-  else:  node = 0x4d0280([record+4], 7)                        ; find by the plane's name
+  else:  node = 0x4d0280(7, [record+4])                        ; find by the plane's name
          if node == 0: return 0
          [record+8] = node
   copy = 0x4d85a0(node, 1, 1)                                  ; → 0x4d8470(node)

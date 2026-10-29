@@ -9378,7 +9378,7 @@ provenance = "static"
 name = "class.name_register"
 va = 0x004d045f
 bytes = "e8ccf4ffff89308b0cbdb8cf62008b0985c9750b8b14bdfc"
-fact = "0x4d0430(node, list) makes a node findable by name: it takes a list entry (0x4cf930), stores the node in it ([entry] = node) and links it into the per-list head at [0x62cfb8 + list*4]; after every kind's record is read the node loader registers the node with list 7 and again in its kind's own list (0xb for object3d), which is how a plane's node is found later by name"
+fact = "0x4d0430(list, node) makes a node findable by name: it takes a list entry (0x4cf930), stores the node in it ([entry] = node) and links it into the per-list head at [0x62cfb8 + list*4]; after every kind's record is read the node loader registers the node with list 7 and again in its kind's own list (0xb for object3d), which is how a plane's node is found later by name"
 
 [[groundblow_class_fact]]
 claim = "OWNER-STATIC-2026-10-29"
@@ -9386,7 +9386,7 @@ provenance = "static"
 name = "class.name_lookup"
 va = 0x004d0320
 bytes = "a100eb710053555633d233ed85c0578bf8745c8b7424148b078a188acb3a1e751c84c974148a5801"
-fact = "0x4d0320 walks the list at [0x71eb00] comparing each entry's name byte by byte (the hand-inlined strcmp from 0x4d0339), moves the found entry to the head and returns the node it holds; 0x4d0280(name, 7) reaches it for the node-by-name lookup"
+fact = "0x4d0320 walks the list at [0x71eb00] comparing each entry's name byte by byte (the hand-inlined strcmp from 0x4d0339), moves the found entry to the head and returns the node it holds; 0x4d0280(7, name) reaches it for the node-by-name lookup"
 
 [[groundblow_class_fact]]
 claim = "OWNER-STATIC-2026-10-29"
@@ -9394,7 +9394,7 @@ provenance = "static"
 name = "class.plane_node_lookup"
 va = 0x00477850
 bytes = "568b7424088b460885c075158b4604506a07e8198a050083c40885c0894608743d6a016a0150e8250d06008b"
-fact = "0x477850 resolves a plane record's node: if [record+8] is not cached it looks the record's name ([record+4]) up through 0x4d0280(name, 7), stores it back at [record+8], and then copies it with 0x4d85a0(node,1,1) — so the aircraft's node is the loaded plane container's node of that name, copied with its class"
+fact = "0x477850 resolves a plane record's node: if [record+8] is not cached it looks the record's name ([record+4]) up through 0x4d0280(7, name), stores it back at [record+8], and then copies it with 0x4d85a0(node,1,1) — so the aircraft's node is the loaded plane container's node of that name, copied with its class"
 
 [[groundblow_class_fact]]
 claim = "OWNER-STATIC-2026-10-29"
