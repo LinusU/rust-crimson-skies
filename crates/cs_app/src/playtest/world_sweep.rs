@@ -57,11 +57,15 @@
 //! `0x71dab8` does not resolve it" case; the port has no node→vehicle registry
 //! and knows which entity owns the geometry it hit, so it never needs that
 //! walk and never produces that variant. `on_path` is the vehicle's `+0xcc`
-//! byte, which the record loader sets when the record carried a taxi path
-//! (`0x47c568`). **The port imports no plane path** — no component carries
-//! one — so every port vehicle states `on_path: false`, the loader's own
-//! default. Recording that is honest: it is what the port knows, not a claim
-//! that M01 has no parked aircraft.
+//! byte, which the record loader sets when the record's taxi-path field
+//! resolves to a `*_aipath` node with at least two points (`0x47c3a9` —
+//! `0x47c568`). The port carries that flag on
+//! [`crate::mission_actors::ScriptedAircraftActor::on_path`] (#2215): the
+//! spawn resolves the record's field-40 name through the compose's
+//! [`crate::mission_session::MissionTaxiPaths`] table,
+//! so an aircraft whose record names a path reports `on_path: true` here —
+//! and M01's five measured records name none, so they state `false`, the
+//! loader's own answer for them, not a claim that no retail aircraft taxis.
 //!
 //! # What this query does **not** reproduce, and why
 //!
@@ -233,15 +237,19 @@ pub struct SweepTarget<'a> {
 /// The owner one collider resolves to for the player's skip gate, or `None`
 /// when the sweep does not test the collider at all.
 ///
-/// The three inputs are everything the production query and the read-only
+/// The five inputs are everything the production query and the read-only
 /// [`probe_in_world`] path can both see: the two scenery markers, the body's
-/// declaration layer, and whether the entity is the prober.
+/// declaration layer, whether the entity is the prober, and the vehicle's
+/// own `+0xcc` on-path flag — `false` for a body that is not a scripted
+/// aircraft at all, exactly as the original's registry walk resolves no
+/// vehicle there and the gate's `+0xcc == 0` default applies.
 #[must_use]
 pub fn owner_of(
     is_sea: bool,
     is_scenery: bool,
     layer: CollisionLayer,
     is_prober: bool,
+    on_path: bool,
 ) -> Option<SegmentProbeOwner> {
     if is_prober {
         // `0x4cca30(node, 0)` clears the probing vehicle's own node so the
@@ -253,9 +261,9 @@ pub fn owner_of(
     }
     if layer == CollisionLayer::Aircraft {
         // The port resolves the aircraft body itself, so the registry walk of
-        // `0x4afee0` has nothing to search; the `+0xcc` path flag is not
-        // imported (module docs).
-        return Some(SegmentProbeOwner::Vehicle { on_path: false });
+        // `0x4afee0` has nothing to search; `on_path` is the vehicle's own
+        // `+0xcc` byte, imported on `ScriptedAircraftActor` (#2215).
+        return Some(SegmentProbeOwner::Vehicle { on_path });
     }
     None
 }
@@ -283,13 +291,20 @@ pub fn target_of<'a>(
     rotation: Quat,
     kind: ColliderKind,
     prober: Entity,
+    on_path: bool,
 ) -> Option<SweepTarget<'a>> {
     Some(SweepTarget {
         entity,
         collider,
         position,
         rotation,
-        owner: owner_of(kind.is_sea, kind.is_scenery, kind.layer, entity == prober)?,
+        owner: owner_of(
+            kind.is_sea,
+            kind.is_scenery,
+            kind.layer,
+            entity == prober,
+            on_path,
+        )?,
         class_type: OBJECT3D_CLASS_TYPE,
     })
 }
@@ -528,6 +543,7 @@ pub struct SweepColliders<'w, 's> {
             &'static BodyLayer,
             Has<PlaytestSea>,
             Has<WorldSceneryCollider>,
+            Option<&'static crate::mission_actors::ScriptedAircraftActor>,
         ),
     >,
 }
@@ -536,13 +552,21 @@ impl SweepColliders<'_, '_> {
     /// Every collider the sweep tests.
     fn targets(&self, prober: Entity) -> impl Iterator<Item = SweepTarget<'_>> {
         self.colliders.iter().filter_map(
-            move |(entity, collider, position, rotation, layer, is_sea, is_scenery)| {
+            move |(entity, collider, position, rotation, layer, is_sea, is_scenery, actor)| {
                 let kind = ColliderKind {
                     layer: layer.0,
                     is_sea,
                     is_scenery,
                 };
-                target_of(entity, collider, position.0, rotation.0, kind, prober)
+                target_of(
+                    entity,
+                    collider,
+                    position.0,
+                    rotation.0,
+                    kind,
+                    prober,
+                    actor.is_some_and(|actor| actor.on_path),
+                )
             },
         )
     }
@@ -685,7 +709,18 @@ pub fn probe_in_world(
             is_sea: entity.contains::<PlaytestSea>(),
             is_scenery: entity.contains::<WorldSceneryCollider>(),
         };
-        target_of(entity.id(), collider, body.0, rotation.0, kind, prober)
+        let on_path = entity
+            .get::<crate::mission_actors::ScriptedAircraftActor>()
+            .is_some_and(|actor| actor.on_path);
+        target_of(
+            entity.id(),
+            collider,
+            body.0,
+            rotation.0,
+            kind,
+            prober,
+            on_path,
+        )
     });
     nearest_contact(&segment, targets)
 }

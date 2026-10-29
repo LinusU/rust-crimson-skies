@@ -186,8 +186,13 @@ fn accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prob
     let aircraft = Entity::from_raw_u32(11).expect("an entity id");
     // 200 m ahead of the probe's start, on the `Aircraft` layer with no
     // scenery marker.
-    let owner =
-        cs_app::playtest::world_sweep::owner_of(false, false, CollisionLayer::Aircraft, false);
+    let owner = cs_app::playtest::world_sweep::owner_of(
+        false,
+        false,
+        CollisionLayer::Aircraft,
+        false,
+        false,
+    );
     assert_eq!(owner, Some(SegmentProbeOwner::Vehicle { on_path: false }));
     let target = SweepTarget {
         entity: aircraft,
@@ -210,17 +215,29 @@ fn accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prob
 
     // The prober's own geometry is excluded (`0x4cca30(node, 0)`).
     assert_eq!(
-        cs_app::playtest::world_sweep::owner_of(false, false, CollisionLayer::Aircraft, true),
+        cs_app::playtest::world_sweep::owner_of(
+            false,
+            false,
+            CollisionLayer::Aircraft,
+            true,
+            false
+        ),
         None
     );
     // Anything that is neither scenery nor an aircraft body is not a world
     // node the port's sweep answers for.
     assert_eq!(
-        cs_app::playtest::world_sweep::owner_of(false, false, CollisionLayer::Debris, false),
+        cs_app::playtest::world_sweep::owner_of(false, false, CollisionLayer::Debris, false, false),
         None
     );
     assert_eq!(
-        cs_app::playtest::world_sweep::owner_of(true, false, CollisionLayer::StaticWorld, true),
+        cs_app::playtest::world_sweep::owner_of(
+            true,
+            false,
+            CollisionLayer::StaticWorld,
+            true,
+            false
+        ),
         None
     );
 }
