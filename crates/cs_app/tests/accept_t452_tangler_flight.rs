@@ -69,15 +69,22 @@ const TICKS_PER_SECOND: u32 = 30;
 const FIXED_HZ: u32 = 30;
 
 /// The mount node's pose: the position the fire path reads. The field is
-/// centred on the projectile's position when it bursts, not on this pose, so
-/// the two must stay apart.
+/// centred on the point of contact when the projectile bursts, not on this pose,
+/// so the two must stay apart.
 const MOUNT_ORIGIN: [f64; 3] = [4.0, 5.0, 10.0];
 
-/// Where the fixture projectile is on the burst tick: it leaves
+/// Where the fixture projectile is at the end of the burst tick: it leaves
 /// [`MOUNT_ORIGIN`] along -z at the record's measured `VELOCITY` (300 m/s, 10 m
-/// per 30 Hz tick) and has advanced on ticks 0, 1 and 2, so the field opens
-/// here (task #2203).
+/// per 30 Hz tick) and has advanced on ticks 0, 1 and 2.
 const BURST_CENTRE: [f64; 3] = [4.0, 5.0, -20.0];
+
+/// Where in the burst tick the swept contact happens: half a tick, 5 m before
+/// [`BURST_CENTRE`].
+const CONTACT_TIME: f64 = 0.5;
+
+/// The point of contact on the item's own swept segment
+/// (`previous + t * (current - previous)`), where the field opens (task #2205).
+const CONTACT_CENTRE: [f64; 3] = [4.0, 5.0, -15.0];
 
 /// The tick a swept contact bursts the projectile in these tests.
 const BURST_TICK: u64 = 2;
@@ -86,7 +93,7 @@ const BURST_TICK: u64 = 2;
 /// 10 m radius. `d2 = 64`, so the measured `max(2 s, 10 * (1 - d2 / RADIUS))`
 /// lands on its 2 s floor — the field's own `TIME`, and therefore the exact
 /// span this test can drive in one pass.
-const VICTIM_ORIGIN: [f64; 3] = [12.0, 5.0, -20.0];
+const VICTIM_ORIGIN: [f64; 3] = [12.0, 5.0, -15.0];
 
 /// `wep_12`'s measured `TIME`, seconds (T452-R.02 §1).
 const TANGLER_TIME_S: f64 = 2.0;
@@ -417,7 +424,7 @@ fn impact_on(victim: ActorId) -> SweptHit {
     SweptHit {
         projectile: projectile(0),
         target: victim,
-        time_of_impact: 0.5,
+        time_of_impact: CONTACT_TIME,
     }
 }
 
@@ -703,8 +710,13 @@ fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_t
             assert_eq!(open.len(), 1);
             assert_eq!(
                 open[0].centre,
+                position(CONTACT_CENTRE),
+                "the field opens at the point of contact, not the tick-end position"
+            );
+            assert_ne!(
+                open[0].centre,
                 position(BURST_CENTRE),
-                "the field opens at the projectile's position at its burst"
+                "the centre is the contact, not the item's end-of-tick position"
             );
             assert_ne!(
                 open[0].centre,

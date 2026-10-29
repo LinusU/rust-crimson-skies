@@ -40,7 +40,8 @@
 //! tick lives at this boundary, which sees both. Task #2186 gives that ledger
 //! a production producer: a registered component with a measured
 //! [`measured_tangler_field`] opens its field when the projectile bursts, at
-//! the projectile's position (task #2203), and a recorded `wep_12` registers with that field instead
+//! the point of contact for a swept hit and at the projectile's tick-end
+//! position otherwise (tasks #2203, #2205), and a recorded `wep_12` registers with that field instead
 //! of the one-shot bounded area the runtime's `AreaEffect` expresses.
 //!
 //! [`session_ordnance_audit`] is the one reader that walks a whole live
@@ -82,7 +83,7 @@ use cs_sim::damage::{DamageError, DamageResolver, HitEvent, TickResolution};
 use cs_sim::time::TickRate;
 use cs_sim::weapons::{
     AreaInstanceId, ExpiredArea, ExpiredStatusEffect, FuseDecision, FuseTrigger, GuidanceTick,
-    MountTransform, NitroTick, OrdnanceRuntime, OrdnanceRuntimeError, ProjectileId,
+    LiveOrdnance, MountTransform, NitroTick, OrdnanceRuntime, OrdnanceRuntimeError, ProjectileId,
     StatusEffectInstanceId, StatusEffectTarget, SweptHit, TargetObservation, TargetPath,
 };
 use cs_types::Tick;
@@ -867,6 +868,35 @@ pub struct OrdnanceNetworkEvent {
     pub kind: OrdnanceEventKind,
 }
 
+/// Where a burst opens its tangler field (tasks #2203, #2205).
+///
+/// The hook `0x4ba660` centres the field on the projectile's own slot
+/// `rocket+0x48` (`docs/findings/2026-10-29-t452-tangler-origin.md`). On a
+/// contact burst the original fills that slot from the hit record's position
+/// (`0x5b06df..0x5b06f4`, `docs/findings/2026-10-29-t452-tangler-contact-centre.md`),
+/// so the field is centred on the point of contact, not on where the item
+/// happened to be at the end of the tick.
+///
+/// A swept contact carries the fraction of the tick at which it happened
+/// ([`FuseTrigger::Impact`]), and the item's own swept segment is
+/// [`LiveOrdnance::previous`] → [`LiveOrdnance::current`], so the contact point
+/// is the position on that segment at that fraction. A trigger that is not a
+/// contact — a timed fuse or a proximity radius — has no such point, so it
+/// keeps the item's tick-end position.
+fn burst_field_centre(item: &LiveOrdnance, trigger: &FuseTrigger) -> WorldPosition {
+    let FuseTrigger::Impact { time, .. } = trigger else {
+        return item.current();
+    };
+    let previous = item.previous().to_array();
+    let current = item.current().to_array();
+    let contact = [0, 1, 2].map(|axis| previous[axis] + time * (current[axis] - previous[axis]));
+    // The sweep reports a fraction in [0, 1] between two finite segment ends,
+    // so the point is finite. A caller that hands a non-finite fraction to the
+    // public `SweptHit` gets the segment end, the last position the runtime
+    // recorded, rather than a field centre that is not a world position.
+    WorldPosition::try_new(contact).unwrap_or_else(|_| item.current())
+}
+
 /// Opens the measured tangler field of a component that just burst, if it has
 /// one (task #2203).
 ///
@@ -874,7 +904,8 @@ pub struct OrdnanceNetworkEvent {
 /// `0x5ac7a0` and centres the field on the projectile's own position at that
 /// burst (`rocket+0x48`), owned by the shooter
 /// (`docs/findings/2026-10-29-t452-tangler-origin.md`). The caller passes the
-/// position the runtime holds for the item on the tick it bursts.
+/// centre: [`burst_field_centre`] for a trigger, the item's last recorded
+/// position for a guidance-loss detonation.
 fn open_burst_tangler(
     session: &mut OrdnanceSession,
     tick: &mut OrdnanceSessionTick,
@@ -1413,8 +1444,9 @@ pub struct OrdnanceSession {
     tangler: TanglerLedger,
     /// The measured tangler field each registered component opens when it bursts
     /// (tasks #2186, #2203), keyed by the component's id. A burst of a keyed id
-    /// opens that field at the projectile's position; an id with no entry opens
-    /// none.
+    /// opens that field at the point of contact for a swept hit and at the
+    /// item's tick-end position otherwise (task #2205); an id with no entry
+    /// opens none.
     tangler_fields: BTreeMap<OrdnanceId, TanglerFieldDeclaration>,
     resolved_through: Option<Tick>,
     closed: bool,
@@ -1684,14 +1716,18 @@ impl OrdnanceSession {
     }
 
     /// Declares that a component opens `declaration`'s measured tangler field
-    /// when it bursts (tasks #2186, #2203).
+    /// when it bursts (tasks #2186, #2203, #2205).
     ///
     /// This is the burst producer: the field constructor `0x4b94e0` is called
     /// only from the TANGLER hook `0x4ba660`, which the burst function
-    /// `0x5ac7a0` calls, centred on the projectile's position
+    /// `0x5ac7a0` calls, centred on the projectile's `rocket+0x48`
     /// (`docs/findings/2026-10-29-t452-tangler-origin.md`). A launch alone
-    /// opens nothing; the burst tick and the projectile's position there are
-    /// the opening tick and the centre, never a clock or a pose invented here.
+    /// opens nothing; the burst tick is the opening tick. A swept contact
+    /// centres the field on the point of contact, which the original writes
+    /// into `rocket+0x48` before it bursts
+    /// (`docs/findings/2026-10-29-t452-tangler-contact-centre.md`), and every
+    /// other end of flight keeps the item's tick-end position — never a clock
+    /// or a pose invented here.
     ///
     /// The declaration must be the measured shape this runtime can fly: a
     /// field created at fire time and re-applied every tick. A declaration
@@ -2015,7 +2051,8 @@ pub struct OpenTanglerField {
     /// The actor whose weapon opened it. It is hit like every other actor
     /// inside; the measured tick excludes nobody.
     pub owner: ActorId,
-    /// Where it is centred: the projectile's position at its burst.
+    /// Where it is centred: the point of contact for a swept hit, otherwise
+    /// the projectile's tick-end position at its burst (task #2205).
     pub centre: WorldPosition,
     /// Its radius, metres, unsquared.
     pub radius_m: f64,
@@ -3063,10 +3100,12 @@ pub fn step_ordnance_session(
                 };
 
                 // Every fuse trigger reaches the original's burst function, so
-                // the tangler field opens here, where the item is now.
+                // the tangler field opens here: on a swept contact at the
+                // interpolated point of contact, otherwise at the position the
+                // item ended this tick at.
                 if let Some(item) = session.runtime.get(&projectile) {
                     let ordnance = item.definition().ordnance().clone();
-                    let centre = item.current();
+                    let centre = burst_field_centre(item, &trigger);
                     open_burst_tangler(session, &mut tick, step.at, &ordnance, shooter, centre);
                 }
 
@@ -5539,9 +5578,11 @@ pub fn register_measured_ordnance(
                             // registered `TANGLER` record reports the field its
                             // burst will open along with the id. Every part the
                             // earlier stages left unpinned is measured now: the
-                            // origin is the projectile's position at its burst
-                            // (task #2203) and the suppressed force scalar is
-                            // the force block's thrust magnitude (task #2179),
+                            // origin is the point of contact for a swept hit
+                            // (task #2205, the hit position the original writes
+                            // into `rocket+0x48`) and the projectile's tick-end
+                            // position otherwise, and the suppressed force scalar
+                            // is the force block's thrust magnitude (task #2179),
                             // so the field keeps no claim of its own.
                             if let Some(field) = measured_tangler_field(row) {
                                 tangler_fields.push(field);

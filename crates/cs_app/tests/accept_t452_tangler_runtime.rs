@@ -63,10 +63,20 @@ const TICKS_PER_SECOND: u32 = 30;
 /// origin cannot pass.
 const MOUNT_ORIGIN: [f64; 3] = [4.0, 5.0, 10.0];
 
-/// Where the fixture projectile is on the burst tick (`BURST_TICK`): it leaves
-/// the mount at `MOUNT_ORIGIN` flying 10 m per tick along -z, and has advanced
-/// on each of ticks 0, 1 and 2.
+/// Where the fixture projectile is at the end of the burst tick (`BURST_TICK`):
+/// it leaves the mount at `MOUNT_ORIGIN` flying 10 m per tick along -z, and has
+/// advanced on each of ticks 0, 1 and 2.
 const BURST_CENTRE: [f64; 3] = [4.0, 5.0, -20.0];
+
+/// Where in the burst tick the fixture's swept contact happens: half a tick,
+/// 5 m before `BURST_CENTRE`.
+const CONTACT_TIME: f64 = 0.5;
+
+/// The point of contact on the item's own swept segment,
+/// `previous + t * (current - previous)` with `previous = [4, 5, -10]` and
+/// `current = BURST_CENTRE`. The field opens here (task #2205), not at
+/// `BURST_CENTRE` and not at the mount pose.
+const CONTACT_CENTRE: [f64; 3] = [4.0, 5.0, -15.0];
 
 /// The tick a swept impact bursts the projectile in these tests.
 const BURST_TICK: u64 = 2;
@@ -149,6 +159,20 @@ fn tangler_row() -> OriginalComponentLaunch {
         }],
         cluster: OriginalClusterShape::Volley { munitions: 2 },
         unknowns: Vec::new(),
+    }
+}
+
+/// The same measured `wep_12` with a declared lifetime instead of the record's
+/// own silent `RANGE` end, so the runtime's **timed fuse** ends it: the only
+/// non-contact trigger this session can reach, used to check that a burst with
+/// no swept contact keeps the item's tick-end position (task #2205).
+fn timed_tangler_row() -> OriginalComponentLaunch {
+    OriginalComponentLaunch {
+        lifetime: OriginalLifetime::Declared {
+            seconds: 0.1,
+            key: "LIFETIME",
+        },
+        ..tangler_row()
     }
 }
 
@@ -247,8 +271,13 @@ fn position(at: [f64; 3]) -> WorldPosition {
 
 /// `wep_12`'s measured declaration through the production lowering.
 fn lowered_tangler() -> DeclaredOrdnance {
+    lowered_tangler_row(&tangler_row())
+}
+
+/// One fixture row's measured declaration through the production lowering.
+fn lowered_tangler_row(row: &OriginalComponentLaunch) -> DeclaredOrdnance {
     measured_ordnance_declaration(
-        &tangler_row(),
+        row,
         &tangler_record(),
         &tangler_media(),
         &tangler_ammo(),
@@ -266,10 +295,16 @@ fn tangler_field() -> TanglerFieldDeclaration {
 /// A session whose catalogue holds the registered fixture component, with the
 /// shooter's component registered and (optionally) its measured field declared.
 fn session_with_field(declare_field: bool) -> OrdnanceSession {
-    let declared = lowered_tangler();
+    session_with_field_row(&tangler_row(), declare_field)
+}
+
+/// [`session_with_field`] for one named fixture row: the record's measured
+/// shape, its field lowered by the production registration.
+fn session_with_field_row(row: &OriginalComponentLaunch, declare_field: bool) -> OrdnanceSession {
+    let declared = lowered_tangler_row(row);
     let mut catalogue = OrdnanceRegistry::new();
     let report = register_measured_ordnance(
-        &table(vec![tangler_row()]),
+        &table(vec![row.clone()]),
         &[tangler_record()],
         &[tangler_media()],
         &[tangler_ammo()],
@@ -422,12 +457,18 @@ fn accept_t452_tangler_runtime_a_registered_wep_12_carries_its_measured_field() 
     assert_eq!(field.status.floor_s, TANGLE_FLOOR_S);
 }
 
-/// A swept hit that bursts the launched projectile on its tick.
+/// A swept hit that bursts the launched projectile on its tick: half a tick
+/// after the start of that tick's segment.
 fn impact_on(victim: ActorId) -> SweptHit {
+    contact_on(victim, CONTACT_TIME)
+}
+
+/// A swept hit at a named fraction of the burst tick.
+fn contact_on(victim: ActorId, time_of_impact: f64) -> SweptHit {
     SweptHit {
         projectile: projectile(0),
         target: victim,
-        time_of_impact: 0.5,
+        time_of_impact,
     }
 }
 
@@ -467,6 +508,19 @@ fn fire_and_burst(
     damage: &mut DamageResolver,
     targets: &[TargetPath],
 ) -> OrdnanceSessionTick {
+    fire_and_contact(world, session, damage, targets, CONTACT_TIME)
+}
+
+/// Fires on tick 0, flies one quiet tick, and bursts the projectile on
+/// `BURST_TICK` with a swept contact at `time_of_impact`; returns the burst
+/// tick's report.
+fn fire_and_contact(
+    world: &mut World,
+    session: &mut OrdnanceSession,
+    damage: &mut DamageResolver,
+    targets: &[TargetPath],
+    time_of_impact: f64,
+) -> OrdnanceSessionTick {
     let first = step(world, session, damage, &[launch_order()], &[], 0);
     assert_eq!(first.launched, vec![projectile(0)]);
     assert!(first.tangler_opened.is_empty());
@@ -477,15 +531,16 @@ fn fire_and_burst(
         session,
         damage,
         targets,
-        &[impact_on(actor(2))],
+        &[contact_on(actor(2), time_of_impact)],
         BURST_TICK,
     )
 }
 
 /// A launch alone opens no field (task #2203): the original's field constructor
 /// is reached only from the burst hook, so the fire tick opens nothing. The
-/// burst tick opens it at the projectile's position there — not the launch
-/// pose, not the world origin — owned by the shooter.
+/// burst tick opens it at the point of contact on the item's own swept segment
+/// (task #2205) — not the tick-end position, not the launch pose, not the world
+/// origin — owned by the shooter.
 #[test]
 fn accept_t452_tangler_runtime_a_launch_opens_nothing_and_the_burst_opens_the_field() {
     let mut session = session_with_field(true);
@@ -540,10 +595,15 @@ fn accept_t452_tangler_runtime_a_launch_opens_nothing_and_the_burst_opens_the_fi
         "the centre is where the projectile flew to, not where it was fired"
     );
     assert_ne!(field.centre, position([0.0, 0.0, 0.0]));
-    assert_eq!(
+    assert_ne!(
         field.centre,
         position(BURST_CENTRE),
-        "the centre is the projectile's position at the burst"
+        "the centre is the point of contact, not the item's tick-end position"
+    );
+    assert_eq!(
+        field.centre,
+        position(CONTACT_CENTRE),
+        "the centre is the interpolated point of contact on the swept segment"
     );
     assert_eq!(
         field.lifetime_ticks, TANGLER_LIFETIME_TICKS,
@@ -552,6 +612,144 @@ fn accept_t452_tangler_runtime_a_launch_opens_nothing_and_the_burst_opens_the_fi
     assert_eq!(field.opened_at, Tick(2), "opened on the burst tick");
     assert_eq!(field.expires_at, Tick(2 + TANGLER_LIFETIME_TICKS));
     assert_eq!(field.radius_m, 10.0);
+}
+
+/// Task #2205: a swept contact well inside the tick opens the field at the
+/// interpolated point of contact. The original writes the hit record's
+/// position (`[record+0xc]`) into the projectile's `rocket+0x48` before it
+/// calls the burst function (`0x5b06df..0x5b06f4`), and the TANGLER hook
+/// centres the field on that slot, so the centre is the contact and neither the
+/// item's tick-end position nor the mount pose.
+#[test]
+fn accept_t452_tangler_runtime_a_contact_opens_the_field_at_the_interpolated_point() {
+    let mut session = session_with_field(true);
+    let mut world = World::new();
+    launcher(&mut world);
+    let mut damage = damage_resolver();
+    // The segment on the burst tick is [4, 5, -10] -> [4, 5, -20]; a quarter of
+    // the way through it is [4, 5, -12.5].
+    let victim = path(actor(2), [4.0, 5.0, -12.5]);
+
+    let burst = fire_and_contact(
+        &mut world,
+        &mut session,
+        &mut damage,
+        std::slice::from_ref(&victim),
+        0.25,
+    );
+    assert_eq!(burst.detonations.len(), 1, "the impact bursts the item");
+    assert_eq!(
+        burst.tangler_opened,
+        vec![field_id(0)],
+        "the contact burst opens the field"
+    );
+    let open = session.tangler_fields();
+    assert_eq!(open.len(), 1);
+    let field = &open[0];
+    assert_eq!(
+        field.centre,
+        position([4.0, 5.0, -12.5]),
+        "the centre is previous + t * (current - previous) on the swept segment"
+    );
+    assert_ne!(
+        field.centre,
+        position(BURST_CENTRE),
+        "the centre is the contact, not the item's end-of-tick position"
+    );
+    assert_ne!(
+        field.centre,
+        position(MOUNT_ORIGIN),
+        "the centre is not the pose the weapon fired from"
+    );
+}
+
+/// Task #2205: a contact at the very end of the tick is the tick-end position,
+/// so the interpolation adds nothing where the original's hit record would
+/// already name the item's own position.
+#[test]
+fn accept_t452_tangler_runtime_a_contact_at_the_end_of_the_tick_opens_at_the_tick_end() {
+    let mut session = session_with_field(true);
+    let mut world = World::new();
+    launcher(&mut world);
+    let mut damage = damage_resolver();
+    let victim = path(actor(2), BURST_CENTRE);
+
+    let burst = fire_and_contact(
+        &mut world,
+        &mut session,
+        &mut damage,
+        std::slice::from_ref(&victim),
+        1.0,
+    );
+    assert_eq!(burst.tangler_opened, vec![field_id(0)]);
+    let open = session.tangler_fields();
+    let field = &open[0];
+    assert_eq!(
+        field.centre,
+        position(BURST_CENTRE),
+        "a contact at t = 1 is the item's tick-end position, exactly"
+    );
+    assert_ne!(
+        field.centre,
+        position(MOUNT_ORIGIN),
+        "the centre is still not the pose the weapon fired from"
+    );
+}
+
+/// Task #2205: a trigger that is not a contact is not interpolated. A timed
+/// fuse ends the item on a tick with no swept hit at all, so the field opens at
+/// the position the runtime last recorded.
+#[test]
+fn accept_t452_tangler_runtime_a_timed_fuse_without_a_contact_opens_at_the_tick_end() {
+    let mut session = session_with_field_row(&timed_tangler_row(), true);
+    let mut world = World::new();
+    launcher(&mut world);
+    let mut damage = damage_resolver();
+    let victim = path(actor(2), BURST_CENTRE);
+
+    let first = step(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[launch_order()],
+        &[],
+        0,
+    );
+    assert_eq!(first.launched, vec![projectile(0)]);
+    assert!(first.tangler_opened.is_empty(), "the launch opens no field");
+
+    // `Declared { seconds: 0.1 }` at 30 Hz is a 3-tick fuse: the item has lived
+    // ticks 0, 1 and 2 when it ends on tick 2, at [4, 5, 10] - 3 * [0, 0, 10].
+    let mut opened = None;
+    for at in 1..=4 {
+        let tick = step(
+            &mut world,
+            &mut session,
+            &mut damage,
+            &[],
+            std::slice::from_ref(&victim),
+            at,
+        );
+        if !tick.tangler_opened.is_empty() {
+            opened = Some((at, tick));
+            break;
+        }
+    }
+    let (at, burst) = opened.expect("the timed fuse bursts the item");
+    assert_eq!(at, 2, "the third live tick ends the 0.1 s fuse");
+    assert_eq!(burst.tangler_opened, vec![field_id(0)]);
+    let open = session.tangler_fields();
+    let field = &open[0];
+    assert_eq!(
+        field.centre,
+        position(BURST_CENTRE),
+        "with no contact the field keeps the item's tick-end position"
+    );
+    assert_ne!(
+        field.centre,
+        position(MOUNT_ORIGIN),
+        "the centre is not the pose the weapon fired from"
+    );
 }
 
 /// A component with no measured field registered opens none, so the field is a
@@ -619,7 +817,7 @@ fn accept_t452_tangler_runtime_the_field_lasts_its_time_and_reapplies_each_tick(
     let mut world = World::new();
     launcher(&mut world);
     let mut damage = damage_resolver();
-    let victim = path(actor(2), BURST_CENTRE);
+    let victim = path(actor(2), CONTACT_CENTRE);
 
     let first = fire_and_burst(
         &mut world,
@@ -692,8 +890,8 @@ fn accept_t452_tangler_runtime_the_shooter_inside_the_field_is_tangled() {
     let mut world = World::new();
     launcher(&mut world);
     let mut damage = damage_resolver();
-    let owner = path(actor(1), BURST_CENTRE);
-    let victim = path(actor(2), BURST_CENTRE);
+    let owner = path(actor(1), CONTACT_CENTRE);
+    let victim = path(actor(2), CONTACT_CENTRE);
 
     let first = fire_and_burst(&mut world, &mut session, &mut damage, &[owner, victim]);
     let applied: Vec<ActorId> = first.tangler[0]
@@ -728,14 +926,22 @@ fn accept_t452_tangler_runtime_an_actor_outside_the_radius_is_untouched() {
     let at_the_edge = actor(3);
     let outside = actor(4);
     let paths = [
-        path(inside, BURST_CENTRE),
+        path(inside, CONTACT_CENTRE),
         path(
             at_the_edge,
-            [BURST_CENTRE[0] + 10.0, BURST_CENTRE[1], BURST_CENTRE[2]],
+            [
+                CONTACT_CENTRE[0] + 10.0,
+                CONTACT_CENTRE[1],
+                CONTACT_CENTRE[2],
+            ],
         ),
         path(
             outside,
-            [BURST_CENTRE[0] + 10.5, BURST_CENTRE[1], BURST_CENTRE[2]],
+            [
+                CONTACT_CENTRE[0] + 10.5,
+                CONTACT_CENTRE[1],
+                CONTACT_CENTRE[2],
+            ],
         ),
     ];
 
@@ -775,7 +981,7 @@ fn accept_t452_tangler_runtime_a_rehit_never_shortens_the_timer_and_it_expires_a
         &mut world,
         &mut session,
         &mut damage,
-        &[path(victim, BURST_CENTRE)],
+        &[path(victim, CONTACT_CENTRE)],
     );
     assert_eq!(first.tangler[0].applied[0].duration_ticks, 300);
     let tangle = session.tangle_status(&victim).expect("tangled");
@@ -789,7 +995,11 @@ fn accept_t452_tangler_runtime_a_rehit_never_shortens_the_timer_and_it_expires_a
     // A later tick inside the field at 2 m: the formula divides the *squared*
     // distance by the unsquared RADIUS, so 10 * (1 - 4/10) = 6 s = 180 ticks —
     // shorter than the live timer, so the timer must not move.
-    let nearer = [BURST_CENTRE[0] + 2.0, BURST_CENTRE[1], BURST_CENTRE[2]];
+    let nearer = [
+        CONTACT_CENTRE[0] + 2.0,
+        CONTACT_CENTRE[1],
+        CONTACT_CENTRE[2],
+    ];
     let second = step(
         &mut world,
         &mut session,
@@ -818,7 +1028,11 @@ fn accept_t452_tangler_runtime_a_rehit_never_shortens_the_timer_and_it_expires_a
     // The field dies at tick 60; the victim leaves the radius, so nothing
     // re-raises the timer, and it keeps counting down on its own boundary at
     // tick 300, after the field that applied it is gone.
-    let away = [BURST_CENTRE[0] + 10.5, BURST_CENTRE[1], BURST_CENTRE[2]];
+    let away = [
+        CONTACT_CENTRE[0] + 10.5,
+        CONTACT_CENTRE[1],
+        CONTACT_CENTRE[2],
+    ];
     for at in (BURST_TICK + 2)..=(BURST_TICK + TANGLER_LIFETIME_TICKS) {
         let tick = step(
             &mut world,
@@ -872,8 +1086,9 @@ fn accept_t452_tangler_runtime_a_rehit_never_shortens_the_timer_and_it_expires_a
 }
 
 /// Over the owner's installation the same production path registers the real
-/// `wep_12` and opens its measured field: 10 m, `TIME 2`, opened by the burst, centred on the
-/// path's pose.
+/// `wep_12` and opens its measured field: 10 m, `TIME 2`, opened by the burst,
+/// centred on the point of contact rather than on the path's pose or the
+/// projectile's tick-end position.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t452_tangler_runtime_retail_the_measured_wep_12_opens_its_field() {
@@ -964,10 +1179,19 @@ fn accept_t452_tangler_runtime_retail_the_measured_wep_12_opens_its_field() {
     launcher(&mut world);
     let mut damage = damage_resolver();
     let victim = actor(2);
-    // The record's own VELOCITY, flown for the three advances up to the burst
-    // tick, along the fixture mount's -z launch direction.
-    let flown_m = row.velocity.expect("wep_12 declares VELOCITY") * DT_S * 3.0;
-    let centre = [BURST_CENTRE[0], BURST_CENTRE[1], MOUNT_ORIGIN[2] - flown_m];
+    // The record's own VELOCITY, flown along the fixture mount's -z launch
+    // direction. The item has advanced on ticks 0, 1 and 2, and the contact
+    // happens `CONTACT_TIME` into the third: the point of contact is
+    // `2 + CONTACT_TIME` tick-lengths before the mount, one half-tick short of
+    // the tick-end position (task #2205).
+    let speed = row.velocity.expect("wep_12 declares VELOCITY");
+    let flown_m = speed * DT_S * 3.0;
+    let centre = [
+        BURST_CENTRE[0],
+        BURST_CENTRE[1],
+        MOUNT_ORIGIN[2] - speed * DT_S * (2.0 + CONTACT_TIME),
+    ];
+    let tick_end = [BURST_CENTRE[0], BURST_CENTRE[1], MOUNT_ORIGIN[2] - flown_m];
     let first = fire_and_burst(
         &mut world,
         &mut session,
@@ -978,6 +1202,11 @@ fn accept_t452_tangler_runtime_retail_the_measured_wep_12_opens_its_field() {
     let open = session.tangler_fields();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].centre, position(centre));
+    assert_ne!(
+        open[0].centre,
+        position(tick_end),
+        "the field is centred on the contact, not on the tick-end position"
+    );
     assert_eq!(open[0].lifetime_ticks, TANGLER_LIFETIME_TICKS);
     assert_eq!(open[0].radius_m, 10.0);
     assert!(session.is_tangled(&victim));
