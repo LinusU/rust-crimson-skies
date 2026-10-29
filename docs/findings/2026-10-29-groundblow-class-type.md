@@ -14,6 +14,9 @@ original installation's `ZBD/C3/gamez.zbd` and `ZBD/planes.zbd` read through the
 readers (`cs_formats::gamez::{read_gamez_nodes, read_gamez_meshes, read_gamez_materials}`).
 **The original executable was not run**: every claim is `static` (claim id
 `OWNER-STATIC-2026-10-29`), nothing is `verified_original`. No runtime code changed.
+Implementer: `deepseek-1`; reviewed by `deepseek-1` in a fresh session that re-read the
+cited windows from the image and re-ran the retail derivations (same agent instance, so
+**not** independent review).
 
 The cited bytes are the machine-readable block at the end; `accept_groundblow_class_*`
 re-reads every row from the image and re-derives the per-kind values from retail data, and
@@ -33,11 +36,12 @@ measured engine facts).
    per-node post-pass (`0x4e2a54`…`0x4e2b06`) rewrites only the fields that need an address in
    this process — `+0x70` (the stored-box pointer, `0`/`1`/`2` →
    `node+0x74`/`+0x8c`/`+0xa4`), `+0x3c` (the mesh index, made absolute and resolved through
-   `0x560170` into the mesh's polygon list), `+0x48` (zeroed), `+0x5c` (the children slot
-   array, allocated from the stored count at `+0x56`: `0x4e3253`…`0x4e3261`) and the
+   `0x560170` into the mesh's polygon list), `+0x48` (zeroed) and the
    `node_index` word at `+0xd0` — and then calls `0x4e2ba0`, which
    **dispatches on `[node+0x34]` itself** to read the kind's own data record into
-   `[node+0x38]`. There is no conversion table: `node+0x34` is the stored `node_type`.
+   `[node+0x38]`; that function's common tail `0x4e31e0` allocates the children slot array
+   from the stored count at `+0x56` into `+0x5c` (`0x4e3253`…`0x4e3261`). There is no
+   conversion table: `node+0x34` is the stored `node_type`.
 2. **From which retail field or rule: the stored `node_type` word** at offset `0x34` of the
    208-byte info record, whose domain is the CS node kinds. The loader's own table
    (`0x4e32ac`, eleven entries for values `0..10`) names each kind's reader, and each reader's
@@ -54,7 +58,7 @@ measured engine facts).
    | 6 lod | `0x4e2cbb` | `0x5c` = 92 | `LOD_DATA_BYTES` |
    | 7, 8 | `0x4e3283` | — | refused: `gClsBlockReadNode(): Unrecognized node class type:  node = %s class_type = %d` (`0x62e6b0`) and `-1` |
    | 9 light | `0x4e2cfd` | `0x100` = 256 | `LIGHT_DATA_BYTES` |
-   | 10 sound | `0x4e2bcc` | `0x94` = 148 | not a CS kind ("Error reading node sound data.", `0x62e7f0`) |
+   | 10 sound | `0x4e2bcc` | `0x94` = 148 | not a CS kind (`Reading sound node data: Must complete software.`, `0x62e834`; the short-read error is `Error reading node sound data.`, `0x62e814`) |
 
    The loader's error message calls the word **`class_type`**, which is the name this finding
    and #2209 use for it. A CS container stores none of `0`, `7`, `8` or `10`: measured below,
@@ -75,19 +79,25 @@ measured engine facts).
    **every collider node is class 5 (object3d)**.
    * 4736 nodes carry both sweep bits `0x04|0x10`; 2343 of them bind no mesh (`mesh_index`
      `-1`) and 0 bind a missing mesh. The **2393 nodes that carry both bits and bind a mesh
-     — the exact population the port spawns a collider for (`PlaytestSea` or
-     `WorldSceneryCollider`) — are all `node_type = 5`.**
+     — the population the port considers for a collider (`PlaytestSea` or
+     `WorldSceneryCollider`; #1814 then requires a collision view) — are all `node_type =
+     5`.**
    * **Water / `PlaytestSea`: 347 nodes bind at least one material group whose texture is
-     `wtr0*` or `water1` (the population #1850 counted: 251 store `0x0308831c`, 96 store
-     `0x0308031c`), and all 347 are class 5.** 344 of them bind only water textures
+     `wtr0*` or `water1` (the 251/96 split #1850 recorded) and every one of them binds a
+     `wtr00000.tif` group, which is the port's water image name, so the port's
+     `is_water_image` marks exactly these; all 347 are class 5.** 344 of them bind only
+     water textures
      (250 × `0x0308831c`, 94 × `0x0308031c` — the "contactable water nodes" #2212
      censused); the other three bind one non-water group as well. The two nodes #2212
      measured — the tile `g28530` (slot 547, mesh 371) and the
      terrain chunk `g28603` (slot 2873, mesh 761) — are both class 5.
-   * **The `WorldSceneryCollider` kinds** (mountains, cliffs and land, every other flagged
-     mesh node): 2049 nodes, all class 5. Their stored flag words are `0x0308031c` (1757),
-     `0x0308033c` (31), `0x0308071c` (124), `0x0308073c` (12), `0x0308831c` (117),
-     `0x0308871c` (7) and `0x0388031c` (1).
+   * **The `WorldSceneryCollider` kinds** (mountains, cliffs and land, every
+     collider that binds no water group): 2046 nodes, all class 5. Their stored
+     flag words are `0x0308031c` (1755), `0x0308033c` (31), `0x0308071c` (124),
+     `0x0308073c` (12), `0x0308831c` (116), `0x0308871c` (7) and `0x0388031c`
+     (1). The other three colliders bind one water group *and* one non-water
+     group; the port asks whether **any** part is water, so they are
+     `PlaytestSea` and the 347 + 2046 split is exact.
    * **Aircraft:** the vehicle's node is the plane container's node for that aircraft, looked
      up **by name** and **copied**. `0x477850` takes the plane record's name (`[record+4]`),
      looks it up through `0x4d0280(7, name)` → `0x4d0320` (a name-keyed walk of the list the
@@ -100,8 +110,10 @@ measured engine facts).
      vehicle-side code reads the same word and compares it, `0x47c27b` against `2` (world)
      and `0x47c337`…`0x47c378` against `5`, `1` and `8`.
 5. **What the sweep therefore does with each kind.** The query's dispatch is #2209's
-   (`0x4c9ac8`, table `0x4c9de0`): types `2, 3, 4` and anything outside `1..11` log
-   `Unrecognized node class type` and return 3 without testing anything. Among M01's nodes
+   (`0x4c9ac8`, table `0x4c9de0`): `mov eax,[esi+0x34]; lea ecx,[eax-1]; cmp ecx,9; ja` —
+   classes `1..10` are dispatched, and the table's entries for `2, 3, 4` log `Unrecognized
+   node class type` and return 3 without testing anything (so `0` and `11` and above are
+   refused by the guard as well). Among M01's nodes
    the skipped kinds are exactly the 435 scene-furniture nodes that carry the bits and no
    mesh: `world1` (class 2, slot 0, flags `0x0108001c`), `display` (4), both windows
    (`window1`, `sgwin`, class 3), both cameras (`camera1`, `spyglass`, class 1) and the 429
@@ -116,10 +128,11 @@ measured engine facts).
    (`0x4c9bc9`) gated only by `node+0xc4 > [0x71e8b0]`, followed by a recursion into the
    node's children. No water tile carries `0x20` (0 of 347) and all 2393 colliders store
    `unk196 = node+0xc4 = 160`; `0x71e8b0` is a query threshold whose only setter `0x4c7600`
-   stores `-1` for "no limit" (`0x4c7612`) and which `0x5b055d` restores to `-1` after the
-   only query that raises it, so the triangle test runs. The sea therefore answers through
+   stores `-1` for "no limit" (`0x4c7612`); the only caller that raises it, `0x5b053a`, sets
+   it to `[esi+0x7c]` around its `0x4c8ec0` query and restores `-1` at
+   `0x5b0559`..`0x5b0564`, so the triangle test runs. The sea therefore answers through
    its tiles' own triangles, as #2209 section 7 concluded; **its class type is 5, not one of
-   the skipped kinds.** 43 of the 2049 land colliders do carry `0x20` (31 × `0x0308033c`,
+   the skipped kinds.** 43 of the 2046 land colliders do carry `0x20` (31 × `0x0308033c`,
    12 × `0x0308073c`) and reach the stored-box contact instead; none of them is water.
 7. **The one filter that could still drop the sea is not the class type.** `0x56c430`
    (`node+0x30` = the stored `zone_id`) accepts everything while `[0x62cb50] == 0`, accepts
@@ -206,8 +219,11 @@ path the port's world draw uses):
   `zone_id = 1`, none carrying `0x20`. 344 bind only water textures (250 × `0x0308831c`,
   94 × `0x0308031c`); `g28530` (slot 547, mesh 371, `0x0308831c`) and `g28603`
   (slot 2873, mesh 761) are class 5.
-* **Land (`WorldSceneryCollider`):** the remaining 2049, all class **5**. 43 of them carry
-  `0x20` (31 × `0x0308033c`, 12 × `0x0308073c`); the rest reach the triangle path.
+* **Land (`WorldSceneryCollider`):** the other 2046 (the colliders that bind no water group),
+  all class **5**; 2393 = 347 `PlaytestSea` + 2046 `WorldSceneryCollider`. Their flag words are
+  `0x0308031c` (1755), `0x0308033c` (31), `0x0308071c` (124), `0x0308073c` (12),
+  `0x0308831c` (116), `0x0308871c` (7) and `0x0388031c` (1). 43 of them carry `0x20`
+  (31 × `0x0308033c`, 12 × `0x0308073c`); the rest reach the triangle path.
 * **Scene furniture that carries the bits and no mesh:** 435 nodes — `world1` (class 2,
   `0x0108001c`), `display` (4, `0x0108001c`), `window1` and `sgwin` (3, `0x0108001c`),
   `camera1` and `spyglass` (1, `0x0108001c`) and 429 `lod` nodes (6, all `0x0308051c`).
@@ -221,7 +237,7 @@ path the port's world draw uses):
 
 ## 5. What this means for #2214 (the sweep over the port's colliders)
 
-* The class-type filter (types `2`, `3`, `4` and anything outside `1..11`) **never rejects an M01
+* The class-type filter (types `2`, `3`, `4` and anything outside `1..10`) **never rejects an M01
   collider**, so a port that casts against every `PlaytestSea` / `WorldSceneryCollider`
   collider and against aircraft bodies is not missing a filter the original applies to this
   mission's solid geometry. It would only diverge if the port later spawned colliders for
@@ -243,7 +259,7 @@ path the port's world draw uses):
 | --- | --- | --- | --- |
 | `[0x62cb50]` and the layer list `0xa070a8` at ground-blow time | whether the zone-1 water tiles pass the layer filter at all | `0x56c430` is measured; the global is set/restored by several callers (`0x49f3d7`, `0x4d65ea`, `0x4d65d8`/`0x4d6602`, `0x49f25f`) and its value during a mission is runtime state | a runtime capture (#358) or tracing the writers from the mission load |
 | whether a *store* to `node+0x34` exists outside the constructors and the file read | the universal phrasing of section 0.3 | the writers found are the constructors (`0x4d1363`, `0x4e05ec`, `0x4d21bc`), the copy dispatch (`0x4d8470`), and the file read (`0x4e2890`); every consumer reads it. A node slot is zeroed on allocation, so a stale value cannot survive | a store scan over the image with a symbol map, or a runtime watchpoint |
-| `0x71e8b0`'s value for the ground blow's query | the mesh test's gate `node+0xc4 > [0x71e8b0]` in the type-5 handler | `0x4c7600` sets it to `-1` when asked for "no limit" and `0x5b055d` restores `-1`; all M01 colliders store `node+0xc4 = 160` | read the setter's callers in the mission path |
+| `0x71e8b0`'s value for the ground blow's query | the mesh test's gate `node+0xc4 > [0x71e8b0]` in the type-5 handler | `0x4c7600` sets it to `-1` when asked for "no limit"; the only caller that raises it (`0x5b053a`) restores `-1` at `0x5b0559`..`0x5b0564`; all M01 colliders store `node+0xc4 = 160` | read the setter's callers in the mission path |
 | which `lod` band of an airframe the original draws per frame | not this task | the 87 `lod` nodes carry the bits and no mesh; their children are class 5 | the LOD selection work (#2054's neighbours) |
 
 ## Instruction bytes cited (re-read by the ignored test)
@@ -284,13 +300,17 @@ Prefix `accept_groundblow_class_`, `crates/cs_content/tests/accept_groundblow_cl
   calls the word `class_type`.
 * `accept_groundblow_class_bytes_match_the_engine_image` (ignored, needs `CS_ENGINE_IMAGE`):
   loads the image through the production loader (`cs_content::coordinates::load_engine_image`,
-  which refuses a drifted digest) and re-reads every row.
+  which refuses a drifted digest), re-reads every row, and decodes each kind's reader so the
+  record size it pushes is compared with the workspace's `*_DATA_BYTES` constant.
 * `accept_groundblow_class_retail_m01_colliders_are_object3d` (ignored, needs
   `CS_GAME_DIR`): reads `ZBD/C3/gamez.zbd` and `ZBD/planes.zbd` through the production
   readers and re-derives every number of section 4 — the C3 histogram, the 2393 colliders
-  all class 5, the 347 water nodes (all class 5, `zone_id = 1`, none with `0x20`), the 43
-  box-path land nodes, the 435 flagged non-object nodes and their kinds, `g28530`/`g28603`,
-  the airframe roots and `bloodhawk`'s subtree, and that no class-6 node binds a mesh.
+  all class 5 with their flag words and stored zone ids (1: 937, `0xff`: 1456), the 347
+  water nodes (all class 5, `zone_id = 1`, none with `0x20`, 251/96 flag split, 344
+  only-water with the 250/94 split), the 2046 non-water `WorldSceneryCollider` nodes with
+  their own flag words and the 43 box-path ones, the six named class 1/2/3/4 furniture
+  nodes plus the 429 `lod`, `g28530`/`g28603`, the airframe roots and `bloodhawk`'s subtree,
+  and that no class-6 node anywhere in C3 binds a mesh.
 
 ## Commands run
 
@@ -323,10 +343,52 @@ above; `git status --short` clean):
   rows test is not a restatement of the same constant;
 * the retail test's collider count changed `2393` → `2392` → it fails with
   `left: 2393, right: 2392`, so the pinned per-kind numbers are compared against what the
-  production readers return rather than merely printed.
+  production readers return rather than merely printed;
+* the review's `land` count changed `2046` → `2045` → the retail test fails with
+  `left: 2046`, so the `WorldSceneryCollider` population is measured, not restated;
+* the review's reader-size expectation for class 9 changed `LIGHT_DATA_BYTES` → `0x101` →
+  the image test fails with `class 9's reader allocates its record size`, so the test decodes
+  the reader's own `push` immediate instead of trusting the constant table.
 
 `cargo test --workspace --locked` was **not** run locally (AGENTS.md: CI runs the full suite,
 and its run on the pushed commit is the run of record). Nothing but
 `data/owner-static/engine-facts.toml` is a production path this branch changes, and its two
 consumers — `cs_content`'s and `cs_app`'s suites — are the ones run above, with the tests that
 need the image or the installation included.
+
+## Review pass (fresh session, same agent)
+
+The review re-read every cited window from the image and re-disassembled the loader, the
+three constructors, the copy dispatch and the type-5 handler; it re-derived the retail
+numbers independently and corrected four statements:
+
+* the query's class range is `1..10`, not `1..11`: the guard is
+  `lea ecx,[eax-1]; cmp ecx,9; ja` (`0x4c9ace`), and the table has ten entries — class `11`
+  is refused by the guard just like `0`;
+* the `WorldSceneryCollider` population is **2046**, not 2049: the port asks whether
+  *any* part is water, so the three colliders that bind a water group *and* a non-water one
+  are `PlaytestSea`; their flag words are `0x0308031c` (1755) and `0x0308831c` (116);
+* the class-10 sound message is at `0x62e814` (`Error reading node sound data.`), the
+  successful-read log is `0x62e834`, and neither is `0x62e7f0` (that is the object3d error);
+* the `+0x5c` children allocation belongs to `0x4e31e0`, the class-data tail reached through
+  `0x4e2ba0`, not to the post-pass window itself; and the `0x71e8b0` restore is the call at
+  `0x5b055f` (arguments pushed at `0x5b0559`), not `0x5b055d`.
+
+The retail test gained the assertions for those numbers (the land count and its flag words,
+the collider zone histogram, the only-water flag split, the six named furniture nodes) and
+its `lod`-binds-no-mesh check now counts over the whole container instead of the flagged
+colliders only. The image test now also decodes each kind's reader and compares the record
+size it pushes with the workspace's `*_DATA_BYTES` constant.
+
+Review-pass checks (same environment, `CS_GAME_DIR` and `CS_ENGINE_IMAGE` set):
+
+```sh
+cargo fmt --all -- --check                                                        # exit 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings     # exit 0
+cargo test --locked -p cs_content                                                 # exit 0 (686 passed, 246 ignored, + 3 doc-tests)
+cargo test --locked -p cs_content -- accept_groundblow_class_ --include-ignored    # exit 0, 3 passed
+cargo test --locked -p cs_content -- accept_groundblow --include-ignored           # exit 0, 11 passed
+cargo test --locked -p cs_app --test cs_app_tests_d -- accept_owner_facts_table --include-ignored  # exit 0, 7 passed
+cargo test --locked -p cs_app --test cs_app_tests_a -- accept_crash_a --include-ignored            # exit 0, 3 passed
+cargo test --locked -p cs_xtask --test cs_xtask_tests -- accept_test_bin           # exit 0, 11 passed
+```

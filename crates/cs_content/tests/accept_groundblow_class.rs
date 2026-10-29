@@ -352,8 +352,9 @@ fn accept_groundblow_class_bytes_match_the_engine_image() {
         "the loader only returns the measured image"
     );
     let image = loaded.bytes.as_slice();
+    let rows = table_rows();
     let mut checked = 0usize;
-    for row in table_rows() {
+    for row in &rows {
         let offset = usize::try_from(row.va - IMAGE_BASE).expect("an offset");
         assert_eq!(
             &image[offset..offset + row.bytes.len()],
@@ -364,10 +365,46 @@ fn accept_groundblow_class_bytes_match_the_engine_image() {
         );
         checked += 1;
     }
-    assert_eq!(checked, table_rows().len());
+    assert_eq!(checked, rows.len());
     assert!(
         checked >= REQUIRED.len(),
         "the table cites {checked} windows"
+    );
+
+    // Each kind's reader allocates the record size the workspace's own constant
+    // names: the entry begins with `push imm32` (0x68) or `push imm8` (0x6a).
+    // Class 10 logs its "must complete software" line first, so its `push 0x94`
+    // comes after that call.
+    let table = dwords(row(&rows, "class.loader_table"));
+    for (kind, bytes) in [
+        (NODE_TYPE_CAMERA, CAMERA_DATA_BYTES),
+        (NODE_TYPE_WORLD, WORLD_DATA_BYTES),
+        (NODE_TYPE_WINDOW, WINDOW_DATA_BYTES),
+        (NODE_TYPE_DISPLAY, DISPLAY_DATA_BYTES),
+        (NODE_TYPE_OBJECT3D, OBJECT3D_DATA_BYTES),
+        (NODE_TYPE_LOD, LOD_DATA_BYTES),
+        (NODE_TYPE_LIGHT, LIGHT_DATA_BYTES),
+    ] {
+        let reader = u64::from(table[kind as usize]);
+        let at = usize::try_from(reader - IMAGE_BASE).expect("an offset");
+        let window = &image[at..at + 8];
+        let size = match window[0] {
+            0x68 => u32::from_le_bytes([window[1], window[2], window[3], window[4]]),
+            0x6a => u32::from(window[1]),
+            other => panic!("class {kind}'s reader at {reader:#x} starts with {other:#x}"),
+        };
+        assert_eq!(
+            u64::from(size),
+            bytes,
+            "class {kind}'s reader allocates its record size"
+        );
+    }
+    let sound = u64::from(table[10]);
+    let at = usize::try_from(sound - IMAGE_BASE).expect("an offset");
+    assert_eq!(
+        &image[at + 0x21..at + 0x28],
+        &[0x68, 0x94, 0x00, 0x00, 0x00, 0xff, 0xd5],
+        "class 10 logs first, then allocates its 0x94-byte record"
     );
 }
 
@@ -464,10 +501,21 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
     let mut water_any = 0usize;
     let mut water_only = 0usize;
     let mut water_flags = std::collections::BTreeMap::<u32, usize>::new();
+    let mut water_only_flags = std::collections::BTreeMap::<u32, usize>::new();
     let mut water_with_bbox = 0usize;
     let mut colliders_with_bbox = 0usize;
+    let mut land = 0usize;
+    let mut land_flags = std::collections::BTreeMap::<u32, usize>::new();
+    let mut collider_zones = std::collections::BTreeMap::<u32, usize>::new();
     let mut furniture = std::collections::BTreeMap::<(u32, u32), usize>::new();
-    let mut lod_with_mesh = 0usize;
+    let mut furniture_names: Vec<(&str, u32)> = Vec::new();
+    // The class-6 claim is about every lod node in C3, not only the flagged
+    // ones, so it is counted over the whole container.
+    let lod_with_mesh = nodes
+        .nodes
+        .iter()
+        .filter(|node| node.info.node_type == NODE_TYPE_LOD && node.mesh_index() >= 0)
+        .count();
     for node in &nodes.nodes {
         if node.info.flags & CONTACT_SWEEP_NODE_FLAGS != CONTACT_SWEEP_NODE_FLAGS {
             continue;
@@ -479,11 +527,19 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
                 *furniture
                     .entry((node.info.node_type, node.info.flags))
                     .or_default() += 1;
+                // The classes the sweep's own dispatch refuses; the 429 lod
+                // nodes are handled but bind no mesh.
+                if matches!(
+                    node.info.node_type,
+                    NODE_TYPE_CAMERA | NODE_TYPE_WORLD | NODE_TYPE_WINDOW | NODE_TYPE_DISPLAY
+                ) {
+                    furniture_names.push((node.name.as_str(), node.info.node_type));
+                }
             }
             continue;
         }
-        // Every flagged node that binds a mesh is one the port spawns a
-        // collider for: `PlaytestSea` when a part is water, else
+        // Every flagged node that binds a mesh is one the port considers for a
+        // collider: `PlaytestSea` when a part is water, else
         // `WorldSceneryCollider`.
         colliders += 1;
         assert_eq!(
@@ -493,11 +549,9 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
         );
         assert_eq!(node.info.unk196, 160, "every collider stores unk196 = 160");
         *collider_flags.entry(node.info.flags).or_default() += 1;
+        *collider_zones.entry(node.info.zone_id).or_default() += 1;
         if node.info.flags & 0x20 != 0 {
             colliders_with_bbox += 1;
-        }
-        if node.info.node_type == NODE_TYPE_LOD {
-            lod_with_mesh += 1;
         }
         let (any_water, only_water) = water_binding(&meshes, &materials, node.mesh_index());
         if any_water {
@@ -510,6 +564,11 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
         }
         if only_water {
             water_only += 1;
+            *water_only_flags.entry(node.info.flags).or_default() += 1;
+        }
+        if !any_water {
+            land += 1;
+            *land_flags.entry(node.info.flags).or_default() += 1;
         }
     }
     assert_eq!(flagged, 4736, "nodes carrying 0x04|0x10");
@@ -548,6 +607,36 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
         "the water tiles' two flag words"
     );
     assert_eq!(water_only, 344, "nodes binding only water textures");
+    assert_eq!(
+        water_only_flags,
+        std::collections::BTreeMap::from([(0x0308_031c, 94), (0x0308_831c, 250)]),
+        "the only-water nodes' two flag words"
+    );
+    // The `WorldSceneryCollider` population: every collider that binds no water
+    // group. 2393 colliders = 347 `PlaytestSea` + 2046 `WorldSceneryCollider`;
+    // the three nodes that bind a water group *and* a non-water one go to
+    // `PlaytestSea` because the port asks whether *any* part is water.
+    assert_eq!(land, 2046, "colliders that bind no water-textured group");
+    assert_eq!(
+        land_flags,
+        std::collections::BTreeMap::from([
+            (0x0308_031c, 1755),
+            (0x0308_033c, 31),
+            (0x0308_071c, 124),
+            (0x0308_073c, 12),
+            (0x0308_831c, 116),
+            (0x0308_871c, 7),
+            (0x0388_031c, 1),
+        ]),
+        "the land colliders' flag words"
+    );
+    // The layer filter 0x56c430 sees the stored zone: all water is zone 1 and
+    // 1456 of the 2393 colliders store 0xff (section 0.7 of the finding).
+    assert_eq!(
+        collider_zones,
+        std::collections::BTreeMap::from([(1, 937), (0xff, 1456)]),
+        "the colliders' stored zone ids"
+    );
     // The furniture that carries the bits and no mesh, and which the sweep's
     // class dispatch therefore refuses (2/3/4) or finds empty (1/6).
     let expected_furniture: std::collections::BTreeMap<(u32, u32), usize> = [
@@ -561,6 +650,19 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
     .map(|(kind, flags, count)| ((kind, flags), count))
     .collect();
     assert_eq!(furniture, expected_furniture, "the flagged scene furniture");
+    furniture_names.sort_unstable();
+    assert_eq!(
+        furniture_names,
+        vec![
+            ("camera1", NODE_TYPE_CAMERA),
+            ("display", NODE_TYPE_DISPLAY),
+            ("sgwin", NODE_TYPE_WINDOW),
+            ("spyglass", NODE_TYPE_CAMERA),
+            ("window1", NODE_TYPE_WINDOW),
+            ("world1", NODE_TYPE_WORLD),
+        ],
+        "the six class 1/2/3/4 nodes; the other 429 are lod"
+    );
 
     // The two nodes #2212 measured are class 5 as well.
     for (slot, name, mesh, flags) in [
@@ -571,7 +673,7 @@ fn accept_groundblow_class_retail_m01_colliders_are_object3d() {
             .nodes
             .iter()
             .find(|node| node.index == slot)
-            .unwrap_or_else(|| panic!("node {slot} '337 {name}' exists"));
+            .unwrap_or_else(|| panic!("node {slot} '{name}' exists"));
         assert_eq!(node.name, name, "node {slot}'s stored name");
         assert_eq!(node.info.node_type, NODE_TYPE_OBJECT3D, "{name} is class 5");
         assert_eq!(node.mesh_index(), mesh, "{name}'s mesh");
