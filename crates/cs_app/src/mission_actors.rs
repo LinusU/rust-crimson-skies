@@ -97,7 +97,9 @@ use crate::damage::DamageActorBinding;
 use crate::mission_ai::{
     MissionAiFireOrders, MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg,
 };
-use crate::mission_session::{MISSION_FACTION_PLAYER, MissionHost, MissionStage, parts};
+use crate::mission_session::{
+    MISSION_FACTION_PLAYER, MissionHost, MissionStage, MissionTaxiPaths, parts,
+};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::{AllegianceBinding, object3d_orientation};
 use crate::physics::{BodyMode, BodySpec, spawn_body};
@@ -506,6 +508,14 @@ pub struct ScriptedAircraftActor {
     /// routine on a non-zero field (#681), and the mission program's
     /// `WAKEUP_ENEMIES` is the measured wake.
     pub asleep: bool,
+    /// The vehicle's own `+0xcc` byte (#2215): the loader sets it to `1`
+    /// (`0x47c568`) only when the record's taxi-path field
+    /// ([`crate::mission_start::TAXI_PATH_FIELD`]) resolves to a `*_aipath`
+    /// node carrying at least two `*_aipN` points — the gate at `0x47c3f1`.
+    /// The spawn resolves the name through [`MissionTaxiPaths`]; the ground
+    /// blow's player gate keeps a hit on a parked/on-path aircraft when it
+    /// is set (`0x48c036`..`0x48c0e9`).
+    pub on_path: bool,
 }
 
 /// Component: one `zeppelins.zrd` world actor's ECS face — the entity the
@@ -1065,6 +1075,15 @@ fn spawn_mission_actors_under(
         .get_resource::<MissionAircraftRoster>()
         .cloned()
         .unwrap_or_default();
+    // The `*_aipath` table the compose inserted beside the landing table
+    // (#2215): the spawn resolves each record's taxi-path name through it
+    // into the vehicle's own `+0xcc` flag. The resource survives the
+    // composed restart's teardown, so the restart path reads the same table
+    // the first spawn did; a composition without it states no paths.
+    let taxi_paths = world
+        .get_resource::<MissionTaxiPaths>()
+        .cloned()
+        .unwrap_or_default();
     let session = view.served;
     report.session = Some(session);
     let zeppelins = view.zeppelins;
@@ -1283,6 +1302,11 @@ fn spawn_mission_actors_under(
                 damage_actor: actor,
                 generation,
                 asleep,
+                // The `+0xcc` byte: the loader sets it when the record's
+                // taxi path resolves to a `*_aipath` with at least two
+                // points (`0x47c3f1`, `0x47c568`); the port's resolution is
+                // the compose's `MissionTaxiPaths` table.
+                on_path: taxi_paths.is_on_path(record.taxi_path.as_deref()),
             },
             bevy::prelude::Visibility::Inherited,
         ));

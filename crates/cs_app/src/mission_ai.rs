@@ -1615,6 +1615,7 @@ mod tests {
             primary_target: primary.map(str::to_owned),
             title: None,
             starts_asleep: Some(asleep),
+            taxi_path: None,
             dispatch: crate::mission_start::spawn_dispatch(name),
             provenance: cs_types::content::Provenance::designed(
                 cs_types::evidence::ClaimId::new("test.m01-play-ai.record")
@@ -2055,6 +2056,7 @@ mod tests {
                     },
                     generation: crate::scene::SceneGeneration(0),
                     asleep: false,
+                    on_path: false,
                 },
             ))
             .id()

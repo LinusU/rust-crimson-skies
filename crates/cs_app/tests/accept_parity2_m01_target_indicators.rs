@@ -515,6 +515,7 @@ fn accept_parity2_m01_target_indicators_pose_sync_updates_records() {
         primary_target: None,
         title: None,
         starts_asleep: None,
+        taxi_path: None,
         dispatch: SpawnDispatch::VehicleRecord("kestrel".to_owned()),
         provenance: Provenance::designed(ClaimId::new("parity2-m01.pose-sync").expect("claim id")),
     };
@@ -526,6 +527,7 @@ fn accept_parity2_m01_target_indicators_pose_sync_updates_records() {
             damage_actor: actor(9),
             generation,
             asleep: false,
+            on_path: false,
         },
         GlobalTransform::from_xyz(120.0, 30.0, -40.0),
     ));
@@ -537,6 +539,7 @@ fn accept_parity2_m01_target_indicators_pose_sync_updates_records() {
             damage_actor: actor(9),
             generation: generation.next(),
             asleep: false,
+            on_path: false,
         },
         GlobalTransform::from_xyz(-1.0, -1.0, -1.0),
     ));
