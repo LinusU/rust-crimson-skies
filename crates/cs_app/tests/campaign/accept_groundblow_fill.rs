@@ -106,6 +106,9 @@ fn accept_groundblow_fill_sweep_reports_the_unnormalised_triangle_normal() {
         rotation: Quat::IDENTITY,
         owner: SegmentProbeOwner::World,
         class_type: OBJECT3D_CLASS_TYPE,
+        // A hand-built quad has no stored polygon record: the sweep keeps
+        // the per-triangle face record on it.
+        faces: None,
     };
     // Nose down from 100 m over the quad, 400 m long.
     let segment = ground_blow_segment([0.0, 100.0, 0.0], orientation(nose_down()), 400.0);
@@ -153,6 +156,7 @@ fn accept_groundblow_fill_sweep_rejects_a_back_face_and_a_refused_class() {
         rotation: Quat::IDENTITY,
         owner: SegmentProbeOwner::World,
         class_type: OBJECT3D_CLASS_TYPE,
+        faces: None,
     };
     // From below, the quad's stored winding faces away: `N` is `+Y`, the
     // segment's start is on the `-N` side, so the original reports no face.
@@ -202,6 +206,7 @@ fn accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prob
         rotation: Quat::IDENTITY,
         owner: owner.expect("an aircraft resolves"),
         class_type: OBJECT3D_CLASS_TYPE,
+        faces: None,
     };
     let segment = ground_blow_segment([0.0, 100.0, 0.0], orientation(Quat::IDENTITY), 400.0);
     let contact = nearest_contact(&segment, [target]).expect("the box answers");
@@ -815,6 +820,7 @@ fn accept_groundblow_fill_degenerate_segment_answers_nothing() {
         rotation: Quat::IDENTITY,
         owner: SegmentProbeOwner::World,
         class_type: OBJECT3D_CLASS_TYPE,
+        faces: None,
     };
     let degenerate = GroundBlowSegment {
         from_m: [0.0, 100.0, 0.0],

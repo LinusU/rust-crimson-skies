@@ -31,10 +31,12 @@
 //! 3. **The normal is unnormalised**: the hit face's own edge cross product
 //!    (`0x55d6d2`..`0x55d73a`), whose magnitude is the face's parallelogram
 //!    area — for a triangle `|N| = 2 * area`, for a box face
-//!    `|N| = width * height` (`2026-10-29-groundblow-normal-scale.md`). parry's
-//!    normalised hit normal is never stored; the triangle vertices come from
-//!    the hit itself (the collider's own triangle buffers), not from a
-//!    reconstructed approximation.
+//!    `|N| = width * height`, for a stored quad its parallelogram
+//!    (`2026-10-29-groundblow-normal-scale.md`). parry's normalised hit
+//!    normal is never stored. The face itself is the **stored polygon** the
+//!    hit triangle stands in for — the collider's [`ColliderFaces`] side
+//!    table maps each solver triangle back to its polygon record — or the
+//!    collider triangle itself where no stored record exists.
 //! 4. **The distance is the chord** `|point - position|` (`0x5388d0`,
 //!    `0x48c131`), never the along-ray time of impact. The two agree only
 //!    because the probe axis is a unit body axis; the record carries the chord
@@ -69,22 +71,6 @@
 //!
 //! # What this query does **not** reproduce, and why
 //!
-//! * **The one-sided face rule is applied, the polygon's two-sided override is
-//!   not.** `0x55d6c0` rejects a face unless the segment's far end is strictly
-//!   on the `-N` side, unless the stored polygon's two-sided bit is set. The
-//!   first half is implemented ([`face_accepts`]); the port's collision view
-//!   is a triangle soup that drops the stored per-polygon flag word, so the
-//!   override cannot be read from it. C3's water tiles and the island chunk
-//!   measured are all one-sided (`2026-10-29-groundblow-normal-scale.md`); a
-//!   two-sided stored outline anywhere in C3 would be rejected from its back
-//!   side here where the original accepts it.
-//! * **A quad's area is its triangle's area.** The original's soup path takes
-//!   the first three corners of the *stored polygon*; the port's collider holds
-//!   triangles, so a stored quad's hit reports `2 * triangle area` where the
-//!   original reports the quad's parallelogram. Over the measured water tiles
-//!   that halves `|N|` for the quads (a `sqrt(1/2)` on the probe's `sqrt(dot)`).
-//!   The task's own contract is "the hit triangle's edge cross product",
-//!   which is what is produced.
 //! * **An aircraft is a box, not its mesh.** The port's player aircraft body
 //!   carries the designed 12 x 2 x 10 m box collider (an AI aircraft the
 //!   designed 12 x 4 x 12 m one); the original reaches the
@@ -98,17 +84,20 @@
 //!   equivalent list, so it cannot apply it without guessing.
 //! * **The 32-contact abort (`0x4c9a9d`) is not reproduced.** The original
 //!   aborts the whole query — and reports no contact — when a 33rd record would
-//!   be appended; this sweep keeps the nearest contact instead. Reproducing it
-//!   now would be wrong rather than faithful: the abort counts the original's
-//!   *stored polygons*, while the port's face count is triangles (the gap
-//!   above), so a quad-heavy mesh would abort here where the original would
-//!   not. Recorded with the polygon gap (#2217).
+//!   be appended; this sweep keeps the nearest contact instead. The abort
+//!   counts the original's appended *face records* across the whole node walk;
+//!   a collider without stored faces still contributes per triangle here, so
+//!   the port's count is not the original's and the cap is left out rather
+//!   than approximated (#2217 records the polygon-side part of the gap).
+
+use std::collections::HashSet;
 
 use avian3d::parry::query::{Ray, RayCast};
 use avian3d::prelude::{Collider, Position, Rotation};
 use bevy::ecs::entity::Entity;
 use bevy::ecs::system::{Query, ResMut, SystemParam};
 use bevy::prelude::{Has, Quat, Resource, Vec3, World};
+use cs_content::mesh::CollisionFace;
 use cs_sim::collision::CollisionLayer;
 use cs_sim::flight::original::{OriginalInput, SegmentProbeHit, SegmentProbeOwner, nose_direction};
 use cs_types::space::Quaternion;
@@ -116,6 +105,7 @@ use cs_types::space::Quaternion;
 use super::scene::{PlaytestOriginalFlight, PlaytestSea};
 use crate::mission_session::{WorldSceneryCollider, WorldSweepNode};
 use crate::physics::BodyLayer;
+use crate::render::bevy_mesh::ColliderFaces;
 
 /// The class type every M01 collider stores, and the type the sweep's dispatch
 /// handles with the node's own mesh triangles plus a recursion into its
@@ -232,6 +222,11 @@ pub struct SweepTarget<'a> {
     pub owner: SegmentProbeOwner,
     /// The node class type the sweep's dispatch tests (`node+0x34`).
     pub class_type: u32,
+    /// The collider's stored-face side table (task #2217): which stored
+    /// polygon — corners and flag word — each collision triangle stands in
+    /// for. `None` on a collider with no stored polygon record, which keeps
+    /// per-triangle behaviour.
+    pub faces: Option<&'a ColliderFaces>,
 }
 
 /// The owner one collider resolves to for the player's skip gate, or `None`
@@ -287,7 +282,13 @@ pub struct ColliderKind {
 
 /// The [`SweepTarget`] for one collider entity, or `None` when the sweep does
 /// not test it.
+///
+/// Eight explicit parts rather than a builder: every one is something both
+/// callers — the system query and [`probe_in_world`] — can see of the entity,
+/// stated together so the two paths cannot disagree about what decides the
+/// population.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn target_of<'a>(
     entity: Entity,
     collider: &'a Collider,
@@ -296,6 +297,7 @@ pub fn target_of<'a>(
     kind: ColliderKind,
     prober: Entity,
     on_path: bool,
+    faces: Option<&'a ColliderFaces>,
 ) -> Option<SweepTarget<'a>> {
     Some(SweepTarget {
         entity,
@@ -311,6 +313,7 @@ pub fn target_of<'a>(
             on_path,
         )?,
         class_type: kind.node_class.unwrap_or(OBJECT3D_CLASS_TYPE),
+        faces,
     })
 }
 
@@ -407,6 +410,15 @@ pub fn face_accepts(plane_point: Vec3, normal: Vec3, from: Vec3, to: Vec3) -> bo
 
 /// The nearest accepted face of a triangle mesh, in the mesh's own frame, as
 /// `(point, unnormalised normal)`.
+///
+/// Where the collider carries its stored-face side table
+/// ([`SweepTarget::faces`], task #2217) a candidate triangle resolves to the
+/// **stored polygon** it stands in for: `0x55c9c0` tests the stored face —
+/// the whole outline, or a strip step's three corners — so each stored face
+/// is tested once, with its own stored corners, its own flag word and the
+/// cyclic inside-edge walk of `0x55d6c0`, and the record keeps the stored
+/// face's normal and the crossing point. A triangle with no face record keeps
+/// the per-triangle test below.
 fn trimesh_contact(
     target: &SweepTarget<'_>,
     mesh: &avian3d::parry::shape::TriMesh,
@@ -421,6 +433,11 @@ fn trimesh_contact(
     }
     let ray = Ray::new(local_from, delta / length);
     let mut best: Option<(f32, Vec3, Vec3)> = None;
+    // A stored face is tested once: several collision triangles can name the
+    // same record (an outline's ear-clipped halves all stand in for its one
+    // stored polygon), and the face test covers the whole polygon whichever
+    // triangle the BVH leaf named.
+    let mut tested_faces: HashSet<u32> = HashSet::new();
     // The mesh's own BVH prunes to the triangles the segment's box meets; each
     // surviving triangle is then tested exactly, because parry's nearest hit
     // alone would drop a back face the original rejects in favour of a farther
@@ -431,6 +448,22 @@ fn trimesh_contact(
     {
         let index = leaf as usize;
         if index >= mesh.num_triangles() {
+            continue;
+        }
+        // A triangle the side table maps to a stored face is tested only as
+        // that face — the original has no per-triangle answer for it, so a
+        // rejected face is rejected (its triangle cannot hit where the
+        // polygon did not) and its other ear-clipped halves are skipped.
+        if let Some(face_index) = target.faces.and_then(|faces| faces.face_index(index)) {
+            if tested_faces.insert(face_index)
+                && let Some(faces) = target.faces
+                && let Some(face) = faces.face(face_index)
+                && let Some((t, point, normal)) =
+                    stored_face_contact(face, local_from, delta, local_to)
+                && best.is_none_or(|(best_t, _, _)| t < best_t)
+            {
+                best = Some((t, point, normal));
+            }
             continue;
         }
         let triangle = mesh.triangle(leaf);
@@ -448,6 +481,69 @@ fn trimesh_contact(
     }
     let (_, point, normal) = best?;
     Some((world_point(target, point), target.rotation * normal))
+}
+
+/// `0x55d6c0` on one **stored** face: `(t, point, unnormalised normal)` of the
+/// segment's accepted crossing, or `None` when the face rejects it.
+///
+/// The decode, applied to `face`'s own stored corners:
+///
+/// * the record normal is `(corner1 - corner0) × (corner2 - corner0)` —
+///   unnormalised, so a stored quad's magnitude is its parallelogram area,
+///   not twice an ear-clipped triangle's;
+/// * the plane gate: the segment's far end must sit strictly on the `-N`
+///   side **unless the face's stored two-sided bit is set**
+///   (`0x55d75b`, flag `= (vertex_info >> 10) & 1` pushed at `0x55cc73`),
+///   then the sign-bit test requires the segment to straddle the plane
+///   (`0x55d7a5`: `+0.0` counts as the positive side);
+/// * the point is the plane crossing `from + (d1 / (d1 - d2)) * delta`;
+/// * the inside test walks **every** cyclic edge of the face: the projected
+///   half-plane test of `0x55d7ec` on, which in 3D is
+///   `dot(edge × (point - corner), N) > -1e-4 * max|N_i|` — the double
+///   tolerance `0x609180` scaled to the dominant normal axis the original's
+///   six-case projection divides by.
+fn stored_face_contact(
+    face: &CollisionFace,
+    from: Vec3,
+    delta: Vec3,
+    to: Vec3,
+) -> Option<(f32, Vec3, Vec3)> {
+    if face.corners.len() < 3 {
+        return None;
+    }
+    let corners: Vec<Vec3> = face
+        .corners
+        .iter()
+        .map(|&corner| Vec3::from(corner))
+        .collect();
+    let origin = corners[0];
+    let normal = (corners[1] - origin).cross(corners[2] - origin);
+    let d1 = (from - origin).dot(normal);
+    let d2 = (to - origin).dot(normal);
+    // The one-sided gate, overridden by the stored two-sided bit.
+    if !(d2 < 0.0 || face.is_two_sided()) {
+        return None;
+    }
+    // Opposite sign bits: `+0.0` is on the positive side, `-0.0` is not.
+    if d1.is_sign_negative() == d2.is_sign_negative() {
+        return None;
+    }
+    let t = d1 / (d1 - d2);
+    let point = from + delta * t;
+    // The cyclic inside-edge walk over every stored corner.
+    let dominant = normal.x.abs().max(normal.y.abs()).max(normal.z.abs());
+    let tolerance = -1e-4 * dominant;
+    for index in 0..corners.len() {
+        let corner = corners[index];
+        let edge = corners[(index + 1) % corners.len()] - corner;
+        let inside = edge.cross(point - corner).dot(normal);
+        // The original's strict `>` test: anything not strictly inside —
+        // outside, on the tolerance, or NaN — rejects the face.
+        if inside.partial_cmp(&tolerance) != Some(std::cmp::Ordering::Greater) {
+            return None;
+        }
+    }
+    Some((t, point, normal))
 }
 
 /// The contact a cuboid gives the segment, as `(point, unnormalised normal)`.
@@ -550,6 +646,7 @@ pub struct SweepColliders<'w, 's> {
             Has<WorldSceneryCollider>,
             Option<&'static crate::mission_actors::ScriptedAircraftActor>,
             Option<&'static WorldSweepNode>,
+            Option<&'static ColliderFaces>,
         ),
     >,
 }
@@ -568,6 +665,7 @@ impl SweepColliders<'_, '_> {
                 is_scenery,
                 actor,
                 node,
+                faces,
             )| {
                 let kind = ColliderKind {
                     layer: layer.0,
@@ -583,6 +681,7 @@ impl SweepColliders<'_, '_> {
                     kind,
                     prober,
                     actor.is_some_and(|actor| actor.on_path),
+                    faces,
                 )
             },
         )
@@ -735,6 +834,7 @@ pub fn probe_in_world(
             kind,
             prober,
             on_path,
+            entity.get::<ColliderFaces>(),
         )
     });
     nearest_contact(&segment, targets)
