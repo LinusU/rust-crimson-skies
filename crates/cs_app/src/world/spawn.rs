@@ -184,7 +184,7 @@ use super::affine::{AffinePlacement, AffinePlacementError};
 use super::contacts::{WorldColliderInstance, WorldObjectBinding, WorldVisual};
 use super::meshes::WorldMeshes;
 use crate::physics::BodyLayer;
-use crate::render::bevy_mesh::ColliderMesh;
+use crate::render::bevy_mesh::{ColliderFaces, ColliderMesh};
 
 /// How far the decomposed runtime transform may drift from the authored
 /// canonical matrix and still be called the same transform.
@@ -1394,6 +1394,12 @@ fn spawn_mesh_collider(
     // buffers and BVH (task #1430). One shape, however many bodies a record
     // spawns: the entity's own scale is applied by Avian, per collider.
     let collider = shared_collider(app, upload);
+    // The stored-face side table is the collision view's own, cloned per
+    // entity ([`ColliderFaces`], task #2217): the ground-blow sweep reads a
+    // hit triangle's stored polygon — corners and flag word — off the entity,
+    // so a mesh-derived collider carries its provenance whether it is a body
+    // or a volume. The `Collider` it sits beside is untouched.
+    let faces = ColliderFaces::of(upload.upload.collision());
     if is_trigger_volume(role) {
         // A trigger volume: the same bundle with the rigid body left off, so the
         // derived collider is a standalone one. Spawned here rather than by
@@ -1403,12 +1409,20 @@ fn spawn_mesh_collider(
             app,
             handle,
             collider,
+            faces,
             transform,
             static_world_membership(),
             binding,
         );
     }
-    let entity = spawn_mesh_body(app, transform, handle, collider, static_world_membership());
+    let entity = spawn_mesh_body(
+        app,
+        transform,
+        handle,
+        collider,
+        faces,
+        static_world_membership(),
+    );
     // The event opt-in is read from the collider's own entity, and the derived
     // collider lands there, so marking it now is enough.
     app.world_mut().entity_mut(entity).insert((
@@ -1447,6 +1461,7 @@ fn spawn_mesh_body(
     transform: Transform,
     handle: Handle<Mesh>,
     collider: Collider,
+    faces: ColliderFaces,
     membership: CollisionLayers,
 ) -> Entity {
     // The `Collider` is explicit rather than a constructor deriving from the
@@ -1477,6 +1492,7 @@ fn spawn_mesh_body(
             RigidBody::Static,
             Mesh3d(handle),
             collider,
+            faces,
             avian_layers(membership),
             BodyLayer(static_world_layer()),
             transform,
@@ -1511,6 +1527,7 @@ fn spawn_mesh_trigger_volume(
     app: &mut App,
     handle: Handle<Mesh>,
     collider: Collider,
+    faces: ColliderFaces,
     transform: Transform,
     membership: CollisionLayers,
     binding: WorldObjectBinding,
@@ -1536,6 +1553,7 @@ fn spawn_mesh_trigger_volume(
             binding,
             Mesh3d(handle),
             collider,
+            faces,
             avian_layers(membership),
             BodyLayer(static_world_layer()),
             Sensor,
@@ -1617,8 +1635,9 @@ pub(crate) fn mesh_collider(collision: &ColliderMesh) -> Collider {
 }
 
 /// The components of one **static world collider** built from a mesh's collision
-/// view, without a drawn mesh: the body, the explicit trimesh, the world layer
-/// and the declared [`BodyLayer`], placed at `transform`.
+/// view, without a drawn mesh: the body, the explicit trimesh, the stored-face
+/// side table the ground-blow sweep tests beside it ([`ColliderFaces`], task
+/// #2217), the world layer and the declared [`BodyLayer`], placed at `transform`.
 ///
 /// For a record the flat world definition cannot hold (scenery below a grouping
 /// node) whose drawing another system owns. `None` when the collision view
@@ -1634,6 +1653,7 @@ pub(crate) fn static_collider_components(
     Some((
         RigidBody::Static,
         mesh_collider(collision),
+        ColliderFaces::of(collision),
         avian_layers(static_world_membership()),
         BodyLayer(static_world_layer()),
         transform,
