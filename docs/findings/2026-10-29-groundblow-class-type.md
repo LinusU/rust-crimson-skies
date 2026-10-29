@@ -28,7 +28,8 @@ measured engine facts).
 
 1. **Which loader writes `node+0x34`: the GameZ node-array reader in `cls_zbd.c`
    (`D:\zipper\gamez\zclass\cls_zbd.c`, the name pushed at `0x62e354`), and it writes it by
-   copying the file.** The 208-byte `NodeCsC` info record already stores the kind at offset
+   copying the file.** (The same file's by-name reader `0x4e3690` is a second copy path;
+   section 1 has both.) The 208-byte `NodeCsC` info record already stores the kind at offset
    `0x34` (`cs_formats::gamez::NODE_TYPE_OFFSET` = 52 = the 36-byte name followed by the five
    words `flags 0x24`, `unk040 0x28`, `unk044 0x2c`, `zone_id 0x30`, `node_type 0x34`). The
    reader `fread`s whole 212-byte slots verbatim into the runtime node table
@@ -68,7 +69,11 @@ measured engine facts).
    whole 208-byte info record (`mov ecx, 0x34; rep stosd` = 52 dwords), then stamps the
    slot's `node_index` word; the class's constructor writes `+0x34` with a constant —
    object3d `mov dword [esi+0x34], 5` at `0x4d1363`, lod `…, 6` at `0x4e05ec`, camera
-   `mov edi, 1; … mov [esi+0x34], edi` at `0x4d21b1`/`0x4d21bc`. The node **copy**
+   `mov edi, 1; … mov [esi+0x34], edi` at `0x4d21b1`/`0x4d21bc`, and likewise world 2
+   (`0x4d9f6f`), window 3 (`0x4d6f35`), display 4 (`0x4d936d`), sequence 7 (`0x4e139d`),
+   light 9 (`0x4dbab9`), sound 10 (`0x4e0937`) and switch 11 (`0x4e041d`) — section 2's
+   table has each constructor and the record size it allocates, which is the size the
+   loader's reader for the same kind allocates. The node **copy**
    `0x4d8470` (a slot's `0x4000000` bit blocks it, `0x4d849b`) dispatches on the *source's*
    `node+0x34` through the table at `0x4d8568` and calls that class's copy, which calls the
    class constructor first and then the flag-guarded info copy `0x4d7b90`: the class
@@ -160,14 +165,28 @@ So a container node's class type is the file's; the loader writes only the *othe
 fields that need an address in this process (`+0x70`, `+0x3c`, `+0x5c`, `+0x48`, `+0xd0`) and
 never the class word.
 
+**The second file → node path.** `cls_zbd.c` also has a by-name reader at `0x4e3690`: it
+`fread`s 212-byte records one at a time (`push 0xd4`, error `Error reading GameZ Node buffer
+element.`, `0x62e980`), compares the stored name, and on a match allocates a node at
+`0x4e3809` and copies the whole 208-byte record into it (`mov ecx,0x34; lea esi,[esp+0x14];
+mov edi,ebp; rep movsd`). A node read by name therefore keeps the file's class word exactly
+like the array read does.
+
 ## 2. The runtime side: constructors write it, the copy preserves it
 
 | site | what it does |
 | --- | --- |
 | `0x4cc4f0` | the node allocator: a free slot from `[0x727c18]`'s 212-byte rows, `[0x62d414]` the next free index; `mov ecx, 0x34; rep stosd` zeroes 208 bytes, `or [slot+0xd0], 0x2000000` marks it live, `0x4d0430(7, node)` registers it, `[slot+0x4c]=[slot+0x4e]=-1` (the area partition's default) |
-| `0x4d1363` | object3d constructor `0x4d1330`: `mov dword [esi+0x34], 5`, `malloc(0x90)` at `[+0x38]` |
-| `0x4e05ec` | lod constructor `0x4e05e0`: `mov dword [esi+0x34], 6`, `malloc(0x5c)`, then the LOD defaults (`1`, `0`, `1000.0`, `1000000.0`) |
-| `0x4d21bc` | camera constructor `0x4d2180`: `mov edi,1; … mov [esi+0x34], edi`, `malloc(0x1e8)` |
+| `0x4d1363` | object3d constructor `0x4d1330` (Object3d.c): `mov dword [esi+0x34], 5`, `malloc(0x90)` at `[+0x38]` |
+| `0x4d21bc` | camera constructor `0x4d2180` (Camera.c): `mov edi,1; … mov [esi+0x34], edi`, `malloc(0x1e8)` |
+| `0x4d9f6f` | world constructor `0x4d9f60` (World.c): `mov dword [esi+0x34], 2`, `malloc(0xcc)` |
+| `0x4d6f35` | window constructor `0x4d6f00` (Window.c): `mov dword [edi+0x34], 3`, `malloc(0xf8)` |
+| `0x4d936d` | display constructor `0x4d9340` (Display.c): `mov dword [esi+0x34], 4`, `malloc(0x1c)` |
+| `0x4e05ec` | lod constructor `0x4e05e0` (LoD.c): `mov dword [esi+0x34], 6`, `malloc(0x5c)`, then the LOD defaults (`1`, `0`, `1000.0`, `1000000.0`) |
+| `0x4e139d` | sequence constructor `0x4e1370` (Seq.c): `mov dword [esi+0x34], 7`, `malloc(0x28)` |
+| `0x4dbab9` | light constructor `0x4dba40` (Light.c): `mov dword [edi+0x34], 9`, `malloc(0x100)` |
+| `0x4e0937` | sound constructor `0x4e08c0` (Sound.c): `mov dword [esi+0x34], 10`, `malloc(0x94)` |
+| `0x4e041d` | switch constructor `0x4e03f0` (Switch.c): `mov dword [esi+0x34], 11`, `malloc(0xc)` |
 | `0x4d8470` | the node copy: `test dword [eax+0x24], 0x4000000` → refuse; `mov ecx,[eax+0x34]; dec ecx; cmp ecx,0xa; ja` error; `jmp [ecx*4+0x4d8568]` |
 | `0x4d8568` | the copy table: `1→0x4d84d6`, `2→0x4d8524`, `3,4→0x4d8544`, `5→0x4d84bc`, `6→0x4d84c9`, `7→0x4d850a`, `8→0x4d84fd`, `9→0x4d84e3`, `10→0x4d84f0`, `11→0x4d8517` |
 | `0x4d84bc` | the object3d copy: `0x4d8160(node)` → `0x4d1330()` (constructor, writes 5) then `0x4d7b90(new, source)` |
@@ -178,6 +197,12 @@ never the class word.
 `[entry] = node`, and the entry is linked into `[0x62cfb8 + list*4]`. `0x4d0320`
 (`0x4d0280(7, name)` → it) walks that list comparing the name byte by byte and returns the
 entry's node, moving the found entry to the head. That is the lookup the plane path uses.
+
+Every class-typed node a constructor builds therefore carries its own constant, and the
+allocator's other call sites are not class constructors: class 8 has no constructor among
+them at all (its copy entry exists, but the loader refuses it and no CS container stores
+it), the by-name reader below copies the record instead, and the two builders `0x4eda46`
+and `0x5bab8d` store the new node inside another object and write no class word themselves.
 
 ## 3. Aircraft: the plane's own node, copied
 
@@ -258,7 +283,7 @@ path the port's world draw uses):
 | unknown | affects | evidence | resolved by |
 | --- | --- | --- | --- |
 | `[0x62cb50]` and the layer list `0xa070a8` at ground-blow time | whether the zone-1 water tiles pass the layer filter at all | `0x56c430` is measured; the global is set/restored by several callers (`0x49f3d7`, `0x4d65ea`, `0x4d65d8`/`0x4d6602`, `0x49f25f`) and its value during a mission is runtime state | a runtime capture (#358) or tracing the writers from the mission load |
-| whether a *store* to `node+0x34` exists outside the constructors and the file read | the universal phrasing of section 0.3 | the writers found are the constructors (`0x4d1363`, `0x4e05ec`, `0x4d21bc`), the copy dispatch (`0x4d8470`), and the file read (`0x4e2890`); every consumer reads it. A node slot is zeroed on allocation, so a stale value cannot survive | a store scan over the image with a symbol map, or a runtime watchpoint |
+| whether a *store* to `node+0x34` exists outside the constructors and the file reads | the universal phrasing of section 0.3 | the writers found are the ten class constructors (section 2's table), the two file reads (`0x4e2890`'s array read and `0x4e3690`'s by-name read, both 212-byte copies), and the copy dispatch `0x4d8470` (which reaches its class constructor); every consumer reads it. A node slot is zeroed on allocation, so a stale value cannot survive | a store scan over the image with a symbol map, or a runtime watchpoint |
 | `0x71e8b0`'s value for the ground blow's query | the mesh test's gate `node+0xc4 > [0x71e8b0]` in the type-5 handler | `0x4c7600` sets it to `-1` when asked for "no limit"; the only caller that raises it (`0x5b053a`) restores `-1` at `0x5b0559`..`0x5b0564`; all M01 colliders store `node+0xc4 = 160` | read the setter's callers in the mission path |
 | which `lod` band of an airframe the original draws per frame | not this task | the 87 `lod` nodes carry the bits and no mesh; their children are class 5 | the LOD selection work (#2054's neighbours) |
 
@@ -284,6 +309,14 @@ path the port's world draw uses):
 47c32b: 85c0746c8b5624f6c60174648b4e3483f905751df60008754e83c030eb325f5e33c05b8b4df464890d000000008be55dc383f90175070580000000eb1383f9087525f6c2047420f6400404741a83c008  # class.vehicle_type_switch
 62e6b0: 67436c73426c6f636b526561644e6f646528293a20556e7265636f676e697a6564206e6f646520636c61737320747970653a0a20206e6f6465203d20257320636c6173735f74797065203d2025640a004572726f722072656164  # class.message_unrecognized
 62e354: 443a5c7a69707065725c67616d657a5c7a636c6173735c636c735f7a62642e63  # class.message_file
+004d9f60: 56e88a25ffff8bf068cc0000006a01c7463402000000ff15b401a20089463833  # class.world_ctor
+004d6f2e: 68f80000006a01c7473403000000ff15b401a2008b  # class.window_ctor
+004d9369: 6a1c6a01c7463404000000ff15b401a200894638  # class.display_ctor
+004e1399: 6a286a01c7463407000000ff15b401a20056894638  # class.seq_ctor
+004dbaaf: 68000100006a01894724c7473409000000ff15b401a2008bf0  # class.light_ctor
+004e0924: 8b4624570d0001000068940000006a01894624c746340a000000ff15b401a2008bf8897e388b  # class.sound_ctor
+004e0419: 6a0c6a01c746340b000000ff15b401a200  # class.switch_ctor
+004e3801: c744241000000000e8e28cfeff8be8b9340000008d7424148bfdf3a58b4570  # class.by_name_copy
 ```
 
 ## Tests
@@ -296,7 +329,9 @@ Prefix `accept_groundblow_class_`, `crates/cs_content/tests/accept_groundblow_cl
   their own bytes; the loader's and the copy's dispatch windows hold
   `mov reg,[reg+0x34]`-shaped reads with the right table addresses; the loader table's
   per-kind record sizes equal the workspace's `*_DATA_BYTES` constants; `NODE_TYPE_OFFSET`
-  is `0x34`; the post-pass window contains no store to `0x34`; and the loader's message
+  is `0x34`; the post-pass window contains no store to `0x34`; every class constructor's
+  class constant and its `malloc` size match the loader's reader size for that kind; the
+  by-name reader copies 52 dwords of the record; and the loader's message
   calls the word `class_type`.
 * `accept_groundblow_class_bytes_match_the_engine_image` (ignored, needs `CS_ENGINE_IMAGE`):
   loads the image through the production loader (`cs_content::coordinates::load_engine_image`,
@@ -372,7 +407,13 @@ numbers independently and corrected four statements:
   successful-read log is `0x62e834`, and neither is `0x62e7f0` (that is the object3d error);
 * the `+0x5c` children allocation belongs to `0x4e31e0`, the class-data tail reached through
   `0x4e2ba0`, not to the post-pass window itself; and the `0x71e8b0` restore is the call at
-  `0x5b055f` (arguments pushed at `0x5b0559`), not `0x5b055d`.
+  `0x5b055f` (arguments pushed at `0x5b0559`), not `0x5b055d`;
+* the runtime-side enumeration was incomplete: the node allocator's call sites include the
+  constructors of classes 1, 2, 3, 4, 5, 6, 7, 9, 10 and 11, not only object3d/lod/camera,
+  and `cls_zbd.c`'s by-name reader `0x4e3690` is a second `212`-byte file → node copy. Eight
+  cited rows (the other constructors and the by-name copy) were added, and the rows test now
+  checks every constructor's class constant and `malloc` size against the loader's reader
+  size for that kind.
 
 The retail test gained the assertions for those numbers (the land count and its flag words,
 the collider zone histogram, the only-water flag split, the six named furniture nodes) and

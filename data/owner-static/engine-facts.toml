@@ -9435,3 +9435,67 @@ name = "class.message_file"
 va = 0x0062e354
 bytes = "443a5c7a69707065725c67616d657a5c7a636c6173735c636c735f7a62642e63"
 fact = "D:\\zipper\\gamez\\zclass\\cls_zbd.c — the source file every error in the node-array loader is stamped with, so the loader that reads the slots and dispatches on +0x34 is cls_zbd.c"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.world_ctor"
+va = 0x004d9f60
+bytes = "56e88a25ffff8bf068cc0000006a01c7463402000000ff15b401a20089463833"
+fact = "0x4d9f60 is the world node constructor (World.c): it allocates a 0xcc-byte class record (push 0xcc) and writes node+0x34 = 2 (c7463402000000) — the world kind's own class constant, and the same 0xcc bytes the loader's kind-2 reader allocates"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.window_ctor"
+va = 0x004d6f2e
+bytes = "68f80000006a01c7473403000000ff15b401a2008b"
+fact = "the window node constructor 0x4d6f00 (Window.c) allocates 0xf8 bytes and writes node+0x34 = 3 (c7473403000000), matching the loader's kind-3 reader size"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.display_ctor"
+va = 0x004d9369
+bytes = "6a1c6a01c7463404000000ff15b401a200894638"
+fact = "the display node constructor 0x4d9340 (Display.c) allocates 0x1c bytes and writes node+0x34 = 4 (c7463404000000), matching the loader's kind-4 reader size"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.seq_ctor"
+va = 0x004e1399
+bytes = "6a286a01c7463407000000ff15b401a20056894638"
+fact = "the sequence node constructor 0x4e1370 (Seq.c) allocates 0x28 bytes and writes node+0x34 = 7 (c7463407000000); no CS container stores kind 7 (the loader refuses it), but a runtime-built sequence node is class 7"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.light_ctor"
+va = 0x004dbaaf
+bytes = "68000100006a01894724c7473409000000ff15b401a2008bf0"
+fact = "the light node constructor 0x4dba40 (Light.c) allocates 0x100 bytes and writes node+0x34 = 9 (c7473409000000), matching the loader's kind-9 reader size"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.sound_ctor"
+va = 0x004e0924
+bytes = "8b4624570d0001000068940000006a01894624c746340a000000ff15b401a2008bf8897e388b"
+fact = "the sound node constructor 0x4e08c0 (Sound.c) allocates 0x94 bytes and writes node+0x34 = 10 (c746340a000000), matching the loader's kind-10 reader size"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.switch_ctor"
+va = 0x004e0419
+bytes = "6a0c6a01c746340b000000ff15b401a200"
+fact = "the switch node constructor 0x4e03f0 (Switch.c) allocates 0xc bytes and writes node+0x34 = 11 (c746340b000000); 11 is above the loader's last kind, so no CS container stores a switch node, but a runtime-built one is class 11"
+
+[[groundblow_class_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "class.by_name_copy"
+va = 0x004e3801
+bytes = "c744241000000000e8e28cfeff8be8b9340000008d7424148bfdf3a58b4570"
+fact = "the by-name node read in cls_zbd.c (0x4e3690: it freads 0xd4-byte records and compares the stored name, error 'Error reading GameZ Node buffer element.' 0x62e980) allocates a node at 0x4e3809 and copies the whole 208-byte record into it (mov ecx,0x34; lea esi,[esp+0x14]; mov edi,ebp; rep movsd) — a node looked up by name keeps the file's class word too"

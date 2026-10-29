@@ -57,6 +57,14 @@ const REQUIRED: &[&str] = &[
     "class.vehicle_type_switch",
     "class.message_unrecognized",
     "class.message_file",
+    "class.world_ctor",
+    "class.window_ctor",
+    "class.display_ctor",
+    "class.seq_ctor",
+    "class.light_ctor",
+    "class.sound_ctor",
+    "class.switch_ctor",
+    "class.by_name_copy",
 ];
 
 struct Row {
@@ -217,6 +225,61 @@ fn accept_groundblow_class_rows_match_the_finding_and_the_table() {
             &[0x89, 0x7e, 0x34]
         ),
         "`mov edi, 1; mov [esi+0x34], edi` is the camera class constant"
+    );
+
+    // Every node constructor writes its own class constant into the record the
+    // allocator zeroed, and allocates the record size the loader's reader for
+    // that same kind allocates: the two class spaces agree by construction.
+    for (name, class, size, reg) in [
+        (
+            "class.object3d_ctor",
+            NODE_TYPE_OBJECT3D,
+            OBJECT3D_DATA_BYTES,
+            0x46u8,
+        ),
+        ("class.lod_ctor", NODE_TYPE_LOD, LOD_DATA_BYTES, 0x46),
+        ("class.world_ctor", NODE_TYPE_WORLD, WORLD_DATA_BYTES, 0x46),
+        (
+            "class.window_ctor",
+            NODE_TYPE_WINDOW,
+            WINDOW_DATA_BYTES,
+            0x47,
+        ),
+        (
+            "class.display_ctor",
+            NODE_TYPE_DISPLAY,
+            DISPLAY_DATA_BYTES,
+            0x46,
+        ),
+        ("class.seq_ctor", 7, 0x28, 0x46),
+        ("class.light_ctor", NODE_TYPE_LIGHT, LIGHT_DATA_BYTES, 0x47),
+        ("class.sound_ctor", 10, 0x94, 0x46),
+        ("class.switch_ctor", 11, 0xc, 0x46),
+    ] {
+        let bytes = &row(&finding, name).bytes;
+        let mut store = vec![0xc7, reg, 0x34];
+        store.extend_from_slice(&class.to_le_bytes());
+        assert!(contains(bytes, &store), "{name} writes class {class}");
+        let mut push32 = vec![0x68];
+        push32.extend_from_slice(&(size as u32).to_le_bytes());
+        assert!(
+            contains(bytes, &push32) || contains(bytes, &[0x6a, size as u8]),
+            "{name} allocates its {size:#x}-byte record"
+        );
+    }
+
+    // The by-name reader copies the whole 208-byte record into a fresh node.
+    assert!(
+        contains(
+            &row(&finding, "class.by_name_copy").bytes,
+            &[
+                0xb9, 0x34, 0x00, 0x00, 0x00, // mov ecx, 0x34
+                0x8d, 0x74, 0x24, 0x14, // lea esi, [esp + 0x14]
+                0x8b, 0xfd, // mov edi, ebp
+                0xf3, 0xa5, // rep movsd
+            ]
+        ),
+        "the by-name reader copies 52 dwords of the file's record"
     );
 
     // The loader reads the slot (212-byte arithmetic, then fread through
