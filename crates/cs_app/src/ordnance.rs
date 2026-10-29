@@ -39,8 +39,8 @@
 //! `cs_sim` may not depend on `cs_content`, so the ledger that applies it per
 //! tick lives at this boundary, which sees both. Task #2186 gives that ledger
 //! a production producer: a registered component with a measured
-//! [`measured_tangler_field`] opens its field at fire time from the launch
-//! order's own pose, and a recorded `wep_12` registers with that field instead
+//! [`measured_tangler_field`] opens its field when the projectile bursts, at
+//! the projectile's position (task #2203), and a recorded `wep_12` registers with that field instead
 //! of the one-shot bounded area the runtime's `AreaEffect` expresses.
 //!
 //! [`session_ordnance_audit`] is the one reader that walks a whole live
@@ -867,6 +867,36 @@ pub struct OrdnanceNetworkEvent {
     pub kind: OrdnanceEventKind,
 }
 
+/// Opens the measured tangler field of a component that just burst, if it has
+/// one (task #2203).
+///
+/// The hook `0x4ba660` is called only from the impact/burst function
+/// `0x5ac7a0` and centres the field on the projectile's own position at that
+/// burst (`rocket+0x48`), owned by the shooter
+/// (`docs/findings/2026-10-29-t452-tangler-origin.md`). The caller passes the
+/// position the runtime holds for the item on the tick it bursts.
+fn open_burst_tangler(
+    session: &mut OrdnanceSession,
+    tick: &mut OrdnanceSessionTick,
+    at: Tick,
+    ordnance: &OrdnanceId,
+    shooter: ActorId,
+    centre: WorldPosition,
+) {
+    let Some(declaration) = session.tangler_fields.get(ordnance).cloned() else {
+        return;
+    };
+    let order = TanglerFieldOrder {
+        declaration,
+        owner: shooter,
+        centre,
+    };
+    match session.tangler.open(session.session_id, at, &order) {
+        Ok(field) => tick.tangler_opened.push(field),
+        Err(source) => tick.tangler_refused = Some(source),
+    }
+}
+
 /// Appends one event to the log and returns it for the per-tick report.
 fn push_network_event(
     log: &mut Vec<OrdnanceNetworkEvent>,
@@ -946,8 +976,8 @@ pub struct OrdnanceLaunch {
 /// does not register the component. Both open the same measured declaration
 /// (task #2185).
 ///
-/// The centre is the fire path's, not the ledger's: see
-/// [`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`].
+/// The centre is the opener's, not the ledger's: a burst passes the
+/// projectile's position (task #2203).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TanglerFieldOrder {
     /// The declaration the record lowered to.
@@ -955,7 +985,7 @@ pub struct TanglerFieldOrder {
     /// The actor whose weapon opened it. It is hit like every other actor
     /// inside the field.
     pub owner: ActorId,
-    /// Where the fire path centres it, world metres.
+    /// Where the opener centres it, world metres.
     pub centre: WorldPosition,
 }
 
@@ -975,7 +1005,7 @@ pub enum OrdnanceOrder {
         /// Whether the control is held this tick.
         requested: bool,
     },
-    /// Open one measured tangler field at fire time.
+    /// Open one measured tangler field.
     ///
     /// A replayed order opens a second field: unlike a launch, the order
     /// carries no once-only request id, because the fire path that produces it
@@ -1274,7 +1304,7 @@ pub struct OrdnanceSessionTick {
     /// Tangler fields that reached their expiry boundary this tick.
     pub tangler_expired: Vec<ExpiredTanglerField>,
     /// The tangler fields opened this tick, in order: one per `Tangler` order,
-    /// plus the field a launch opens at fire time for a component registered
+    /// plus the field a burst opens for a component registered
     /// with [`OrdnanceSession::register_tangler_field`].
     pub tangler_opened: Vec<TanglerFieldId>,
     /// One entry per live tangler field this tick, with every victim it
@@ -1381,9 +1411,9 @@ pub struct OrdnanceSession {
     /// The measured tangler fields and the tangle timers they leave on actors
     /// (task #2196). Session-confined like every other ledger here.
     tangler: TanglerLedger,
-    /// The measured tangler field each registered component opens at fire time
-    /// (task #2186), keyed by the component's id. A launch of a keyed id opens
-    /// that field from the launch order's own pose; an id with no entry opens
+    /// The measured tangler field each registered component opens when it bursts
+    /// (tasks #2186, #2203), keyed by the component's id. A burst of a keyed id
+    /// opens that field at the projectile's position; an id with no entry opens
     /// none.
     tangler_fields: BTreeMap<OrdnanceId, TanglerFieldDeclaration>,
     resolved_through: Option<Tick>,
@@ -1639,7 +1669,7 @@ impl OrdnanceSession {
         &self.tangler
     }
 
-    /// The measured tangler field one component opens at fire time, if it opens
+    /// The measured tangler field one component opens at its burst, if it opens
     /// one.
     #[must_use]
     pub fn tangler_field_for(&self, ordnance: &OrdnanceId) -> Option<&TanglerFieldDeclaration> {
@@ -1654,13 +1684,14 @@ impl OrdnanceSession {
     }
 
     /// Declares that a component opens `declaration`'s measured tangler field
-    /// when it is launched (task #2186).
+    /// when it bursts (tasks #2186, #2203).
     ///
-    /// This is the fire-time producer: the measured field is created at fire
-    /// time by the record's own fire path (T452-R.02 §1, `0x4b94e0`), so the
-    /// launch order that fires the component is the one place a field can
-    /// honestly open. The opening tick and the centre are the launch's, never
-    /// a clock or a pose invented here.
+    /// This is the burst producer: the field constructor `0x4b94e0` is called
+    /// only from the TANGLER hook `0x4ba660`, which the burst function
+    /// `0x5ac7a0` calls, centred on the projectile's position
+    /// (`docs/findings/2026-10-29-t452-tangler-origin.md`). A launch alone
+    /// opens nothing; the burst tick and the projectile's position there are
+    /// the opening tick and the centre, never a clock or a pose invented here.
     ///
     /// The declaration must be the measured shape this runtime can fly: a
     /// field created at fire time and re-applied every tick. A declaration
@@ -1958,17 +1989,6 @@ impl EngineStatus {
 // tick's own [`TargetPath`] list, exactly as
 // [`OrdnanceRuntime::open_area`] reads them.
 
-/// Claim: which world position the original's fire path hands the field
-/// constructor `0x4b94e0`.
-///
-/// Measured by task #2201 (`docs/findings/2026-10-29-t452-tangler-origin.md`):
-/// the caller is the burst hook, and it passes the projectile's position at
-/// the burst (`rocket+0x48`), so the field opens at burst, not at fire. The
-/// runtime still opens it at the launch origin on the launch tick, so the claim
-/// stays named until `T452-REG-TANGLER-BURST-OPEN` moves the open. This ledger
-/// takes the centre from its producer.
-pub const T452_REG_TANGLER_FIELD_ORIGIN_CLAIM: &str = "t452_reg.limit.tangler_field_origin";
-
 /// The identity of one open tangler field: a session-qualified, never-recycled
 /// serial, in the shape of [`ProjectileId`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1995,8 +2015,7 @@ pub struct OpenTanglerField {
     /// The actor whose weapon opened it. It is hit like every other actor
     /// inside; the measured tick excludes nobody.
     pub owner: ActorId,
-    /// Where it is centred, from the fire path
-    /// ([`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`]).
+    /// Where it is centred: the projectile's position at its burst.
     pub centre: WorldPosition,
     /// Its radius, metres, unsquared.
     pub radius_m: f64,
@@ -2320,7 +2339,7 @@ impl TanglerLedger {
     /// Opens one field from a declaration the fire path already lowered.
     ///
     /// The centre is the caller's, not a default and not derived from a pose
-    /// the ledger does not own ([`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`]).
+    /// the ledger does not own.
     /// The lifetime is the declaration's `TIME` in whole ticks, rounded up as
     /// the original's step is (`seconds_to_ticks`).
     ///
@@ -2793,27 +2812,6 @@ pub fn step_ordnance_session(
                             },
                         );
                         tick.events.push(event);
-                        // A measured tangler component opens its field on the
-                        // tick it fires (T452-R.02 §1: the fire path builds the
-                        // field object, `0x4b94e0`), from the pose the fire
-                        // path itself read. The centre is the launch origin the
-                        // effect above reports, never the launcher's actor
-                        // record or the world origin:
-                        // `T452_REG_TANGLER_FIELD_ORIGIN_CLAIM` keeps the part
-                        // the image does not pin.
-                        if let Some(declaration) =
-                            session.tangler_fields.get(&launch.ordnance).cloned()
-                        {
-                            let order = TanglerFieldOrder {
-                                declaration,
-                                owner: launch.shooter,
-                                centre: transform.origin,
-                            };
-                            match session.tangler.open(session.session_id, step.at, &order) {
-                                Ok(field) => tick.tangler_opened.push(field),
-                                Err(source) => tick.tangler_refused = Some(source),
-                            }
-                        }
                     }
                     Err(source) => tick
                         .orders_refused
@@ -2875,55 +2873,6 @@ pub fn step_ordnance_session(
         }
     }
 
-    // The tangler pass runs after the orders so a field opened at fire time on
-    // this tick applies on this tick, and it reads the same `TargetPath` list
-    // the proximity fuse and the area pass read, so it adds no input. Its own
-    // `apply` expires the tangle timers after applying, so a victim still
-    // inside a live field is re-tangled rather than reported expired. Only a
-    // transition is announced — a tangle beginning or clearing — never the
-    // per-tick re-application the measured field performs.
-    match session
-        .tangler
-        .apply(session.session_id, step.at, step.targets)
-    {
-        Ok(outcome) => {
-            for transition in &outcome.started {
-                let event = push_network_event(
-                    &mut session.events,
-                    &mut session.next_event_sequence,
-                    session.session_id,
-                    step.at,
-                    session.producer,
-                    OrdnanceEventKind::TangleStarted {
-                        target: transition.target,
-                        field: transition.field,
-                        expires_at: transition.expires_at,
-                    },
-                );
-                tick.events.push(event);
-            }
-            for expired in &outcome.expired {
-                let event = push_network_event(
-                    &mut session.events,
-                    &mut session.next_event_sequence,
-                    session.session_id,
-                    step.at,
-                    session.producer,
-                    OrdnanceEventKind::TangleExpired {
-                        target: expired.target,
-                        field: expired.field,
-                        expired_at: expired.expired_at,
-                    },
-                );
-                tick.events.push(event);
-            }
-            tick.tangler = outcome.passes;
-            tick.tangles_started = outcome.started;
-            tick.tangles_expired = outcome.expired;
-        }
-        Err(source) => tick.tangler_refused = Some(source),
-    }
-
     session.runtime.retarget_marker_seekers(session.session_id);
     if let Some(observation) = step.guidance {
         let guidance = session
@@ -2941,6 +2890,14 @@ pub fn step_ordnance_session(
                     .push(OrdnanceRoutingRefusal::MissingEngagement { projectile });
                 continue;
             };
+            open_burst_tangler(
+                session,
+                &mut tick,
+                step.at,
+                detonation.ordnance(),
+                detonation.shooter(),
+                detonation.position(),
+            );
             let mut blast = OrdnanceGuidanceBlast {
                 projectile,
                 shooter: detonation.shooter(),
@@ -3105,6 +3062,14 @@ pub fn step_ordnance_session(
                     continue;
                 };
 
+                // Every fuse trigger reaches the original's burst function, so
+                // the tangler field opens here, where the item is now.
+                if let Some(item) = session.runtime.get(&projectile) {
+                    let ordnance = item.definition().ordnance().clone();
+                    let centre = item.current();
+                    open_burst_tangler(session, &mut tick, step.at, &ordnance, shooter, centre);
+                }
+
                 let mut detonation = OrdnanceDetonation {
                     projectile,
                     shooter,
@@ -3234,6 +3199,56 @@ pub fn step_ordnance_session(
                 }
             }
         }
+    }
+
+    // The tangler pass runs after the orders and after every burst of the tick,
+    // so a field opened by an order or by a burst on this tick applies on this
+    // tick (task #2203), and it reads the same `TargetPath` list
+    // the proximity fuse and the area pass read, so it adds no input. Its own
+    // `apply` expires the tangle timers after applying, so a victim still
+    // inside a live field is re-tangled rather than reported expired. Only a
+    // transition is announced — a tangle beginning or clearing — never the
+    // per-tick re-application the measured field performs.
+    match session
+        .tangler
+        .apply(session.session_id, step.at, step.targets)
+    {
+        Ok(outcome) => {
+            for transition in &outcome.started {
+                let event = push_network_event(
+                    &mut session.events,
+                    &mut session.next_event_sequence,
+                    session.session_id,
+                    step.at,
+                    session.producer,
+                    OrdnanceEventKind::TangleStarted {
+                        target: transition.target,
+                        field: transition.field,
+                        expires_at: transition.expires_at,
+                    },
+                );
+                tick.events.push(event);
+            }
+            for expired in &outcome.expired {
+                let event = push_network_event(
+                    &mut session.events,
+                    &mut session.next_event_sequence,
+                    session.session_id,
+                    step.at,
+                    session.producer,
+                    OrdnanceEventKind::TangleExpired {
+                        target: expired.target,
+                        field: expired.field,
+                        expired_at: expired.expired_at,
+                    },
+                );
+                tick.events.push(event);
+            }
+            tick.tangler = outcome.passes;
+            tick.tangles_started = outcome.started;
+            tick.tangles_expired = outcome.expired;
+        }
+        Err(source) => tick.tangler_refused = Some(source),
     }
 
     // An item that retires has no engagement left to route, so its record goes
@@ -4804,7 +4819,7 @@ pub struct OriginalRegistrationReport {
     /// The claims this stage keeps, per record, because the runtime cannot
     /// express the measured value behind them.
     pub claims_kept: Vec<(String, Vec<String>)>,
-    /// The measured tangler fields the registered records open at fire time,
+    /// The measured tangler fields the registered records open at their burst,
     /// one per registered record that declares a `TANGLER` field (task #2186).
     ///
     /// They are the producer's input to
@@ -4974,7 +4989,7 @@ fn is_tangler(row: &OriginalComponentLaunch) -> bool {
 /// The declaration is the producer's answer to "does this component open a
 /// field, and which one"; it is handed to
 /// [`OrdnanceSession::register_tangler_field`], which opens it from the launch
-/// order's pose at fire time.
+/// projectile's position when it bursts.
 #[must_use]
 pub fn measured_tangler_field(row: &OriginalComponentLaunch) -> Option<TanglerFieldDeclaration> {
     let area = cs_content::ordnance::measure_component_behavior(row).area?;
@@ -5521,20 +5536,14 @@ pub fn register_measured_ordnance(
                     match registry.register(component) {
                         Ok(()) => {
                             // The field is measured with the component, so a
-                            // registered `TANGLER` record reports the field the
-                            // fire path will open along with the id. The one
-                            // part the measurement does not pin — which world
-                            // position the fire path hands the field — stays
-                            // named on it; what the suppressed force scalar is
-                            // is resolved (task #2179: the force block's thrust
-                            // magnitude), so it is not a kept claim.
+                            // registered `TANGLER` record reports the field its
+                            // burst will open along with the id. Every part the
+                            // earlier stages left unpinned is measured now: the
+                            // origin is the projectile's position at its burst
+                            // (task #2203) and the suppressed force scalar is
+                            // the force block's thrust magnitude (task #2179),
+                            // so the field keeps no claim of its own.
                             if let Some(field) = measured_tangler_field(row) {
-                                if !kept
-                                    .iter()
-                                    .any(|existing| existing == T452_REG_TANGLER_FIELD_ORIGIN_CLAIM)
-                                {
-                                    kept.push(T452_REG_TANGLER_FIELD_ORIGIN_CLAIM.to_owned());
-                                }
                                 tangler_fields.push(field);
                             }
                             outcomes.push(OriginalRegistrationOutcome::Registered {
@@ -5652,16 +5661,10 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
         // `t452_reg.limit.tangler_force_scalar_meaning` is resolved (task #2179:
         // the scalar is the force block's thrust magnitude) and no record keeps
         // it any more, so it needs no kept-claim context.
-        // The runtime opened the field (T452-REG-TANGLER-RUNTIME, done) but did
-        // not measure which position the original's fire path hands it, so the
-        // open owner is the measurement task, not the runtime it follows.
-        T452_REG_TANGLER_FIELD_ORIGIN_CLAIM => (
-            "which world position the original's fire path hands the field constructor \
-             0x4b94e0: measured as the projectile's position at its burst (rocket+0x48), \
-             opened at burst, while the runtime opens the field at fire time at the launch \
-             origin",
-            "T452-REG-TANGLER-BURST-OPEN",
-        ),
+        // `t452_reg.limit.tangler_field_origin` is resolved too (task #2203: the
+        // field opens at the projectile's burst, centred on its position there,
+        // and the runtime now opens it there), so it needs no kept-claim
+        // context either.
         T452_PER_BOX_WEIGHT_CLAIM => (
             "the flat per-enabled-box weight and cost this component's purchase charges, \
              which the runtime's per-unit mass has no field for",

@@ -20,8 +20,8 @@
 use bevy::prelude::World;
 use cs_app::ordnance::{
     OrdnanceEventKind, OrdnanceOrder, OrdnanceSession, OrdnanceSessionTick, OrdnanceStep,
-    OrdnanceStepRefusal, T452_REG_TANGLER_FIELD_ORIGIN_CLAIM, TanglerFieldId, TanglerFieldOrder,
-    TanglerFieldRefusal, TanglerLedger, step_ordnance_session,
+    OrdnanceStepRefusal, TanglerFieldId, TanglerFieldOrder, TanglerFieldRefusal, TanglerLedger,
+    step_ordnance_session,
 };
 use cs_app::scene::SceneGeneration;
 use cs_content::ordnance::{
@@ -486,10 +486,6 @@ fn accept_t452_tangler_the_field_opens_from_the_declaration_with_no_registered_c
     assert_eq!(opened.status.name, TANGLE_STATUS_NAME);
     assert_eq!(opened.status.claim, T452_REG_TANGLER_FORCE_SCALAR);
     assert_eq!(opened.status.floor_s, TANGLE_FLOOR_S);
-    assert_eq!(
-        T452_REG_TANGLER_FIELD_ORIGIN_CLAIM, "t452_reg.limit.tangler_field_origin",
-        "where the fire path centres the field stays a named claim"
-    );
 }
 
 /// Teardown releases the fields and the timers with the rest of the session.

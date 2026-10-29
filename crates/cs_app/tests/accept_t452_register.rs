@@ -593,8 +593,10 @@ fn accept_t452_register_a_tangler_record_registers_with_its_measured_field() {
     assert_eq!(projectile.area_effect(), None);
 
     // The claims the field's effect left open are resolved (their measured
-    // values live in the findings and the field), and the part the measurement
-    // does not pin stays named on the record's kept claims.
+    // values live in the findings and the field), and every part the
+    // measurement once left unpinned is measured now — the effect, the
+    // suppressed scalar and the field's origin — so no claim of the field
+    // stays named on the record.
     let kept = report
         .claims_kept
         .iter()
@@ -620,8 +622,8 @@ fn accept_t452_register_a_tangler_record_registers_with_its_measured_field() {
     assert!(
         kept.1
             .iter()
-            .any(|claim| claim == cs_app::ordnance::T452_REG_TANGLER_FIELD_ORIGIN_CLAIM),
-        "the field origin stays named: {:?}",
+            .all(|claim| claim != "t452_reg.limit.tangler_field_origin"),
+        "the field origin is measured and no longer kept: {:?}",
         kept.1
     );
 }

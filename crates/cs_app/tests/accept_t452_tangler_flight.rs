@@ -822,12 +822,15 @@ fn accept_t452_tangler_flight_the_suppressed_scalar_claim_is_resolved() {
         "the resolved claim is not kept: {:?}",
         kept.1
     );
-    // The one part the measurement does not pin is still named.
+    // The one part the measurement did not pin — the field's origin — is
+    // measured too (task #2203: the projectile's position at its burst), so no
+    // claim of the field stays named.
     assert!(
-        kept.1
+        !kept
+            .1
             .iter()
-            .any(|claim| claim == cs_app::ordnance::T452_REG_TANGLER_FIELD_ORIGIN_CLAIM),
-        "the field's origin stays named: {:?}",
+            .any(|claim| claim == "t452_reg.limit.tangler_field_origin"),
+        "the field's measured origin is not kept: {:?}",
         kept.1
     );
     // The status the field applies now names the measured meaning.
