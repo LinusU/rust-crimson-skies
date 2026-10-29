@@ -63,7 +63,11 @@ persists the same non-interpolated geometry.
 ## Claim
 
 `t452_reg.limit.tangler_field_origin` is resolved and removed from the
-registration report's kept claims and from `original_kept_claim_context`.
-`t452_reg.limit.tangler_force_scalar_meaning` stays named. Earlier evidence
-reports under `docs/findings/evidence/` are historical records of their own
-tasks and are not rewritten.
+registration report's kept claims and from `original_kept_claim_context`, so a
+registered `TANGLER` record keeps no claim of the field's own: the force
+scalar's identity was resolved separately by task #2179 (it is the force block's
+thrust magnitude) and its claim stays removed. Main's #2179 flight tests now
+fire, fly and burst before they read a tangle. Earlier evidence reports under
+`docs/findings/evidence/` are historical records of their own tasks and are not
+rewritten; the harness that regenerates `T452-REG-TANGLER-RUNTIME`'s report was
+updated to observe the burst open instead of the removed fire-time open.

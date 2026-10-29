@@ -48,7 +48,7 @@ use cs_content::ordnance::{
 use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy, DamageResolver};
 use cs_sim::flight::{EngineState, FlightInput, FlightModel, synthetic_fixed_wing};
 use cs_sim::time::TickRate;
-use cs_sim::weapons::{OrdnanceId, OrdnanceRegistry, StatusEffectTarget, TargetPath};
+use cs_sim::weapons::{OrdnanceId, OrdnanceRegistry, StatusEffectTarget, SweptHit, TargetPath};
 use cs_types::Tick;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Provenance};
@@ -68,16 +68,25 @@ const DT_S: f64 = 1.0 / 30.0;
 const TICKS_PER_SECOND: u32 = 30;
 const FIXED_HZ: u32 = 30;
 
-/// The mount node's pose: the position the fire path reads, and therefore the
-/// field centre. Deliberately not the world origin, so a field centred on the
-/// origin cannot pass.
+/// The mount node's pose: the position the fire path reads. The field is
+/// centred on the projectile's position when it bursts, not on this pose, so
+/// the two must stay apart.
 const MOUNT_ORIGIN: [f64; 3] = [4.0, 5.0, 10.0];
+
+/// Where the fixture projectile is on the burst tick: it leaves
+/// [`MOUNT_ORIGIN`] along -z at the record's measured `VELOCITY` (300 m/s, 10 m
+/// per 30 Hz tick) and has advanced on ticks 0, 1 and 2, so the field opens
+/// here (task #2203).
+const BURST_CENTRE: [f64; 3] = [4.0, 5.0, -20.0];
+
+/// The tick a swept contact bursts the projectile in these tests.
+const BURST_TICK: u64 = 2;
 
 /// Where the victim body is: 8 m from the field centre, inside the measured
 /// 10 m radius. `d2 = 64`, so the measured `max(2 s, 10 * (1 - d2 / RADIUS))`
 /// lands on its 2 s floor — the field's own `TIME`, and therefore the exact
 /// span this test can drive in one pass.
-const VICTIM_ORIGIN: [f64; 3] = [12.0, 5.0, 10.0];
+const VICTIM_ORIGIN: [f64; 3] = [12.0, 5.0, -20.0];
 
 /// `wep_12`'s measured `TIME`, seconds (T452-R.02 §1).
 const TANGLER_TIME_S: f64 = 2.0;
@@ -371,6 +380,19 @@ fn step(
     targets: &[TargetPath],
     at: u64,
 ) -> OrdnanceSessionTick {
+    step_with_impacts(world, session, damage, orders, targets, &[], at)
+}
+
+/// One step of a session that is told about swept contacts.
+fn step_with_impacts(
+    world: &mut World,
+    session: &mut OrdnanceSession,
+    damage: &mut DamageResolver,
+    orders: &[OrdnanceOrder],
+    targets: &[TargetPath],
+    impacts: &[SweptHit],
+    at: u64,
+) -> OrdnanceSessionTick {
     step_ordnance_session(
         world,
         session,
@@ -383,10 +405,47 @@ fn step(
             generation: GENERATION,
             guidance: None,
             targets,
-            impacts: &[],
+            impacts,
             blast_recipients: None,
             victim_nodes: None,
         },
+    )
+}
+
+/// A swept contact on the victim, at half the burst tick's flight.
+fn impact_on(victim: ActorId) -> SweptHit {
+    SweptHit {
+        projectile: projectile(0),
+        target: victim,
+        time_of_impact: 0.5,
+    }
+}
+
+/// Fires on tick 0, flies one quiet tick, and bursts the projectile on
+/// [`BURST_TICK`] with a swept contact on the victim; returns that tick's
+/// report. A launch alone opens no field (task #2203).
+fn fire_and_burst(
+    world: &mut World,
+    session: &mut OrdnanceSession,
+    damage: &mut DamageResolver,
+    targets: &[TargetPath],
+) -> OrdnanceSessionTick {
+    let first = step(world, session, damage, &[launch_order()], targets, 0);
+    assert_eq!(first.launched, vec![projectile(0)], "the record launches");
+    assert!(
+        first.tangler_opened.is_empty(),
+        "a launch alone opens no field"
+    );
+    let quiet = step(world, session, damage, &[], targets, 1);
+    assert!(quiet.tangler_opened.is_empty());
+    step_with_impacts(
+        world,
+        session,
+        damage,
+        &[],
+        targets,
+        &[impact_on(actor(2))],
+        BURST_TICK,
     )
 }
 
@@ -468,13 +527,11 @@ fn accept_t452_tangler_flight_the_measured_tangle_zeroes_only_the_thrust_term() 
     let victim = path(actor(2), VICTIM_ORIGIN);
     let mut ordnance_world = World::new();
     launcher(&mut ordnance_world);
-    step(
+    fire_and_burst(
         &mut ordnance_world,
         &mut session,
         &mut damage,
-        &[launch_order()],
         std::slice::from_ref(&victim),
-        0,
     );
     let tangle = session
         .tangle_status(&actor(2))
@@ -569,10 +626,10 @@ fn accept_t452_tangler_flight_the_measured_tangle_zeroes_only_the_thrust_term() 
 }
 
 /// The production chain: a registered `wep_12` fires through
-/// [`step_ordnance_session`], its measured field opens where the fire path read
-/// the pose, lives its measured `TIME` and re-applies the tangle every tick —
-/// and the body it reaches loses its thrust for exactly that span, then gets it
-/// back at the held throttle.
+/// [`step_ordnance_session`], its measured field opens where the projectile
+/// bursts, lives its measured `TIME` from there and re-applies the tangle every
+/// tick — and the body it reaches loses its thrust for exactly that span, then
+/// gets it back at the held throttle.
 #[test]
 fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_time() {
     let mut fixture = flight_fixture();
@@ -598,14 +655,15 @@ fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_t
     // the mount pose from it and the flight driver flies the body.
     launcher(fixture.world_mut());
 
-    // The field lives ticks 0..59, re-applying its per-hit routine each of
-    // them. Each hit gives the measured 2 s floor, so the victim's own timer is
-    // refilled to 60 ticks from every hit: the last hit is at tick 59 and the
-    // timer therefore clears at tick 119, 60 ticks after the field that put it
-    // there is gone (the measured `RaiseToMax`, `[[tangler_fact]]
-    // tangler.status_timer`, makes the tangle outlive its field by its own
-    // duration).
-    let tangle_boundary = TANGLER_LIFETIME_TICKS * 2 - 1;
+    // The burst is on tick 2 and the field lives its measured `TIME` from
+    // there, ticks 2..61, re-applying its per-hit routine each of them. Each hit
+    // gives the measured 2 s floor, so the victim's own timer is refilled to 60
+    // ticks from every hit: the last hit is at tick 61 and the timer therefore
+    // clears at tick 121, 60 ticks after the field that put it there is gone
+    // (the measured `RaiseToMax`, `[[tangler_fact]] tangler.status_timer`, makes
+    // the tangle outlive its field by its own duration).
+    let field_end = BURST_TICK + TANGLER_LIFETIME_TICKS;
+    let tangle_boundary = field_end + TANGLER_LIFETIME_TICKS - 1;
     let mut applications = 0_u64;
     let mut field_evaluated = false;
     for at in 0..=tangle_boundary {
@@ -614,35 +672,53 @@ fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_t
         } else {
             Vec::new()
         };
-        let tick = step(
+        let impacts: Vec<SweptHit> = if at == BURST_TICK {
+            vec![impact_on(actor(2))]
+        } else {
+            Vec::new()
+        };
+        let tick = step_with_impacts(
             fixture.world_mut(),
             &mut session,
             &mut damage,
             &orders,
             std::slice::from_ref(&victim),
+            &impacts,
             at,
         );
         if at == 0 {
             assert_eq!(tick.launched, vec![projectile(0)], "the record launches");
+            assert!(
+                tick.tangler_opened.is_empty() && session.tangler_fields().is_empty(),
+                "a launch alone opens no field"
+            );
+        }
+        if at == BURST_TICK {
             assert_eq!(
                 tick.tangler_opened,
                 vec![field_id(0)],
-                "the launch opens the component's measured field"
+                "the burst opens the component's measured field"
             );
             let open = session.tangler_fields();
             assert_eq!(open.len(), 1);
             assert_eq!(
                 open[0].centre,
+                position(BURST_CENTRE),
+                "the field opens at the projectile's position at its burst"
+            );
+            assert_ne!(
+                open[0].centre,
                 position(MOUNT_ORIGIN),
-                "the field opens where the record's flight says the weapon fired"
+                "the field is not centred where the weapon fired"
             );
             assert_eq!(
                 open[0].lifetime_ticks, TANGLER_LIFETIME_TICKS,
                 "TIME 2 s is 60 whole 30 Hz ticks"
             );
-            assert_eq!(open[0].expires_at, Tick(TANGLER_LIFETIME_TICKS));
+            assert_eq!(open[0].opened_at, Tick(BURST_TICK));
+            assert_eq!(open[0].expires_at, Tick(field_end));
         }
-        if at < TANGLER_LIFETIME_TICKS {
+        if (BURST_TICK..field_end).contains(&at) {
             assert_eq!(
                 tick.tangler.len(),
                 1,
@@ -661,25 +737,26 @@ fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_t
         } else {
             assert!(
                 tick.tangler.is_empty(),
-                "tick {at}: the field reached its boundary and is gone"
+                "tick {at}: the field is not open and passes nobody"
             );
-            if !field_evaluated {
+            if at >= field_end && !field_evaluated {
                 assert_eq!(
                     tick.tangler_expired.len(),
                     1,
                     "the field is reported gone exactly once, on its boundary tick"
                 );
+                assert_eq!(tick.tangler_expired[0].expired_at, Tick(field_end));
                 field_evaluated = true;
             }
         }
 
         // The tangle is the victim's own timer, refilled by every hit and then
         // counted down on its own boundary.
-        if at < tangle_boundary {
+        if (BURST_TICK..tangle_boundary).contains(&at) {
             let tangle = session
                 .tangle_status(&actor(2))
                 .unwrap_or_else(|| panic!("tick {at}: the body is tangled"));
-            let expected_expiry = if at < TANGLER_LIFETIME_TICKS {
+            let expected_expiry = if at < field_end {
                 at + TANGLER_LIFETIME_TICKS
             } else {
                 tangle_boundary
@@ -703,7 +780,7 @@ fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_t
                 0.0,
                 "tick {at}: a tangled body produces no thrust"
             );
-        } else {
+        } else if at >= tangle_boundary {
             assert!(
                 !session.is_tangled(&actor(2)),
                 "tick {at}: the tangle cleared on its own boundary"
@@ -728,6 +805,12 @@ fn accept_t452_tangler_flight_a_registered_wep_12_tangles_a_body_for_its_field_t
                 12_000.0,
                 "tick {at}: the thrust returns at the held throttle once the tangle clears"
             );
+        } else {
+            assert!(
+                !session.is_tangled(&actor(2)),
+                "tick {at}: nothing is tangled before the projectile bursts"
+            );
+            assert!(session.tangler_fields().is_empty());
         }
     }
     assert_eq!(
@@ -749,13 +832,11 @@ fn accept_t452_tangler_flight_a_body_whose_producer_stops_is_not_tangled() {
     let victim = path(actor(2), VICTIM_ORIGIN);
     let mut ordnance_world = World::new();
     launcher(&mut ordnance_world);
-    step(
+    fire_and_burst(
         &mut ordnance_world,
         &mut session,
         &mut damage,
-        &[launch_order()],
         std::slice::from_ref(&victim),
-        0,
     );
     let tangle = session
         .tangle_status(&actor(2))
