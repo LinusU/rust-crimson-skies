@@ -291,3 +291,42 @@ Prefix `accept_groundblow_class_`, `crates/cs_content/tests/accept_groundblow_cl
   all class 5, the 347 water nodes (all class 5, `zone_id = 1`, none with `0x20`), the 43
   box-path land nodes, the 435 flagged non-object nodes and their kinds, `g28530`/`g28603`,
   the airframe roots and `bloodhawk`'s subtree, and that no class-6 node binds a mesh.
+
+## Commands run
+
+Branch `rally/2213-measure-the-runtime-class-type-node-0x34`, rebased onto `origin/main`
+`cafd0ba7b` (which had moved twice during the task). Every check below ran on the pushed
+head after the rebase; CI ran the full workspace suite on that exact commit.
+
+```sh
+cargo fmt --all -- --check                                            # exit 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
+cargo test --locked -p cs_content                                     # exit 0 (686 passed, 246 ignored, + 3 doc-tests)
+cargo test --locked -p cs_content -- accept_groundblow_class_ --include-ignored
+#   exit 0: 3 tests discovered, 3 passed (2 need CS_ENGINE_IMAGE / CS_GAME_DIR)
+cargo test --locked -p cs_content -- accept_groundblow --include-ignored
+#   exit 0: 9 passed — the #2209 and #2212 suites still read their own rows of the table
+cargo test --locked -p cs_app --test cs_app_tests_a -- accept_crash_a --include-ignored
+#   exit 0: 3 passed — the committed table still parses through cs_app::engine_facts
+cargo test --locked -p cs_app --test cs_app_tests_d -- accept_owner_facts_table --include-ignored
+#   exit 0: 7 passed, including the image re-read of the production sections' cited bytes
+cargo test --locked -p cs_xtask --test cs_xtask_tests -- accept_test_bin
+#   exit 0: 11 passed — one test binary per crate, and this file is reached from main.rs
+```
+
+Sensitivity, checked rather than assumed (each perturbation reverted before the checks
+above; `git status --short` clean):
+
+* the finding's `class.object3d_ctor` window's `c7463405000000` changed to
+  `c7463406000000` → `accept_groundblow_class_rows_match_the_finding_and_the_table` fails
+  with `class.object3d_ctor bytes` (the finding and the committed table disagree), so the
+  rows test is not a restatement of the same constant;
+* the retail test's collider count changed `2393` → `2392` → it fails with
+  `left: 2393, right: 2392`, so the pinned per-kind numbers are compared against what the
+  production readers return rather than merely printed.
+
+`cargo test --workspace --locked` was **not** run locally (AGENTS.md: CI runs the full suite,
+and its run on the pushed commit is the run of record). Nothing but
+`data/owner-static/engine-facts.toml` is a production path this branch changes, and its two
+consumers — `cs_content`'s and `cs_app`'s suites — are the ones run above, with the tests that
+need the image or the installation included.
