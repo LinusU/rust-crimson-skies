@@ -8315,3 +8315,37 @@ name = "tangler.ai_gate"
 va = 0x004202e3
 bytes = "f686dc020000020f85a5030000"
 fact = "an AI decision path (0x4202c8..0x4202ea) tests the actor status word against 2 and takes the branch to 0x420695 instead of falling through to its action setup at 0x4202f0 when the flag is set"
+
+# T452-REG-TANGLER-ORIGIN (task #2201): who calls the tangler field constructor, and with what.
+
+[[tangler_origin_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_origin.hook_arguments"
+va = 0x004ba676
+bytes = "8b5c24148b83"
+fact = "the TANGLER hook 0x4ba660 (the callback stored at weapon+0x20c by 0x5aec90) takes (weapon, record, rocket) cdecl; after its SEH prologue and push ebx, mov ebx,[esp+0x14] is the weapon (0x4ba676) and mov edi,[esp+0x24] (0x4ba68a) is the third argument, the rocket"
+
+[[tangler_origin_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_origin.owner_lookup"
+va = 0x004ba68a
+bytes = "8b7c24248b4f0451b9b8da7100e84458ffff"
+fact = "the owner handed to the constructor is the actor found by id [rocket+4] in the actor table at 0x71dab8 (0x4afee0 walks the list comparing [entry+8]+0xc with the id): the shooter recorded on the projectile, not the launcher's mount"
+
+[[tangler_origin_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_origin.centre_argument"
+va = 0x004ba6c7
+bytes = "740d5383c74857568bc8e80aeeffff"
+fact = "the call pushes the weapon (ebx), the pointer rocket+0x48 (edi+0x48) and the owner (esi) and calls 0x4b94e0 with ecx the new 0x1c-byte field: the three floats the constructor copies into field+0x08 (0x4b94f6..0x4b9506) are the rocket node's position at +0x48, which the flak burst finding names the burst position"
+
+[[tangler_origin_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_origin.hook_site"
+va = 0x005ac7c3
+bytes = "8b7424408b860c0200003bc18b7c2448740c575556ffd0"
+fact = "the hook is invoked only from the impact/burst function 0x5ac7a0(weapon, record, rocket, override): esi=weapon, edi=rocket, push edi/ebp/esi then call [weapon+0x20c] (0x5ac7c7..0x5ac7d8), so the field is created when a projectile bursts or impacts, not when the launcher fires"

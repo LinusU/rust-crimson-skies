@@ -92,3 +92,96 @@ fn accept_t452_tangler_image_rows_match_the_engine_image() {
         );
     }
 }
+
+/// `(name, va, bytes, fact)` of every committed `[[tangler_origin_fact]]` row.
+fn origin_rows() -> Vec<(String, u64, Vec<u8>, String)> {
+    let field = |chunk: &str, name: &str| {
+        chunk
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(name)?.trim_start().strip_prefix('=')?;
+                Some(rest.trim().trim_matches('"').to_string())
+            })
+            .unwrap_or_else(|| panic!("a tangler_origin_fact row lacks {name}"))
+    };
+    TABLE
+        .split("[[tangler_origin_fact]]")
+        .skip(1)
+        .map(|chunk| chunk.split("\n[").next().unwrap_or(chunk))
+        .map(|chunk| {
+            let va = field(chunk, "va");
+            let va = u64::from_str_radix(va.trim_start_matches("0x"), 16).expect("hex va");
+            let hex = field(chunk, "bytes");
+            let bytes = (0..hex.len() / 2)
+                .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("hex byte"))
+                .collect();
+            assert_eq!(field(chunk, "provenance"), "static");
+            (field(chunk, "name"), va, bytes, field(chunk, "fact"))
+        })
+        .collect()
+}
+
+/// Task #2201: the rows name the caller's three constructor arguments and the
+/// one site that invokes the hook.
+#[test]
+fn accept_t452_tangler_origin_rows_name_the_caller_sources() {
+    let rows = origin_rows();
+    let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "tangler_origin.hook_arguments",
+            "tangler_origin.owner_lookup",
+            "tangler_origin.centre_argument",
+            "tangler_origin.hook_site",
+        ]
+    );
+    let get = |name: &str| rows.iter().find(|r| r.0 == name).expect("committed row");
+    // `add edi, 0x48` before `call 0x4b94e0`: the centre is rocket+0x48.
+    let centre = get("tangler_origin.centre_argument");
+    assert_eq!(centre.2[3..6], [0x83, 0xc7, 0x48]);
+    assert_eq!(centre.2[centre.2.len() - 5], 0xe8);
+    // `mov ecx, [edi+4]`: the owner id is rocket+4.
+    assert_eq!(
+        get("tangler_origin.owner_lookup").2[4..7],
+        [0x8b, 0x4f, 0x04]
+    );
+    // `call eax` loaded from `[esi+0x20c]`, in the burst function.
+    let site = get("tangler_origin.hook_site");
+    assert_eq!(site.2[4..10], [0x8b, 0x86, 0x0c, 0x02, 0x00, 0x00]);
+    assert_eq!(site.2[site.2.len() - 2..], [0xff, 0xd0]);
+}
+
+/// The call `0x4ba6d1` is the one and only direct caller of `0x4b94e0` in the
+/// image, every cited window is in the image, and the hook site is a call
+/// inside the burst function's range.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_t452_tangler_origin_rows_match_the_engine_image() {
+    let path = std::env::var_os("CS_ENGINE_IMAGE").expect(
+        "CS_ENGINE_IMAGE is not set: this measurement needs the owner-supplied decrypted \
+         executable",
+    );
+    let image = std::fs::read(path).expect("the engine image reads");
+    for (name, va, bytes, _) in origin_rows() {
+        let offset = usize::try_from(va - IMAGE_BASE).expect("offset");
+        assert_eq!(
+            &image[offset..offset + bytes.len()],
+            bytes.as_slice(),
+            "{name} at 0x{va:x}"
+        );
+    }
+    // Closed inventory of direct `call`/`jmp rel32` sites targeting 0x4b94e0.
+    let target = 0x4b_94e0_i64;
+    let mut callers = Vec::new();
+    for offset in 0x1000..image.len().min(0x20_2000) - 5 {
+        if matches!(image[offset], 0xe8 | 0xe9) {
+            let rel = i32::from_le_bytes(image[offset + 1..offset + 5].try_into().unwrap());
+            let va = offset as i64 + IMAGE_BASE as i64;
+            if va + 5 + i64::from(rel) == target {
+                callers.push(va);
+            }
+        }
+    }
+    assert_eq!(callers, [0x4b_a6d1]);
+}

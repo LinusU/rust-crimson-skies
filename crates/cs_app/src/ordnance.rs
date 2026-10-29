@@ -1956,11 +1956,12 @@ impl EngineStatus {
 /// Claim: which world position the original's fire path hands the field
 /// constructor `0x4b94e0`.
 ///
-/// The finding pins the constructor, the field's own `+0x08` position slot,
-/// its `RADIUS²`/`TIME` slots and its tick, but not which entity's position
-/// the caller passes — the launcher at fire time, the projectile's first
-/// pose, or another point. This ledger therefore takes the centre from its
-/// producer and names the gap rather than choosing one of them.
+/// Measured by task #2201 (`docs/findings/2026-10-29-t452-tangler-origin.md`):
+/// the caller is the burst hook, and it passes the projectile's position at
+/// the burst (`rocket+0x48`), so the field opens at burst, not at fire. The
+/// runtime still opens it at the launch origin on the launch tick, so the claim
+/// stays named until `T452-REG-TANGLER-BURST-OPEN` moves the open. This ledger
+/// takes the centre from its producer.
 pub const T452_REG_TANGLER_FIELD_ORIGIN_CLAIM: &str = "t452_reg.limit.tangler_field_origin";
 
 /// The identity of one open tangler field: a session-qualified, never-recycled
@@ -5646,8 +5647,10 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
         ),
         T452_REG_TANGLER_FIELD_ORIGIN_CLAIM => (
             "which world position the original's fire path hands the field constructor \
-             0x4b94e0 (the field's own +0x08 slot is measured, not the caller's source)",
-            "T452-REG-TANGLER-RUNTIME",
+             0x4b94e0: measured as the projectile's position at its burst (rocket+0x48), \
+             opened at burst, while the runtime opens the field at fire time at the launch \
+             origin",
+            "T452-REG-TANGLER-BURST-OPEN",
         ),
         T452_PER_BOX_WEIGHT_CLAIM => (
             "the flat per-enabled-box weight and cost this component's purchase charges, \
