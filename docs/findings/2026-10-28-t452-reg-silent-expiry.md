@@ -281,3 +281,14 @@ and the deferral holds only on the tick the cap first falls due. Two acceptance
 tests cover both, and each fails when its guard is removed (sensitivity table
 above). Nothing else in the acceptance path changed; the per-id registration
 outcomes and the two recorded `wep_13` flights are identical before and after.
+
+## Update (2026-10-29, task #2186)
+
+The one id this stage left blocked is registered now: `wep_12`'s `TANGLER`
+field is expressed by its own runtime field and opens at fire time in
+`step_ordnance_session` (`docs/findings/2026-10-29-t452-reg-tangler-runtime.md`),
+so the registration report this stage recorded has all sixteen ids registered
+and none blocked. The acceptance test
+`accept_t452_silent_retail_the_kept_claims_are_not_touched` was updated to
+assert that outcome instead of the old blocker; the smoke and flak claims it
+also checks are unchanged.

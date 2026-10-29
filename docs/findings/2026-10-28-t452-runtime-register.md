@@ -311,3 +311,13 @@ does — that its `VELOCITY` is the speed you would see, that its blast reaches 
 actors the original's would, or that its marker lasts the same time on screen.
 This awards at most **checked**, and no agent review replaces the owner's human
 approval.
+
+## Update (2026-10-29, task #2186)
+
+The sixteen-id gap recorded here is closed for `wep_12`: its `TANGLER` field
+registers and opens at fire time through the production session
+(`docs/findings/2026-10-29-t452-reg-tangler-runtime.md`), so the retail
+registration report now has sixteen of sixteen ids registered and no blocked
+id. The finding's other statements — the ten measured sites it pinned, the
+designed vocabulary it names, and everything it does not claim — stand
+unchanged.
