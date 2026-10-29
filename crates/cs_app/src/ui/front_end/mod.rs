@@ -219,8 +219,8 @@ pub use shell::{
 };
 pub use sound::{
     DeclaredSound, GLOBALS_SECTION, MenuAudio, MenuAudioEvent, MenuCue, MenuMix, MenuMusic,
-    MenuSamples, MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, cue_sample_id, decode_wave,
-    music_sample_id,
+    MenuSamples, MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, SharedSettings, cue_sample_id,
+    decode_wave, music_sample_id,
 };
 pub use start_flow::{
     FIRST_MISSION, FRONT_END_SMOKE_SUBDIR, MISSION_SMOKE_SUBDIR, MissionEnd, NOT_IMPLEMENTED,

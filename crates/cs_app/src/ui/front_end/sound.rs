@@ -39,17 +39,21 @@
 //! * **Pause/continue on the cabin** — the cabin is not presented yet.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use cs_content::catalog::baseline::install_file_key;
 use cs_formats::ParseContext;
 use cs_formats::zbd::{SampleFormat, decode_sound_sample};
 use cs_sim::audio_events::{
-    AudioBus, AudioDevice, DeviceError, DeviceVoiceId, VoiceStart, VoiceStop, VoiceUpdate,
+    AudioBus, AudioDevice, DeviceError, DeviceVoiceId, VoiceLevel, VoiceStart, VoiceStop,
+    VoiceUpdate,
 };
 use cs_types::content::{ContentId, ContentKind};
 
 use super::original::script_member;
 use super::retail::FrontEndScreens;
+use crate::accessibility::session::SettingsSession;
+use crate::audio::bus_levels::apply_bus_level;
 use crate::audio::{
     CapabilityDeclaration, FALLBACK_MUSIC_CONTAINER, InMemorySamples, PREFERRED_MUSIC_CONTAINER,
     PcmAudio, open_audible_device,
@@ -384,6 +388,10 @@ pub enum MenuAudioEvent {
     },
 }
 
+/// The run's one live accessibility session, shared with the front end's audio
+/// so the bus levels it reads are the ones the player has set right now.
+pub type SharedSettings = Arc<Mutex<SettingsSession>>;
+
 /// The front end's audio: the music loop and the UI cues, over any
 /// [`AudioDevice`].
 #[derive(Debug)]
@@ -397,6 +405,12 @@ pub struct MenuAudio {
     /// linear gain and the in-game music check box. Unit gain and on until
     /// the page says otherwise.
     mix: MenuMix,
+    /// The live accessibility session whose bus levels scale every voice
+    /// (F52-W2). `None` plays at the mix alone, as before the session existed.
+    settings: Option<SharedSettings>,
+    /// The gain last handed to the music voice, so a refresh only talks to the
+    /// device when the level changed.
+    music_gain_sent: f64,
 }
 
 /// The linear levels the Audio preferences page sets.
@@ -448,7 +462,50 @@ impl MenuAudio {
             music_voice: None,
             events: Vec::new(),
             mix: MenuMix::default(),
+            settings: None,
+            music_gain_sent: UNIT_GAIN,
         })
+    }
+
+    /// Scales the music (Music bus) and cues (Ui bus) by the live session's
+    /// bus levels. The session is read at every start and refresh, never
+    /// copied.
+    #[must_use]
+    pub fn with_settings(mut self, settings: SharedSettings) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
+    /// `gain` after the live bus level of `bus`.
+    fn leveled(&self, bus: AudioBus, gain: f64) -> f64 {
+        let Some(settings) = &self.settings else {
+            return gain;
+        };
+        let session = settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        apply_bus_level(session.presentation(), bus, VoiceLevel { gain, pitch: 1.0 }).gain
+    }
+
+    /// Pushes the music voice's gain again when the live Music bus level (or
+    /// the mix) moved since it was last sent; cheap when nothing changed.
+    pub fn refresh_bus_levels(&mut self) {
+        let Some(voice) = self.music_voice else {
+            return;
+        };
+        let gain = self.leveled(AudioBus::Music, self.mix.music_gain);
+        if gain.to_bits() == self.music_gain_sent.to_bits() {
+            return;
+        }
+        self.music_gain_sent = gain;
+        let _ = self.device.update_voice(
+            voice,
+            VoiceUpdate {
+                gain,
+                pan: 0.0,
+                pitch: 1.0,
+            },
+        );
     }
 
     /// Applies the Audio page's mix at once: the check box starts or stops the
@@ -461,15 +518,9 @@ impl MenuAudio {
             self.stop_music();
             return;
         }
-        if let Some(voice) = self.music_voice {
-            let _ = self.device.update_voice(
-                voice,
-                VoiceUpdate {
-                    gain: mix.music_gain,
-                    pan: 0.0,
-                    pitch: 1.0,
-                },
-            );
+        if self.music_voice.is_some() {
+            self.music_gain_sent = f64::NAN;
+            self.refresh_bus_levels();
         } else if !was_on {
             self.start_music();
         }
@@ -501,10 +552,12 @@ impl MenuAudio {
         if self.music_voice.is_some() || !self.mix.music_on {
             return;
         }
+        let gain = self.leveled(AudioBus::Music, self.mix.music_gain);
+        self.music_gain_sent = gain;
         let start = VoiceStart {
             asset: self.music.clone(),
             bus: AudioBus::Music,
-            gain: self.mix.music_gain,
+            gain,
             pan: 0.0,
             pitch: 1.0,
         };
@@ -542,7 +595,7 @@ impl MenuAudio {
         let start = VoiceStart {
             asset: asset.clone(),
             bus: AudioBus::Ui,
-            gain: self.mix.effects_gain,
+            gain: self.leveled(AudioBus::Ui, self.mix.effects_gain),
             pan: 0.0,
             pitch: 1.0,
         };

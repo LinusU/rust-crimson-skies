@@ -98,6 +98,7 @@ mod evidence_fe_menu_3;
 mod evidence_fe_menu_4;
 mod evidence_parity5_main_menu;
 mod evidence_parity5_start_flow_04;
+mod f52_w2_menu_audio;
 mod fe_menu_1;
 mod fe_menu_2;
 mod fe_menu_3;

@@ -2724,6 +2724,9 @@ fn sync_notice_scene(world: &mut World, state: &mut ShellResource) {
 /// values while the page is open (`AUDIO.SCRIPT` applies them live), the
 /// committed ones otherwise (Cancel puts them back).
 fn sync_audio_page(state: &mut ShellResource) {
+    if let Some(menu) = &mut state.audio {
+        menu.refresh_bus_levels();
+    }
     let on = state
         .shell
         .section_name()
