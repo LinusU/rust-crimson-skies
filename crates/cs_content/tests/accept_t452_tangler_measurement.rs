@@ -58,6 +58,8 @@ fn accept_t452_tangler_the_committed_rows_cover_the_measured_sites() {
             "tangler.countdown_other",
             "tangler.boost_refuse",
             "tangler.ai_gate",
+            "tangler.thrust_scalar",
+            "tangler.thrust_vector",
         ]
     );
     let get = |name: &str| rows.iter().find(|r| r.0 == name).expect("committed row");
@@ -70,6 +72,24 @@ fn accept_t452_tangler_the_committed_rows_cover_the_measured_sites() {
     // `test byte ptr [esi+0x2dc], 2` followed by the force routine's zeroing.
     assert_eq!(get("tangler.force_zero").1, 0x0048_fdd0);
     assert!(get("tangler.force_zero").3.contains("0.0"));
+    // What the zeroed scalar is: the throttle * S * coefficient chain that
+    // feeds it, and the only place it is used, the thrust vector.
+    assert_eq!(get("tangler.thrust_scalar").1, 0x0048_fde1);
+    assert_eq!(
+        get("tangler.thrust_scalar").2[..6],
+        [0xd9, 0x86, 0x6c, 0x06, 0x00, 0x00],
+        "`fld dword ptr [esi+0x66c]` opens the throttle * S * scalar chain"
+    );
+    assert_eq!(get("tangler.thrust_vector").1, 0x0048_fe91);
+    assert_eq!(
+        get("tangler.thrust_vector").2[..3],
+        [0xd9, 0x45, 0xf8],
+        "`fld dword ptr [ebp-8]` is the scalar's only use"
+    );
+    assert!(
+        get("tangler.thrust_vector").3.contains("thrust force"),
+        "the row states the physical meaning the claim asked for"
+    );
 }
 
 /// Every cited byte window is in the owner's decrypted executable.
@@ -82,7 +102,7 @@ fn accept_t452_tangler_image_rows_match_the_engine_image() {
     );
     let image = std::fs::read(path).expect("the engine image reads");
     let rows = committed_rows();
-    assert_eq!(rows.len(), 9);
+    assert_eq!(rows.len(), 11);
     for (name, va, bytes, _) in rows {
         let offset = usize::try_from(va - IMAGE_BASE).expect("offset");
         assert_eq!(
