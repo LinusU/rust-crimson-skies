@@ -251,6 +251,7 @@ mod accept_m01_shipwreck_gray_triangles;
 mod accept_m01_smoke_c3_probes;
 mod accept_m01_smoke_no_teleport;
 mod accept_m01_window_hud_pending_objective;
+mod accept_ordnance_impacts_filter;
 mod accept_parity2_dmg_fx_d_damage_frame;
 mod accept_parity2_m01_missing_terrain;
 mod accept_parity2_m01_target_indicators;
