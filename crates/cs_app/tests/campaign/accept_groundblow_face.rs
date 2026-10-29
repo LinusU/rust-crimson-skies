@@ -28,7 +28,8 @@ use cs_app::mission_session::{LaunchCinematic, build_headless, stage_for, teardo
 use cs_app::physics::BodyLayer;
 use cs_app::playtest::scene::PlaytestSea;
 use cs_app::playtest::world_sweep::{
-    OBJECT3D_CLASS_TYPE, SweepTarget, ground_blow_segment, nearest_contact, probe_in_world,
+    GroundBlowSegment, OBJECT3D_CLASS_TYPE, SweepTarget, ground_blow_segment, nearest_contact,
+    probe_in_world,
 };
 use cs_app::render::bevy_mesh::{ColliderFaces, ColliderMesh};
 use cs_content::mesh::CollisionMesh;
@@ -252,6 +253,115 @@ fn accept_groundblow_face_two_sided_quad_accepts_a_back_side_hit() {
         nearest_contact(&from_below, [target(entity, &collider, None)]),
         None,
         "no face record: the triangle path stays one-sided"
+    );
+}
+
+/// The stored quad rotated 60° about `x`: the proper rotation takes the flat
+/// quad's `(0, 20, 0)` normal to `(0, 10, 17.320508)` — dominant axis `z`,
+/// `|N_dom| / |N| = cos 60°`.
+fn tilted_quad() -> (ColliderMesh, ColliderFaces, Collider) {
+    let mesh = RawMesh {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 3.464_101_7, -2.0],
+            [-5.0, 3.464_101_7, -2.0],
+            [-5.0, -0.866_025_4, 0.5],
+        ],
+        normals: Vec::new(),
+        polygons: vec![RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 0,
+            corners: (0u32..4)
+                .map(|position| RawCorner {
+                    position,
+                    normal: None,
+                    uv: None,
+                    color: None,
+                })
+                .collect(),
+        }],
+    };
+    let collision = ColliderMesh::of(&CollisionMesh::of(&mesh));
+    let faces = ColliderFaces::of(&collision);
+    let collider = Collider::trimesh(
+        collision
+            .vertices()
+            .iter()
+            .copied()
+            .map(Vec3::from)
+            .collect(),
+        collision.indices().to_vec(),
+    );
+    (collision, faces, collider)
+}
+
+/// A segment through `point` along `axis`, `over` metres before it and
+/// `under` metres past it — built directly rather than through
+/// [`ground_blow_segment`], which only aims along an attitude's nose.
+fn segment_through(point: [f64; 3], axis: [f64; 3], over: f64, under: f64) -> GroundBlowSegment {
+    let from = [
+        point[0] - axis[0] * over,
+        point[1] - axis[1] * over,
+        point[2] - axis[2] * over,
+    ];
+    let to = [
+        point[0] + axis[0] * under,
+        point[1] + axis[1] * under,
+        point[2] + axis[2] * under,
+    ];
+    GroundBlowSegment {
+        from_m: from,
+        to_m: to,
+        axis,
+        length_m: over + under,
+    }
+}
+
+/// The inside-edge walk's tolerance is the flat projected `-0.0001` constant
+/// of `0x609180`, not a normal-scaled one: on a face tilted so its dominant
+/// axis holds only `cos 60°` of the normal, a plane crossing just outside an
+/// edge but inside the projected band still answers — where a
+/// `dot(edge × r, N) > -1e-4 * |N_dom|` reading of the same tolerance
+/// rejects it.
+#[test]
+fn accept_groundblow_face_inside_walk_uses_the_flat_projected_tolerance() {
+    let (_collision, faces, collider) = tilted_quad();
+    let entity = Entity::from_raw_u32(41).expect("an entity id");
+
+    // The face's plane is `10y + 17.320508z = 0`, dominant axis `z`: the
+    // projected inside measure of the first edge `c0 -> c1` (the `x = 0`
+    // edge, interior on `-x`) is `(edge × r)_z = -3.4641 * x` — a crossing
+    // at `x = 2.5e-5` sits `-8.66e-5` outside, inside the flat `-0.0001`
+    // band the original compares against.
+    //
+    // The axis is tilted back toward `-x` so the segment's path through the
+    // band point also clips a collision triangle's AABB and the leaf is
+    // enumerated at all.
+    let axis = {
+        let raw: [f64; 3] = [-0.2, -0.5, -0.866_025_4];
+        let length = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+        [raw[0] / length, raw[1] / length, raw[2] / length]
+    };
+    let point = [2.5e-5, 1.732_050_8, -1.0];
+    let inside_band = segment_through(point, axis, 100.0, 300.0);
+    let contact = nearest_contact(&inside_band, [target(entity, &collider, Some(&faces))])
+        .expect("the flat projected tolerance accepts the band point");
+    assert!(
+        close(contact.normal[0], 0.0)
+            && close(contact.normal[1], 10.0)
+            && close(contact.normal[2], 17.320_508),
+        "the tilted stored face's own normal: {:?}",
+        contact.normal
+    );
+
+    // Twice as far out — `x = 4e-5`, measure `-1.386e-4` — is past the
+    // `-0.0001` band and the face rejects the same segment.
+    let outside_band = segment_through([4e-5, point[1], point[2]], axis, 100.0, 300.0);
+    assert_eq!(
+        nearest_contact(&outside_band, [target(entity, &collider, Some(&faces))]),
+        None,
+        "past the flat projected band, the edge walk rejects"
     );
 }
 

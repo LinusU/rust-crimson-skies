@@ -497,11 +497,15 @@ fn trimesh_contact(
 ///   then the sign-bit test requires the segment to straddle the plane
 ///   (`0x55d7a5`: `+0.0` counts as the positive side);
 /// * the point is the plane crossing `from + (d1 / (d1 - d2)) * delta`;
-/// * the inside test walks **every** cyclic edge of the face: the projected
-///   half-plane test of `0x55d7ec` on, which in 3D is
-///   `dot(edge × (point - corner), N) > -1e-4 * max|N_i|` — the double
-///   tolerance `0x609180` scaled to the dominant normal axis the original's
-///   six-case projection divides by.
+/// * the inside test walks **every** cyclic edge of the face (`0x55d7ec`
+///   on): the face normal's dominant component picks one of six projected
+///   half-plane cases (the first axis on ties, the sign bit of `N_dom`
+///   choosing the case's winding), and each edge is measured by the
+///   dominant component of `edge × (point - corner)`, sign-corrected — the
+///   projected 2D cross the case's `fld`/`fsub`/`fmul` chain computes.
+///   `fcomp` against the `0x609180` constant `-0.0001` rejects unless the
+///   measure is strictly greater (`test ah, 0x41` / `jne`): outside, on
+///   the tolerance, or NaN.
 fn stored_face_contact(
     face: &CollisionFace,
     from: Vec3,
@@ -530,20 +534,32 @@ fn stored_face_contact(
     }
     let t = d1 / (d1 - d2);
     let point = from + delta * t;
-    // The cyclic inside-edge walk over every stored corner.
-    let dominant = normal.x.abs().max(normal.y.abs()).max(normal.z.abs());
-    let tolerance = -1e-4 * dominant;
+    // The cyclic inside-edge walk over every stored corner, on the
+    // dominant axis's projected measure.
+    let axis = dominant_axis(normal);
+    let flip = normal[axis].is_sign_negative();
     for index in 0..corners.len() {
         let corner = corners[index];
         let edge = corners[(index + 1) % corners.len()] - corner;
-        let inside = edge.cross(point - corner).dot(normal);
-        // The original's strict `>` test: anything not strictly inside —
-        // outside, on the tolerance, or NaN — rejects the face.
-        if inside.partial_cmp(&tolerance) != Some(std::cmp::Ordering::Greater) {
+        let inside = edge.cross(point - corner)[axis];
+        let inside = if flip { -inside } else { inside };
+        if f64::from(inside).partial_cmp(&-0.0001) != Some(std::cmp::Ordering::Greater) {
             return None;
         }
     }
     Some((t, point, normal))
+}
+
+/// The index of `normal`'s largest-magnitude component — the first axis on
+/// ties, the case `0x55d7ec`..`0x55d837` selects for the projected inside
+/// test.
+fn dominant_axis(normal: Vec3) -> usize {
+    let abs = normal.abs();
+    if abs.y > abs.x {
+        1 + usize::from(abs.z > abs.y)
+    } else {
+        usize::from(abs.z > abs.x) * 2
+    }
 }
 
 /// The contact a cuboid gives the segment, as `(point, unnormalised normal)`.
