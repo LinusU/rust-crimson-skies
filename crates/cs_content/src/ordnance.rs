@@ -5224,10 +5224,20 @@ pub fn mounted_original_records(rows: &[OriginalMountRow]) -> BTreeSet<String> {
 /// `DeclaredStatusEffectKind` has no incapacitation variant.
 pub const T452_R02_STATUS_INCAPACITATION: &str = "t452_r02.limit.status_incapacitation";
 
-/// Claim: what a zero-damage `TANGLER` field does to a flight model. The field
-/// exists and re-applies the weapon's per-hit routine every tick, but `wep_12`
-/// declares no damage and no per-hit status flag, so the gameplay consequence
-/// is not visible in the measured path.
+/// Claim: what a zero-damage `TANGLER` field does to a flight model.
+///
+/// **Resolved by task T452-REG-TANGLER-RUNTIME (#2186).** The measured value
+/// is `docs/findings/2026-10-28-t452-tangler-effect.md`: the field's per-hit
+/// routine has its own `TANGLER` branch (`0x4b9ded`) that zeroes the damage
+/// channels and tangles the victim for `max(2 s, 10 * (1 - d2 / RADIUS))`,
+/// and the force routine `0x48fc40` zeroes its force scalar `[ebp-8]` while
+/// the tangle is live. The runtime expresses that as
+/// [`TangleStatus`](crate::ordnance::TangleStatus) and the session's tangle
+/// timer, which is opened at fire time from this record's field. No measured
+/// record keeps this claim any more; the parts the measurement does not pin
+/// stay named on the field itself
+/// ([`T452_REG_TANGLER_FORCE_SCALAR`](crate::ordnance::T452_REG_TANGLER_FORCE_SCALAR)
+/// and `t452_reg.limit.tangler_field_origin`).
 pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect";
 
 /// Claim (T452.R02, resolved by T452-REG-SMOKE-RADIUS): `SMOKE_SCREEN` has no
@@ -5524,19 +5534,19 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
             "TANGLER" => {
                 resolved.push(T452_04_STATUS_KIND);
                 resolved.push(T452_04_STATUS_DURATION);
-                claims.push(OriginalComponentUnknown::new(
-                    T452_R02_TANGLER_EFFECT,
-                    "the tangler field re-applies the weapon's per-hit routine every \
-                     tick to actors inside RADIUS; wep_12 declares no damage and no \
-                     per-hit status flag, so what the field does to a flight model is \
-                     not visible in the measured path",
-                ));
+                // The effect is measured and expressed: the per-hit branch
+                // zeroes the damage channels and applies the timed tangle
+                // (docs/findings/2026-10-28-t452-tangler-effect.md), which the
+                // runtime's `TangleStatus` and tangler ledger apply per tick.
+                // The residual (what the suppressed scalar is, and which
+                // position the fire path passes) stays named on the field.
+                resolved.push(T452_R02_TANGLER_EFFECT);
                 MeasuredEffect {
                     key: "TANGLER",
                     action: MeasuredEffectAction::AreaField,
                     duration: measured_time(status.duration_s),
                     runtime_kind: None,
-                    claim: Some(T452_R02_TANGLER_EFFECT),
+                    claim: None,
                     pin: StaticProvenance::new(0x004b_9482, 18),
                 }
             }

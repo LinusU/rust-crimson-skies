@@ -371,7 +371,11 @@ fn accept_t452_r02_a_tangler_is_an_area_with_the_image_default_radius() {
     assert!(measured.resolves_claim(T452_04_AREA_RADIUS));
     assert!(measured.resolves_claim(T452_04_AREA_LIFETIME));
     assert!(!measured.names_claim(T452_04_AREA_RADIUS));
-    assert!(measured.names_claim(T452_R02_TANGLER_EFFECT));
+    // Task T452-REG-TANGLER-RUNTIME: the effect itself is measured now (the
+    // per-hit `TANGLER` branch zeroes the damage and applies the timed tangle),
+    // so the claim the area left open is resolved rather than kept.
+    assert!(measured.resolves_claim(T452_R02_TANGLER_EFFECT));
+    assert!(!measured.names_claim(T452_R02_TANGLER_EFFECT));
 }
 
 #[test]
