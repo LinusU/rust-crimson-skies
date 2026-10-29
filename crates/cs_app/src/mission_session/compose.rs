@@ -1720,6 +1720,17 @@ fn add_composition(
         }
     });
     app.insert_resource(landings);
+    // 4c. The taxi-path table (GROUNDBLOW-TAXI-PATH, #2215): the mount's own
+    //     `gamez.zbd` `*_aipath` nodes and their `*_aipN` point counts — the
+    //     scene data the aircraft records' `taxi_path` names resolve
+    //     through, read from the same archive and directory as the landing
+    //     table. The spawn's `+0xcc` flag answers from it; an unreadable
+    //     container leaves an empty table with the reason named, never a
+    //     guessed path.
+    app.insert_resource(crate::mission_session::taxi_paths::read_taxi_paths(
+        &install_root,
+        &stage.mount.directory,
+    ));
     // 5. The scripted mission actors (M01-PLAY-ACTORS, #1435): the enabled
     //    non-player `aiv.zrd` records — the measured `enabled == 0` skip —
     //    plus one ECS binding per `zeppelins.zrd` world actor the host's

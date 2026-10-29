@@ -146,6 +146,7 @@ mod scenario;
 pub(crate) mod smoke;
 mod spyglass;
 mod targeting_input;
+mod taxi_paths;
 mod terminal;
 pub mod turret_fire;
 mod view_cycle;
@@ -410,6 +411,7 @@ pub use targeting_input::{
     mint_mission_target_keys, mission_action_map, mission_crosshair, mission_selection_binding,
     original_target_command, publish_mission_targeting_frame, sync_mission_target_poses,
 };
+pub use taxi_paths::{MissionTaxiPaths, read_taxi_paths};
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use view_cycle::{
     CAMERA_BACK_COMMAND_ID, CAMERA_DOWN_COMMAND_ID, CAMERA_LEFT_COMMAND_ID,
