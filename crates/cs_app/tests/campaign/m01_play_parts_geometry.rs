@@ -154,6 +154,7 @@ fn player_record(team: u32) -> cs_app::mission_start::ScriptedAircraft {
         primary_target: None,
         title: None,
         starts_asleep: None,
+        taxi_path: None,
         dispatch: cs_app::mission_start::SpawnDispatch::Player,
         provenance: cs_types::content::Provenance::designed(
             cs_types::evidence::ClaimId::new("test.m01-parts-geometry.player")

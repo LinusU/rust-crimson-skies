@@ -89,6 +89,7 @@ fn accept_m01_play_actors_the_roster_filter_is_the_measured_enabled_skip() {
         primary_target: None,
         title: None,
         starts_asleep: None,
+        taxi_path: None,
         dispatch: spawn_dispatch(name),
         provenance: Provenance::designed(
             ClaimId::new("test.m01-play-actors.record").expect("the claim id is valid"),

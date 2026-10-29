@@ -239,6 +239,7 @@ fn synthetic_flyer() -> ScriptedAircraft {
         primary_target: Some("player".to_owned()),
         title: None,
         starts_asleep: Some(false),
+        taxi_path: None,
         dispatch: spawn_dispatch(SYNTHETIC_RECORD),
         provenance,
     }
@@ -267,6 +268,7 @@ fn synthetic_player_record() -> ScriptedAircraft {
         primary_target: None,
         title: None,
         starts_asleep: Some(false),
+        taxi_path: None,
         dispatch: spawn_dispatch("player"),
         provenance,
     }

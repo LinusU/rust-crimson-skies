@@ -161,6 +161,7 @@ fn synthetic_flyer() -> ScriptedAircraft {
         primary_target: Some("player".to_owned()),
         title: None,
         starts_asleep: Some(false),
+        taxi_path: None,
         dispatch: spawn_dispatch(SYNTHETIC_RECORD),
         provenance: Provenance::designed(
             ClaimId::new("test.m01-play-ai-arm-order.flyer").expect("the claim id is valid"),
@@ -186,6 +187,7 @@ fn synthetic_player_record() -> ScriptedAircraft {
         primary_target: None,
         title: None,
         starts_asleep: Some(false),
+        taxi_path: None,
         dispatch: spawn_dispatch("player"),
         provenance: Provenance::designed(
             ClaimId::new("test.m01-play-ai-arm-order.player").expect("the claim id is valid"),

@@ -39,8 +39,9 @@
 //!   maps them into a fixed-slot document;
 //! * the measured fields are [`NETIDS_FIELD`], [`POSITION_FIELD`],
 //!   [`HEADING_FIELD`], [`TEAM_FIELD`], [`GROUP_FIELD`],
-//!   [`ENABLED_FIELD`], [`PRIMARY_TARGET_FIELD`], [`TITLE_FIELD`] and
-//!   [`DEACTIVATED_FIELD`] — [`read_aircraft_records`] exposes them, plus
+//!   [`ENABLED_FIELD`], [`PRIMARY_TARGET_FIELD`], [`TITLE_FIELD`],
+//!   [`DEACTIVATED_FIELD`] and [`TAXI_PATH_FIELD`] —
+//!   [`read_aircraft_records`] exposes them, plus
 //!   the stored pose and the spawn dispatch, for **every** record;
 //! * **no field names an airframe**: a scripted aircraft's vehicle type
 //!   comes from its record name truncated at the last `_`, matched against
@@ -221,6 +222,15 @@ pub const TITLE_FIELD: usize = 20;
 /// sleep routine `0x4b0f40(vehicle, 1)` when it is set, so a non-zero field
 /// spawns the aircraft **asleep**.
 pub const DEACTIVATED_FIELD: usize = 21;
+/// The field of an aircraft record that holds the **taxi path** name
+/// (#2215): a text field the parse routine reads at `0x437c0b`
+/// (`mov edx, [fields+0x14c]`, guarded by `field_count > 41`) and strdups
+/// into the record document at `+0x11c` — empty text stores `0` there. The
+/// vehicle loader reads that slot at `0x47c3a9` and resolves the name
+/// through the path registry `0x4511b0(0x6541b0, 0, name, 1)`; a resolved
+/// path with at least two points stores `1` at `vehicle+0xcc` (`0x47c568`),
+/// the byte the ground blow's player gate keeps a parked aircraft's hit on.
+pub const TAXI_PATH_FIELD: usize = 40;
 
 /// The number of positional fields every measured `aiv.zrd` record carries
 /// (#1453): fields `0..=80`, of which only the ones named by the constants
@@ -751,6 +761,14 @@ pub struct ScriptedAircraft {
     /// loader call the sleep routine `0x4b0f40(vehicle, 1)` (`0x47ca14`),
     /// and the mission program wakes it later (`WAKEUP_ENEMIES`, #681).
     pub starts_asleep: Option<bool>,
+    /// Field 40: the taxi path's name, when it is non-empty text — the
+    /// record's `+0x11c` slot the loader resolves through
+    /// `0x4511b0(0x6541b0, 0, name, 1)` (`0x47c3a9`); a resolved path with at
+    /// least two points sets the vehicle's `+0xcc` byte (`0x47c568`). The
+    /// name itself is the record; what it resolves to lives in the mission
+    /// chapter's `gamez.zbd` as `<name>_aipath` with `<name>_aipN` children
+    /// ([`crate::mission_session::taxi_paths`]).
+    pub taxi_path: Option<String>,
     /// The spawn dispatch the record's name takes (#1453): which vehicle
     /// template the original builds for it.
     pub dispatch: SpawnDispatch,
@@ -821,6 +839,7 @@ pub fn read_aircraft_records(
                 .get(DEACTIVATED_FIELD)
                 .and_then(ZrdValue::as_int)
                 .map(|value| value != 0),
+            taxi_path: non_empty_text(fields.get(TAXI_PATH_FIELD)),
             dispatch: spawn_dispatch(name),
             provenance: Provenance::new(
                 claim_id(&format!("{label}.aircraft-{name}"))?,

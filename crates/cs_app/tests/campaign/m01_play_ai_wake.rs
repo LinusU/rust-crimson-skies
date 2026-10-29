@@ -280,6 +280,7 @@ fn synthetic_sleeper() -> ScriptedAircraft {
         primary_target: Some("player".to_owned()),
         title: None,
         starts_asleep: Some(true),
+        taxi_path: None,
         dispatch: spawn_dispatch(SYNTHETIC_RECORD),
         provenance,
     }

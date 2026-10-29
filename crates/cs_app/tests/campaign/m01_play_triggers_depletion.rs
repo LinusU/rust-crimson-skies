@@ -72,6 +72,7 @@ fn skipped(name: &str, group: u32) -> ScriptedAircraft {
         primary_target: None,
         title: None,
         starts_asleep: None,
+        taxi_path: None,
         dispatch: spawn_dispatch(name),
         provenance: Provenance::designed(
             ClaimId::new("test.m01-play-triggers-depletion.record").expect("claim id"),

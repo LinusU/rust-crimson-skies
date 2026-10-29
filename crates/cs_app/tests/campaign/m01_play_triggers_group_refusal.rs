@@ -99,6 +99,7 @@ fn spawnable(name: &str, group: u32) -> ScriptedAircraft {
         primary_target: None,
         title: None,
         starts_asleep: Some(true),
+        taxi_path: None,
         dispatch: spawn_dispatch(name),
         provenance: provenance(name),
     }
