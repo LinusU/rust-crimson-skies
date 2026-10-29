@@ -197,8 +197,9 @@ impl PlaytestOriginalFlight {
     ///
     /// The ground blow's segment probe is left empty here: this record has no
     /// physics world to query. The playtest's fixed-tick driver overlays it
-    /// from [`crate::playtest::world_sweep`] (#2214), immediately before the
-    /// law steps; nothing in the law reads it yet (#2107 does).
+    /// from [`crate::playtest::world_sweep`] (#2214, every seat since #2224),
+    /// immediately before the law steps, and the law's ground blow consumes it
+    /// (#2107).
     #[must_use]
     pub fn input(&self) -> OriginalInput {
         OriginalInput {
