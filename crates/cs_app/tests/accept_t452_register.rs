@@ -592,9 +592,9 @@ fn accept_t452_register_a_tangler_record_registers_with_its_measured_field() {
         .expect("wep_12 registered as a flyable component");
     assert_eq!(projectile.area_effect(), None);
 
-    // The claim the field's effect left open is resolved (its measured value
-    // lives in the finding and the field), and the parts the measurement does
-    // not pin stay named on the record's kept claims.
+    // The claims the field's effect left open are resolved (their measured
+    // values live in the findings and the field), and the part the measurement
+    // does not pin stays named on the record's kept claims.
     let kept = report
         .claims_kept
         .iter()
@@ -609,10 +609,12 @@ fn accept_t452_register_a_tangler_record_registers_with_its_measured_field() {
         kept.1
     );
     assert!(
-        kept.1
+        !kept
+            .1
             .iter()
             .any(|claim| claim == cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR),
-        "the scalar's identity stays named: {:?}",
+        "the scalar's identity is resolved to the force block's thrust magnitude \
+         (task T452-REG-TANGLER-EFFECT), so it is not kept: {:?}",
         kept.1
     );
     assert!(

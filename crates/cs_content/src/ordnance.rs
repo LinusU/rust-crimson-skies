@@ -5242,11 +5242,12 @@ pub const T452_R02_STATUS_INCAPACITATION: &str = "t452_r02.limit.status_incapaci
 /// and the force routine `0x48fc40` zeroes its force scalar `[ebp-8]` while
 /// the tangle is live. The runtime expresses that as
 /// [`TangleStatus`](crate::ordnance::TangleStatus) and the session's tangle
-/// timer, which is opened at fire time from this record's field. No measured
-/// record keeps this claim any more; the parts the measurement does not pin
-/// stay named on the field itself
-/// ([`T452_REG_TANGLER_FORCE_SCALAR`](crate::ordnance::T452_REG_TANGLER_FORCE_SCALAR)
-/// and `t452_reg.limit.tangler_field_origin`).
+/// timer, which is opened at fire time from this record's field, and as the
+/// flight model's `FlightState::thrust_suppressed` plus a refused boost
+/// (task #2179, `docs/findings/2026-10-29-t452-tangler-flight-effect.md`). No
+/// measured record keeps this claim any more; the only part the measurement
+/// does not pin stays named on the field itself
+/// (`t452_reg.limit.tangler_field_origin`).
 pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect";
 
 /// Claim (T452.R02, resolved by T452-REG-SMOKE-RADIUS): `SMOKE_SCREEN` has no
@@ -5547,9 +5548,14 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                 // zeroes the damage channels and applies the timed tangle
                 // (docs/findings/2026-10-28-t452-tangler-effect.md), which the
                 // runtime's `TangleStatus` and tangler ledger apply per tick.
-                // The residual (what the suppressed scalar is, and which
-                // position the fire path passes) stays named on the field.
+                // Task #2179 also resolved what the suppressed force scalar is:
+                // the force block's thrust magnitude, so a tangled aircraft
+                // produces no thrust force and the flight model takes that as
+                // `FlightState::thrust_suppressed`
+                // (docs/findings/2026-10-29-t452-tangler-flight-effect.md).
+                // Only the position the fire path passes stays named.
                 resolved.push(T452_R02_TANGLER_EFFECT);
+                resolved.push(T452_REG_TANGLER_FORCE_SCALAR);
                 MeasuredEffect {
                     key: "TANGLER",
                     action: MeasuredEffectAction::AreaField,
@@ -6687,12 +6693,31 @@ pub fn read_original_weapon_media(
 // it per tick is a separate task.
 
 /// Claim: what the force scalar `[ebp-8]` of the actor force routine `0x48fc40`
-/// is in physical terms. The tangle zeroes it; whether that is thrust, drag or
-/// something else is not decoded, so the status is named after the store only.
+/// is in physical terms.
+///
+/// **Resolved** by task #2179. The scalar is the force block's thrust
+/// magnitude: it is the thrust coefficient multiplied by the actor's `+0x66c`
+/// and `+0x678` stores (`0x48fde1..0x48fdf0`, the force-block reread labels
+/// those throttle and wing area) and added to the force as
+/// `-[ebp-8] * (body Z axis at +0x198..+0x1a0)` (`0x48fe91..0x48feb8`), so
+/// storing `0.0` into it while the tangle flag is set means the aircraft
+/// produces **no thrust force** for as long as the tangle lasts
+/// (`docs/findings/2026-10-29-t452-tangler-flight-effect.md`; rows
+/// `tangler.thrust_scalar` and `tangler.thrust_vector` in
+/// `data/owner-static/engine-facts.toml`). Lift, drag, gravity, the control
+/// torque and the throttle store `+0x66c` are untouched by the branch.
+///
+/// The id stays in the code as the name of what was measured, so reports and
+/// findings written before the resolution still resolve their citation.
 pub const T452_REG_TANGLER_FORCE_SCALAR: &str = "t452_reg.limit.tangler_force_scalar_meaning";
 
 /// The name of the tangled status: exactly what is measured, no more.
-pub const TANGLE_STATUS_NAME: &str = "force scalar [ebp-8] of 0x48fc40 suppressed";
+///
+/// The measured branch stores `0.0` into the force block's thrust scalar, so
+/// the status is a thrust suppression — not a control lock (`0x48fc40` keeps
+/// its control, lift and drag terms) and not a drag change.
+pub const TANGLE_STATUS_NAME: &str =
+    "thrust force zero (force scalar [ebp-8] of 0x48fc40 suppressed)";
 
 /// The image's default `RADIUS` when a record states none, metres (`0x4ba870`).
 pub const TANGLER_IMAGE_DEFAULT_RADIUS_M: f64 = 10.0;
@@ -6739,7 +6764,12 @@ pub struct TangleStatus {
     pub on_rehit: TangleReHit,
     /// What counts the timer down.
     pub countdown: TangleCountdown,
-    /// The claim kept for the unresolved physical meaning of the scalar.
+    /// The claim this status resolves: what the force scalar it suppresses is
+    /// in physical terms ([`T452_REG_TANGLER_FORCE_SCALAR`], resolved by task
+    /// #2179 as the force block's thrust magnitude).
+    ///
+    /// It is carried as provenance, not as a kept claim: a report that lists
+    /// the claims a record still leaves open does not list this one.
     pub claim: &'static str,
     /// The window the duration formula was read from.
     pub pin: StaticProvenance,

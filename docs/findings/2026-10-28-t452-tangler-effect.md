@@ -66,3 +66,14 @@ unpinned parts above stay named
 (`t452_reg.limit.tangler_force_scalar_meaning`,
 `t452_reg.limit.tangler_field_origin`). This note records where the
 measurement is expressed; it claims no original-run behaviour.
+
+**Update (2026-10-29), task #2179.** The "Not decoded" entry for `+0x66c`,
+`+0x678` and the vector at `+0x198` is now decoded: the scalar is the force
+block's thrust magnitude, so storing `0.0` into it removes the thrust force
+and nothing else. The claim `t452_reg.limit.tangler_force_scalar_meaning` is
+therefore resolved, and the flight model takes the measured cut as
+`FlightState::thrust_suppressed`
+(`docs/findings/2026-10-29-t452-tangler-flight-effect.md`, rows
+`tangler.thrust_scalar` and `tangler.thrust_vector`). The AI path and the
+per-actor-update ownership stay named.
+

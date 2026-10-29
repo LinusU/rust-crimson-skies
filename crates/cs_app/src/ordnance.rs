@@ -1580,11 +1580,15 @@ impl OrdnanceSession {
     /// The tangle timer on one actor, when it is tangled right now.
     ///
     /// This is the flight-model consumer of the measured tangler status: the
-    /// original suppresses the force scalar `[ebp-8]` of `0x48fc40` while the
-    /// status is live, and what that scalar *is* stays the named claim
-    /// [`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR).
-    /// The timer is whole simulation ticks, so a consumer never reads a
-    /// render-frame duration.
+    /// original stores `0.0` into the force block's thrust scalar
+    /// (`[ebp-8]` of `0x48fc40`) while the status is live, which task #2179
+    /// measured to be the thrust magnitude
+    /// ([`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR),
+    /// `docs/findings/2026-10-29-t452-tangler-flight-effect.md`). A flight
+    /// producer hands this value to
+    /// [`FlightAircraft::set_tangle`](crate::physics::FlightAircraft::set_tangle)
+    /// (or to a `FlightTangle` component). The timer is whole simulation ticks,
+    /// so a consumer never reads a render-frame duration.
     ///
     /// A closed session has tangled nobody: [`close`](Self::close) rebuilds
     /// the ledger empty with the runtime.
@@ -1607,10 +1611,11 @@ impl OrdnanceSession {
     /// calls it with `false` whenever the flag is touched, so a tangle refuses
     /// a boost and ends one in progress. This is the measured half of that
     /// consequence in the narrowest form the runtime can carry: a flight
-    /// producer passes it to `FlightState::boost_available`. What a tangle does
-    /// to the rest of a flight model — the force scalar's physical identity —
-    /// stays the named claim
-    /// [`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR).
+    /// producer passes it to `FlightState::boost_available`. The other half —
+    /// the force block's thrust scalar being zero, which task #2179 measured to
+    /// mean "no thrust force" — reaches the model through the same status
+    /// ([`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR),
+    /// `FlightState::thrust_suppressed`).
     #[must_use]
     pub fn boost_allowed(&self, target: &ActorId) -> bool {
         !self.is_tangled(target)
@@ -2024,10 +2029,13 @@ impl OpenTanglerField {
 /// The tangle one actor is under right now.
 ///
 /// This is the state the flight model reads: the measured fact is that the
-/// original suppresses the force scalar `[ebp-8]` of `0x48fc40` while the
-/// status is live, and what that scalar *is* stays the named claim
-/// [`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR).
-/// Nothing here decides a flight-model meaning beyond the timer.
+/// original zeroes the force block's thrust scalar (`[ebp-8]` of `0x48fc40`)
+/// and refuses boost while the status is live. Task #2179 measured what that
+/// scalar is — the thrust magnitude — so the flight model takes the status as
+/// `FlightState::thrust_suppressed` plus `boost_available = false`
+/// ([`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR),
+/// `docs/findings/2026-10-29-t452-tangler-flight-effect.md`). Nothing here
+/// decides a flight-model meaning beyond that.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TangleState {
     /// The tangled actor.
@@ -5514,16 +5522,18 @@ pub fn register_measured_ordnance(
                         Ok(()) => {
                             // The field is measured with the component, so a
                             // registered `TANGLER` record reports the field the
-                            // fire path will open along with the id, and the
-                            // two parts the measurement does not pin stay named
-                            // on it.
+                            // fire path will open along with the id. The one
+                            // part the measurement does not pin — which world
+                            // position the fire path hands the field — stays
+                            // named on it; what the suppressed force scalar is
+                            // is resolved (task #2179: the force block's thrust
+                            // magnitude), so it is not a kept claim.
                             if let Some(field) = measured_tangler_field(row) {
-                                for claim in
-                                    [field.status.claim, T452_REG_TANGLER_FIELD_ORIGIN_CLAIM]
+                                if !kept
+                                    .iter()
+                                    .any(|existing| existing == T452_REG_TANGLER_FIELD_ORIGIN_CLAIM)
                                 {
-                                    if !kept.iter().any(|existing| existing == claim) {
-                                        kept.push(claim.to_owned());
-                                    }
+                                    kept.push(T452_REG_TANGLER_FIELD_ORIGIN_CLAIM.to_owned());
                                 }
                                 tangler_fields.push(field);
                             }
@@ -5639,12 +5649,9 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
              actor it strikes",
             cs_content::ordnance::T452_R05_STATUS_KIND_FOLLOW_UP,
         ),
-        cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR => (
-            "what the force scalar [ebp-8] that a tangle zeroes is in physical terms \
-             (the measured effect is \"the scalar is zero while tangled\", not \"thrust \
-             is zero\")",
-            "T452-REG-TANGLER-EFFECT",
-        ),
+        // `t452_reg.limit.tangler_force_scalar_meaning` is resolved (task #2179:
+        // the scalar is the force block's thrust magnitude) and no record keeps
+        // it any more, so it needs no kept-claim context.
         T452_REG_TANGLER_FIELD_ORIGIN_CLAIM => (
             "which world position the original's fire path hands the field constructor \
              0x4b94e0: measured as the projectile's position at its burst (rocket+0x48), \
