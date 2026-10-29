@@ -8316,6 +8316,90 @@ va = 0x004202e3
 bytes = "f686dc020000020f85a5030000"
 fact = "an AI decision path (0x4202c8..0x4202ea) tests the actor status word against 2 and takes the branch to 0x420695 instead of falling through to its action setup at 0x4202f0 when the flag is set"
 
+# T452-REG-TANGLER-AI-GATE (task #2202): the branch at 0x4202e3 is the maneuver
+# chooser's per-maneuver gate; while tangled it drops the maneuvers whose
+# maneuvers.zrd node carries `nitro`.
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.gate_sequence"
+va = 0x004202ca
+bytes = "8a0c9515b2710084c9741b8a8e4609000084c90f84b2030000f686dc020000020f85a5030000"
+fact = "the gate is three tests in a row: `mov cl,[edx*4+0x71b215]` reads the maneuver record's byte +5 (`nitro`, see tangler_ai.nitro_key) and `je 0x4202f0` builds the candidate when it is clear; when it is set the gate reads the actor's nitrous-injector flag +0x946 and jumps to the skip target 0x420695 when that is clear, and otherwise tests the actor status word +0x2dc against 2 and jumps to the same skip target while the tangle flag is set, so a nitro maneuver is offered only to an actor that carries the injector and is not tangled"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.skip_target"
+va = 0x00420695
+bytes = "c645fc004383fb11895df00f8c3bfbffff"
+fact = "the branch target 0x420695 is the loop tail: `mov byte [ebp-4],0` (SEH state), `inc ebx`, `cmp ebx,0x11`, `mov [ebp-0x10],ebx`, `jl 0x4201e1`; the skipped maneuver contributes no candidate to this tick and the loop continues with the next of the seventeen, so the branch skips an offer, not the actor's current maneuver"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.record_base"
+va = 0x00420227
+bytes = "8b96580900008d0cdd000000002bcb8b0c8d10b271003bca7e44"
+fact = "the maneuver records are one global array at 0x71b210 indexed by the loop counter with a 0x1c stride (`lea ecx,[ebx*8]; sub ecx,ebx; mov ecx,[ecx*4+0x71b210]`, 0x42022d..0x42023a); the record's dword +0 (the `natural_touch` integer, default 0x63 at 0x45f400) is compared with the actor's skill level +0x958 and the maneuver is skipped when the record's value is greater (0x42023d..0x42023f)"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.record_stride"
+va = 0x00420301
+bytes = "8d0cc5000000002bc88d048d1cb27100"
+fact = "the candidate is built from its own record: `lea ecx,[eax*8]; sub ecx,eax; lea eax,[ecx*4+0x71b21c]` passes record+0xc to 0x421f50, which copies the vector whose begin/end/cap that pointer's +4/+8/+0xc name (0x21f67..0x21f8a, 0x20-byte elements), so a record is {dword +0, byte +4 (`relative`), byte +5 (`nitro`), byte +6 (`autogyro_allowed`), float +8, byte/dword +0xc, vector<0x20> begin +0x10, end +0x14, cap +0x18} and ends at +0x1c"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.explicit_index"
+va = 0x004201f5
+bytes = "83ffffc645fc010f85f0000000"
+fact = "the gates run only on the all-maneuver path: `cmp edi,-1; jne 0x4202f2` jumps straight into the candidate setup when the caller names one maneuver index, which the `Maneuver number must be between 0 and %d.` command does at 0x43e10b; both in-image `push -1` callers (0x41db99 and 0x4b9ff4) take the gated loop"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.nitro_key"
+va = 0x0045f4db
+bytes = "689c58620057e8aaab110083c40885c07404c6460501"
+fact = "the maneuver record's byte +5 is the presence of the `nitro` key (string 0x62589c): the record constructor 0x45f3e0 looks the key up on the maneuver's own node (0x57a090) and stores 1 into record+5 when it exists (0x45f4ed), exactly as the same constructor stores 1 into +4 from `relative` (0x45f4d7) and into +6 from `autogyro_allowed` (0x45f503)"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.maneuver_table"
+va = 0x0045f340
+bytes = "68c0f9450068a0f945006a116a1c6810b27100e8027c1900"
+fact = "the array is 17 records of 0x1c bytes at 0x71b210 (`push 0x71b210; push 0x1c; push 0x11` into the array constructor 0x5f6f5a with constructor 0x45f9a0 and destructor 0x45f9c0), filled from maneuvers.zrd (string 0x6258c0) when a guard byte at 0x71b3ec says it has not run yet (0x45f360..0x45f397); 0x71b210 + 17 * 0x1c = 0x71b3ec with the file image carrying neither (the array is .bss)"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.maneuver_names"
+va = 0x0045f60c
+bytes = "68d058620056b910b27100e8c4fdffff68d858620056b92cb27100e8b4fdffff68e458620056b948b27100e8a4fdffff68f058620056b964b27100e894fdffff68f858620056b980b27100e884fdffff680059620056b99cb27100e874fdffff680859620056b9b8b27100e864fdffff681459620056b9d4b27100e854fdffff682859620056b9f0b27100e844fdffff683459620056b90cb37100e834fdffff684059620056b928b37100e824fdffff684859620056b944b37100e814fdffff685059620056b960b37100e804fdffff686459620056b97cb37100e8f4fcffff687059620056b998b37100e8e4fcffff687c59620056b9b4b37100e8d4fcffff688859620056b9d0b37100e8c4fcffff"
+fact = "the seventeen records are constructed in one fixed order, each paired with its maneuvers.zrd name: roll at 0x71b210, rudder_turn 0x71b22c, bank_turn 0x71b248, climb 0x71b264, dive 0x71b280, jinking 0x71b29c, scissors 0x71b2b8, rolling_scissors 0x71b2d4, snap_roll 0x71b2f0, immelman 0x71b30c, loop 0x71b328, split_s 0x71b344, lag_pursuit_roll 0x71b360, high_yo_yo 0x71b37c, nitro_evade 0x71b398, barrel_roll 0x71b3b4, spiral_dive 0x71b3d0 (names at 0x6258d0..0x625994); the chooser's loop counter is this index, so the gate at 0x4202ca drops exactly the maneuvers whose node carries `nitro`"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.boost_on_choice"
+va = 0x00420919
+bytes = "8a049515b2710084c074096a018bcfe8e3170900"
+fact = "after the weighted pick the chosen maneuver's byte +5 is tested again and, when set, the chooser calls the nitrous-injector setter 0x4b2110 with 1 (0x420924..0x420928), the routine that refuses while status flag 2 is set (tangler.boost_refuse) and stores its result in actor+0x947; the gate above therefore removes exactly the maneuvers whose injector call a tangle would refuse"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "tangler_ai.weighted_pick"
+va = 0x00420723
+bytes = "ff155003a2008b5dc88945e8db45e88d4b1433f6d80d98356000d84d08"
+fact = "the choice among the candidates that survived the gates is a weighted random draw: `call [0xa20350]` (`rand`), `fild` the result, `fmul [0x603598]` (1/32767.7 = 3.0518e-5) and `fmul [ebp+8]` the summed candidate weights at entry+0x14, then the list is walked subtracting each entry's weight until the running value goes negative (0x420743..0x4207a5); a maneuver removed by the gate is removed from the draw and the remaining weights renormalise"
+
 # T452-REG-TANGLER-ORIGIN (task #2201): who calls the tangler field constructor, and with what.
 
 [[tangler_origin_fact]]

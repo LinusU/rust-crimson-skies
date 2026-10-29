@@ -43,7 +43,10 @@ routine has a branch of its own for the `TANGLER` flag (`0x40000`) at
   (throttle, engine output, thrust axis are plausible, none is measured). The
   claim therefore stays named: the measured effect is "the force scalar is
   zero while tangled", not "engine thrust is zero".
-- What the AI path at `0x4202e3` skips (`0x420695`).
+- What the AI path at `0x4202e3` skips (`0x420695`). *(Measured by task #2202:
+  the branch is the maneuver chooser's per-maneuver gate and drops a maneuver
+  whose `maneuvers.zrd` node declares `nitro` while the actor is tangled — see
+  `docs/findings/2026-10-29-t452-tangler-ai-gate.md`.)*
 - Which of the two update paths (`0x47027c`, `0x48c606`) belongs to which
   actor kind.
 
