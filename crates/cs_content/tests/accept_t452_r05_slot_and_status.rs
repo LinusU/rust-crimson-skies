@@ -10,7 +10,7 @@
 //! `$CS_ENGINE_IMAGE` (static analysis, never original-run behavior).
 
 use cs_content::ordnance::{
-    DeclaredOrdnanceFamily, MeasuredStatusKind, ORIGINAL_GUN_SLOT_COUNT,
+    DeclaredOrdnanceFamily, DeclaredStatusEffectKind, MeasuredStatusKind, ORIGINAL_GUN_SLOT_COUNT,
     ORIGINAL_GUN_SLOT_TABLE_VA, ORIGINAL_PLANE_RECORD_GUN_IDS_OFFSET,
     ORIGINAL_PLANE_RECORD_ROCKET_IDS_OFFSET, ORIGINAL_ROCKET_ID_FUNCTION_VA,
     ORIGINAL_ROCKET_ID_WEAPON_INDEX, ORIGINAL_ROCKET_SLOT_COUNT, ORIGINAL_ROCKET_SLOT_TABLE_VA,
@@ -18,8 +18,8 @@ use cs_content::ordnance::{
     ORIGINAL_SLOT_RECORD_NAME_FORMAT_VA, OriginalAreaDeclaration, OriginalClusterShape,
     OriginalComponentLaunch, OriginalComponentTable, OriginalDamageDeclaration, OriginalLifetime,
     OriginalMountDeclaration, OriginalSlotReach, OriginalStatusEffectDeclaration, T452_04_MOUNT,
-    T452_04_STATUS_DURATION, T452_R05_SCRIPT_AMMO_USE, T452_R05_STATUS_INCAPACITATION,
-    T452_R05_STATUS_KIND_FOLLOW_UP, measure_loadout_slot, measure_loadout_slots,
+    T452_04_STATUS_DURATION, T452_04_STATUS_KIND, T452_R05_SCRIPT_AMMO_USE,
+    T452_R05_STATUS_INCAPACITATION, measure_loadout_slot, measure_loadout_slots,
     measure_status_effects, original_rocket_ids_for_weapon_index, original_rocket_weapon_record,
     original_weapon_record_index, read_original_component_table,
 };
@@ -274,11 +274,15 @@ fn accept_t452_r05_sonic_and_flash_are_a_pilot_incapacitation() {
     assert!(effect.victims.gate.contains("+0xf8"));
     assert!(effect.victims.gate.contains("+0x67c"));
     assert!(effect.shot_consumed);
-    // The duration is measured; the runtime kind is not expressible.
+    // The duration and the kind are measured (#2172 added the variant).
     assert!(effect.resolves_claim(T452_04_STATUS_DURATION));
-    assert!(effect.names_claim(T452_R05_STATUS_INCAPACITATION));
-    assert_eq!(effect.runtime_kind, None);
-    assert_eq!(effect.follow_up_task, Some(T452_R05_STATUS_KIND_FOLLOW_UP));
+    assert!(effect.resolves_claim(T452_04_STATUS_KIND));
+    assert!(!effect.names_claim(T452_R05_STATUS_INCAPACITATION));
+    assert_eq!(
+        effect.runtime_kind,
+        Some(DeclaredStatusEffectKind::Incapacitation)
+    );
+    assert_eq!(effect.follow_up_task, None);
 }
 
 #[test]
@@ -332,7 +336,10 @@ fn accept_t452_r05_both_bits_measured_are_the_same_incapacitation() {
     assert_eq!(measured.len(), 2);
     for effect in &measured {
         assert_eq!(effect.kind, MeasuredStatusKind::PilotIncapacitation);
-        assert_eq!(effect.runtime_kind, None);
+        assert_eq!(
+            effect.runtime_kind,
+            Some(DeclaredStatusEffectKind::Incapacitation)
+        );
         assert_eq!(effect.duration.facing_scaled, effect.key == "FLASH");
     }
 }
@@ -758,9 +765,13 @@ fn accept_t452_r05_retail_the_slot_map_and_the_status_match_the_records() {
             component.record
         );
         for status in statuses {
-            assert!(status.names_claim(T452_R05_STATUS_INCAPACITATION));
+            assert!(!status.names_claim(T452_R05_STATUS_INCAPACITATION));
             assert!(status.resolves_claim(T452_04_STATUS_DURATION));
-            assert_eq!(status.runtime_kind, None);
+            assert!(status.resolves_claim(T452_04_STATUS_KIND));
+            assert_eq!(
+                status.runtime_kind,
+                Some(DeclaredStatusEffectKind::Incapacitation)
+            );
             measured.push((
                 component.record.clone(),
                 status.key,

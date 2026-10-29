@@ -250,7 +250,7 @@ fn accept_t452_r02_a_beeper_is_a_timed_marker() {
 }
 
 #[test]
-fn accept_t452_r02_sonic_and_flash_are_an_exposure_with_no_runtime_kind() {
+fn accept_t452_r02_sonic_and_flash_are_an_exposure_with_the_incapacitation_kind() {
     let row = row(
         "wep_08",
         DeclaredOrdnanceFamily::GuidedRocket,
@@ -268,8 +268,14 @@ fn accept_t452_r02_sonic_and_flash_are_an_exposure_with_no_runtime_kind() {
             "{}",
             effect.key
         );
-        assert_eq!(effect.runtime_kind, None, "no kind is forced");
-        assert_eq!(effect.claim, Some(T452_R02_STATUS_INCAPACITATION));
+        assert_eq!(
+            effect.runtime_kind,
+            Some(DeclaredStatusEffectKind::Incapacitation)
+        );
+        assert_eq!(
+            effect.claim, None,
+            "{T452_R02_STATUS_INCAPACITATION} resolved"
+        );
         match effect.duration {
             MeasuredEffectDuration::Exposure {
                 max_seconds,
@@ -285,8 +291,9 @@ fn accept_t452_r02_sonic_and_flash_are_an_exposure_with_no_runtime_kind() {
             other => panic!("{} is not an exposure: {other:?}", effect.key),
         }
     }
-    assert!(measured.names_claim(T452_R02_STATUS_INCAPACITATION));
-    // The duration is measured, so the missing-duration claim is resolved.
+    assert!(!measured.names_claim(T452_R02_STATUS_INCAPACITATION));
+    // The kind and the duration are measured, so both claims are resolved.
+    assert!(measured.resolves_claim(T452_04_STATUS_KIND));
     assert!(measured.resolves_claim(T452_04_STATUS_DURATION));
     assert!(!measured.names_claim(T452_04_STATUS_DURATION));
 }

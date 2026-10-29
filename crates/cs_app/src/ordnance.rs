@@ -559,6 +559,9 @@ fn lower_status_kind(declared: cs_content::ordnance::DeclaredStatusEffectKind) -
         cs_content::ordnance::DeclaredStatusEffectKind::Choke => StatusEffectKind::Choke,
         cs_content::ordnance::DeclaredStatusEffectKind::Stall => StatusEffectKind::Stall,
         cs_content::ordnance::DeclaredStatusEffectKind::Marker => StatusEffectKind::Marker,
+        cs_content::ordnance::DeclaredStatusEffectKind::Incapacitation => {
+            StatusEffectKind::Incapacitation
+        }
     }
 }
 
@@ -1568,6 +1571,7 @@ impl OrdnanceSession {
                 StatusEffectKind::Stall => status.stall = true,
                 StatusEffectKind::Damage => status.damage += effect.strength,
                 StatusEffectKind::Marker => status.marked = true,
+                StatusEffectKind::Incapacitation => status.incapacitated = true,
             }
         }
         status
@@ -1891,6 +1895,8 @@ pub struct EngineStatus {
     pub damage: f64,
     /// Whether a marker is live.
     pub marked: bool,
+    /// Whether the pilot is incapacitated: the actor's controls read zero.
+    pub incapacitated: bool,
 }
 
 impl EngineStatus {
@@ -1903,6 +1909,7 @@ impl EngineStatus {
             stall: false,
             damage: 0.0,
             marked: false,
+            incapacitated: false,
         }
     }
 
@@ -5308,9 +5315,9 @@ pub fn measured_ordnance_declaration(
     };
 
     // Status: only a measured effect whose runtime kind fits becomes one. A
-    // `SONIC`/`FLASH` exposure is measured pilot incapacitation and no
-    // `StatusEffectKind` expresses it, so it stays a claim on the catalogue
-    // entry (follow-up #2172) and the component carries no status for it.
+    // `SONIC`/`FLASH` exposure is pilot incapacitation whose duration is
+    // computed per hit (`cs_sim::weapons::incapacitation`), so it declares no
+    // fixed-duration status here; the kind is `Incapacitation` (task #2172).
     let mut status = Vec::new();
     for effect in &behavior.effects {
         let Some(kind) = effect.runtime_kind else {
@@ -5325,8 +5332,8 @@ pub fn measured_ordnance_declaration(
             cs_content::ordnance::MeasuredEffectDuration::ImageDefaultSeconds(seconds) => {
                 Some(seconds)
             }
-            cs_content::ordnance::MeasuredEffectDuration::Exposure { .. }
-            | cs_content::ordnance::MeasuredEffectDuration::None => None,
+            cs_content::ordnance::MeasuredEffectDuration::Exposure { .. } => continue,
+            cs_content::ordnance::MeasuredEffectDuration::None => None,
         };
         let Some(seconds) = seconds else {
             blockers.push(OriginalRegistrationBlocker::new(

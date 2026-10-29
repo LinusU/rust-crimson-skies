@@ -400,12 +400,20 @@ pub enum DeclaredStatusEffectKind {
     Stall,
     /// A marker for other systems and the pilot.
     Marker,
+    /// The pilot is incapacitated: the actor's controls read zero until the
+    /// effect ends (the measured `SONIC`/`FLASH` exposure).
+    Incapacitation,
 }
 
 impl DeclaredStatusEffectKind {
     /// Every status effect kind, in a stable order.
-    pub const ALL: &'static [DeclaredStatusEffectKind] =
-        &[Self::Damage, Self::Choke, Self::Stall, Self::Marker];
+    pub const ALL: &'static [DeclaredStatusEffectKind] = &[
+        Self::Damage,
+        Self::Choke,
+        Self::Stall,
+        Self::Marker,
+        Self::Incapacitation,
+    ];
 
     /// The stable label used in reports.
     #[must_use]
@@ -415,6 +423,7 @@ impl DeclaredStatusEffectKind {
             Self::Choke => "choke",
             Self::Stall => "stall",
             Self::Marker => "marker",
+            Self::Incapacitation => "incapacitation",
         }
     }
 }
@@ -5514,7 +5523,7 @@ fn measured_time_source(duration_s: Option<f64>) -> MeasuredAreaSource {
 #[must_use]
 pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBehaviorMeasurement {
     let mut effects = Vec::new();
-    let mut claims = Vec::new();
+    let claims = Vec::new();
     let mut resolved = Vec::new();
 
     for status in &row.statuses {
@@ -5564,14 +5573,10 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                 }
             }
             "SONIC" | "FLASH" => {
+                // Resolved by task #2172: `StatusEffectKind::Incapacitation`
+                // expresses the exposure and the sim applies it per hit.
+                resolved.push(T452_04_STATUS_KIND);
                 resolved.push(T452_04_STATUS_DURATION);
-                claims.push(OriginalComponentUnknown::new(
-                    T452_R02_STATUS_INCAPACITATION,
-                    "SONIC and FLASH run the per-hit exposure at 0x42e840, which \
-                     stores mode 4 and zeroes the struck actor's controls until a \
-                     computed timestamp; StatusEffectKind has no pilot-incapacitation \
-                     variant, so no variant is forced",
-                ));
                 MeasuredEffect {
                     key: if status.key == "SONIC" {
                         "SONIC"
@@ -5585,8 +5590,8 @@ pub fn measure_component_behavior(row: &OriginalComponentLaunch) -> OriginalBeha
                         zero_intensity_ratio: 1.0,
                         facing_scaled: status.key == "FLASH",
                     },
-                    runtime_kind: None,
-                    claim: Some(T452_R02_STATUS_INCAPACITATION),
+                    runtime_kind: Some(DeclaredStatusEffectKind::Incapacitation),
+                    claim: None,
                     pin: StaticProvenance::new(0x0042_e85b, 53),
                 }
             }
@@ -6174,10 +6179,10 @@ pub fn measure_status_effects(row: &OriginalComponentLaunch) -> Vec<OriginalStat
                            victim +0x67c in {0, 4}",
                 },
                 shot_consumed: true,
-                runtime_kind: None,
-                claim: Some(T452_R05_STATUS_INCAPACITATION),
-                follow_up_task: Some(T452_R05_STATUS_KIND_FOLLOW_UP),
-                resolved: vec![T452_04_STATUS_DURATION],
+                runtime_kind: Some(DeclaredStatusEffectKind::Incapacitation),
+                claim: None,
+                follow_up_task: None,
+                resolved: vec![T452_04_STATUS_KIND, T452_04_STATUS_DURATION],
                 pin: StaticProvenance::new(0x004b_9d84, 16),
             }
         })
