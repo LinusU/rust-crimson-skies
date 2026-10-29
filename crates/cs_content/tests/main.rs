@@ -91,6 +91,7 @@ mod accept_flight_ai_parameter_randomisation;
 mod accept_flight_original_retail;
 mod accept_groundblow_class;
 mod accept_groundblow_normal_scale;
+mod accept_groundblow_object;
 mod accept_groundblow_probe;
 mod accept_groundblow_sweep;
 mod accept_hit_record_measurement;
