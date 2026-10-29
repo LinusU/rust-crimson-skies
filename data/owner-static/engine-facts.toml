@@ -8449,3 +8449,117 @@ name = "tangler.thrust_vector"
 va = 0x0048fe91
 bytes = "d945f88d4de8d9e0894d0cd9c0d88e98010000"
 fact = "the only use of the scalar after the tangle branch is the thrust term: 0x48fe91 loads [ebp-8], negates it (0x48fe97), and multiplies it by the actor's +0x198/+0x19c/+0x1a0 (0x48fe9e, 0x48fea9, 0x48feb2) into the force vector, so a zero scalar means the thrust force contribution '-[ebp-8] * body Z' is exactly zero while lift, drag, gravity and the control torque keep their own stores"
+
+# T452-REG-MANEUVER-CHOOSER (task #2204): the maneuver record defaults, weights and per-slot gates the chooser 0x4201a0 applies.
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.record_defaults"
+va = 0x0045f400
+bytes = "c70663000000c6460400c6460500c646"
+fact = "the record constructor 0x45f3e0 starts every record with natural_touch +0 = 0x63 and the bytes +4 (relative), +5 (nitro), +6 (autogyro_allowed) and the dword +8 (weight) cleared, so a key the maneuvers.zrd node lacks leaves its default"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.weight_keys"
+va = 0x0045f47c
+bytes = "687858620057e809ac110083c40885c074098b50048b420c894608688058620057e8eeab110083c40885c0741c8b48048b410c89442448db4424488906d80dfc346000d84608d95e08"
+fact = "the constructor looks up the key string 0x625878 (`bias`) on the node and, when present, stores its first value as the float at +8, then looks up 0x625880 (`natural_touch`) and, when present, stores the integer at +0 and adds natural_touch x 0.2 (fmul [0x6034fc]) to +8, so +8 = bias + 0.2 x natural_touch with the second term only when the key is present"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.flag_keys"
+va = 0x0045f4c5
+bytes = "689058620057e8c0ab110083c40885c07404c6460401689c58620057e8aaab110083c40885c07404c646050168a458620057e894ab110083c40885c07404c6460601"
+fact = "the constructor sets byte +4 when the node has the key at 0x625890 (`relative`), byte +5 for 0x62589c (`nitro`) and byte +6 for 0x6258a4 (`autogyro_allowed`): each flag is the presence of its key, the value list is not read"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.skill_gates"
+va = 0x00420202
+bytes = "8b4e648a911c02000084d274188d14dd000000002bd38a0c9516b2710084c90f846e0400008b96580900008d0cdd000000002bcb8b0c8d10b271003bca7e44"
+fact = "the first two per-slot gates of the all-maneuver path: when [[actor+0x64]+0x21c] is non-zero a record whose byte +6 is clear is skipped to 0x420695 (0x420221); then the record's dword +0 is compared signed with the actor's +0x958 and a larger natural_touch falls through to the skip (0x42023d, jle passes)"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.weight_base"
+va = 0x004204ca
+bytes = "d9048518b27100d805dc326000d9"
+fact = "the candidate weight starts as the record's float +8 plus the constant at 0x6032dc (1.0), stored at [ebp-0x10]"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.weight_history"
+va = 0x00420579
+bytes = "3b96b4090000750cd945f0d80da8346000d95df03b96b8090000750cd945f0d80dfc346000d95df0"
+fact = "the weight is multiplied by [0x6034a8] (0.1) when the slot equals the actor's current maneuver +0x9b4 and by [0x6034fc] (0.2) when it equals the previous maneuver +0x9b8"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.weight_preferred"
+va = 0x004205c0
+bytes = "d945f0a06ff6640084c0d80d9c366000d95df0"
+fact = "when the slot is in the actor's list +0x994..+0x998 the weight is multiplied by [0x60369c] (6.0)"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.weight_floor"
+va = 0x00420604
+bytes = "d945f0d81dc8326000dfe0f6c4017407c745f0cdcccc3d"
+fact = "a weight below the constant 0.0 (0x6032c8) is replaced by the dword 0x3dcccccd (0.1f); a weight of exactly zero is kept"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.const_one"
+va = 0x006032dc
+bytes = "0000803f"
+fact = "the float 1.0 added to every candidate weight"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.const_zero"
+va = 0x006032c8
+bytes = "00000000"
+fact = "the float 0.0 the weight is compared with"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.const_current"
+va = 0x006034a8
+bytes = "cdcccc3d"
+fact = "the float 0.1 applied to the current maneuver"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.const_previous"
+va = 0x006034fc
+bytes = "cdcc4c3e"
+fact = "the float 0.2 applied to the previous maneuver and to natural_touch"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.const_preferred"
+va = 0x0060369c
+bytes = "0000c040"
+fact = "the float 6.0 applied to a preferred slot"
+
+[[maneuver_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "maneuver_chooser.const_draw_scale"
+va = 0x00603598
+bytes = "00010038"
+fact = "the float 3.0518509e-05 (1/32767, bits 0x38000100; the 2026-10-29 tangler finding wrote 32767.7) the draw multiplies rand() by before the summed weights"

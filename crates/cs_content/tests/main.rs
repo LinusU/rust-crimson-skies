@@ -105,6 +105,7 @@ mod accept_t452_01_weapon_census;
 mod accept_t452_02_proximity_fuse;
 mod accept_t452_03_nitro_rule;
 mod accept_t452_04_component_table;
+mod accept_t452_maneuver_chooser_rows;
 mod accept_t452_per_box;
 mod accept_t452_r01_launch_geometry;
 mod accept_t452_r02_behavior;

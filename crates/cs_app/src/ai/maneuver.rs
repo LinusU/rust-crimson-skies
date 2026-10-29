@@ -15,7 +15,7 @@
 //! 3. the surviving candidates are weighted (`record weight + 1.0`, ×0.1 for the
 //!    current maneuver, ×0.2 for the previous, ×6.0 when the actor prefers it,
 //!    a negative weight replaced by 0.1) and one is drawn with
-//!    `rand() / 32767.7 × Σ weights`;
+//!    `rand() × 0x38000100 (≈ 1/32767) × Σ weights`;
 //! 4. choosing a `nitro` maneuver asks for the injector (`0x4b2110(1)`), which a
 //!    tangle refuses; when no candidate survives nothing changes.
 //!
@@ -51,8 +51,9 @@ pub const MANEUVER_NAMES: [&str; 17] = [
 /// The skill level range the actor's `+0x958` is clamped to (`0x47ce80`).
 pub const SKILL_LEVEL_MAX: i32 = 9;
 
-/// `0x603598`: the draw scales `rand()` (0..=32767) by this before the weights.
-const DRAW_SCALE: f64 = 1.0 / 32_767.7;
+/// `0x603598`: the draw scales `rand()` (0..=32767) by this single-precision
+/// constant (1/32767, so a roll of 32767 reaches the full weight sum) before the weights.
+const DRAW_SCALE_BITS: u32 = 0x3800_0100;
 /// `0x6034fc`, the `natural_touch` weight factor and the previous-maneuver factor.
 const NATURAL_TOUCH_FACTOR: f64 = 0.2;
 const PREVIOUS_FACTOR: f64 = 0.2;
@@ -321,7 +322,7 @@ pub fn choose(
 ) -> Option<ManeuverChoice> {
     let candidates = candidates(catalog, actor);
     let total: f64 = candidates.iter().map(|c| f64::from(c.weight)).sum();
-    let mut remaining = f64::from(roll) * DRAW_SCALE * total;
+    let mut remaining = f64::from(roll) * f64::from(f32::from_bits(DRAW_SCALE_BITS)) * total;
     let mut winner = candidates.last()?.slot;
     for candidate in &candidates {
         remaining -= f64::from(candidate.weight);
