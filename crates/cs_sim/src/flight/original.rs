@@ -473,9 +473,12 @@ pub struct OriginalGlobals {
     /// Nothing in this law reads it yet: the consumer is #2107, which also
     /// needs the probe's hit ([`OriginalInput::segment_probe`]).
     pub groundblow_elev_m: f64,
-    /// The player's ground-blow gain (`groundblow_mag`, retail 10).
+    /// The shared ground-blow gain (`groundblow_mag`, retail 10): it weights
+    /// the player's alignment term and, under `ai_groundblow`, every other
+    /// vehicle's (`2026-10-25-force-block-reread.md` section 4.1).
     pub groundblow_mag: f64,
-    /// A non-player's ground-blow gain (`ai_groundblow`, retail 0.5).
+    /// The non-player's extra ground-blow factor (`ai_groundblow`, retail
+    /// 0.5): the AI term is `B * ai_groundblow * groundblow_mag`.
     pub ai_groundblow: f64,
 }
 

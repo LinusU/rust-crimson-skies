@@ -1273,9 +1273,10 @@ impl OriginalDocuments {
             // The ground blow (task #2210, finding
             // `2026-10-29-groundblow-world-segment-sweep.md` section 1): the
             // probe `0x48bf60` reads `groundblow_elev` at `0x71c420`, and
-            // `0x48c220` scales by `groundblow_mag` (player) or
-            // `ai_groundblow` (every other vehicle). Each key is a one-element
-            // list in retail `player.zrd`.
+            // `0x48c220` scales the player's term by `groundblow_mag`, every
+            // other vehicle's by `ai_groundblow * groundblow_mag`
+            // (`2026-10-25-force-block-reread.md` section 4.1). Each key is a
+            // one-element list in retail `player.zrd`.
             ("groundblow_elev_m", "groundblow_elev"),
             ("groundblow_mag", "groundblow_mag"),
             ("ai_groundblow", "ai_groundblow"),
