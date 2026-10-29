@@ -240,9 +240,9 @@ use cs_assets::zbd::{ZbdContainer, ZbdError};
 use cs_formats::ParseContext;
 use cs_formats::gamez::materials::{GameZMaterialError, GameZMaterials, MaterialKind, RawMaterial};
 use cs_formats::gamez::{
-    FaceStatus, GameZError, GameZHeader, GameZMeshes, GameZNodes, MeshTopology, NodeMeshBindings,
-    PrimitiveKind, RawMaterialGroup, RawMesh, RawMeshInfo, RawPolygon, read_gamez_materials,
-    read_gamez_meshes,
+    FLAG_TWO_SIDED, FaceStatus, GameZError, GameZHeader, GameZMeshes, GameZNodes, MeshTopology,
+    MeshTriangle, NodeMeshBindings, PrimitiveKind, RawMaterialGroup, RawMesh, RawMeshInfo,
+    RawPolygon, read_gamez_materials, read_gamez_meshes,
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
@@ -514,6 +514,51 @@ impl fmt::Display for RenderMeshError {
 
 impl std::error::Error for RenderMeshError {}
 
+/// The stored polygon **face** one collision triangle stands in for, kept
+/// beside the collision view's triangle buffer (task #2217).
+///
+/// The original's world segment sweep (`0x55c9c0` → `0x55d6c0`) tests the
+/// stored polygon, never its triangulation: it copies a face's corners into
+/// the face tester's buffer in **stored order** — an outline's whole stored
+/// outline for a [`PrimitiveKind::Polygon`], one strip step's three
+/// drawing-order corners for a [`PrimitiveKind::TriangleStrip`] — and passes
+/// the polygon's stored two-sided bit (`(vertex_info >> 10) & 1`,
+/// [`RawPolygon::is_two_sided`]) as the tester's one-sided-gate override
+/// (`docs/findings/2026-10-29-groundblow-normal-scale.md`). Ear-clipping drops
+/// all three
+/// of grouping, stored corner order and flag word: this record is what the
+/// collision view keeps instead, mapped back from its triangles by
+/// [`CollisionMesh::face_of`].
+///
+/// Corners are the stored position values themselves — not indices, and not
+/// the compacted [`CollisionMesh::positions`] slots — so a consumer reads the
+/// face exactly as the tester would have, and the position resolution happens
+/// once, at the view's construction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollisionFace {
+    /// The stored polygon the face decodes (`RawMesh::polygons` index).
+    pub polygon: usize,
+    /// The face's corner positions in stored order: the whole outline for a
+    /// [`PrimitiveKind::Polygon`], one strip step's three corners in drawing
+    /// order for a [`PrimitiveKind::TriangleStrip`].
+    pub corners: Vec<[f32; 3]>,
+    /// The stored polygon's flag word, unchanged
+    /// ([`RawPolygon::raw_flags`]); [`Self::is_two_sided`] reads the bit the
+    /// face tester consumes.
+    pub raw_flags: u32,
+}
+
+impl CollisionFace {
+    /// Whether the stored polygon carries the measured **two-sided** bit
+    /// (`0x400` of the stored polygon dword) — the `flag` argument
+    /// `0x55c9c0` hands `0x55d6c0`, which overrides the face test's one-sided
+    /// plane gate when set.
+    #[must_use]
+    pub const fn is_two_sided(&self) -> bool {
+        self.raw_flags & FLAG_TWO_SIDED != 0
+    }
+}
+
 /// The **collision** view of one stored mesh: the canonical
 /// [`RawMesh::topology`] triangulation over the stored positions it names.
 ///
@@ -545,6 +590,14 @@ pub struct CollisionMesh {
     positions: Vec<[f32; 3]>,
     /// Index triples into [`Self::positions`], in polygon then step order.
     indices: Vec<[u32; 3]>,
+    /// The distinct stored faces the triangles stand in for: an outline's
+    /// whole stored polygon, or a strip's one step (task #2217).
+    faces: Vec<CollisionFace>,
+    /// `faces` slot per collision triangle, `None` for a triangle whose face
+    /// record could not be reconstructed (a corner position the mesh does
+    /// not hold — the same refusal as a dropped triangle, kept as `None`
+    /// rather than dropped so the two buffers stay aligned).
+    face_of: Vec<Option<u32>>,
 }
 
 impl CollisionMesh {
@@ -557,12 +610,25 @@ impl CollisionMesh {
     /// collision view refuses a triangulation it cannot make. Positions are
     /// kept in first-reached order so identical input always yields identical
     /// buffers.
+    ///
+    /// Beside the triangles the view records the **stored face** each one
+    /// stands in for ([`CollisionFace`]): an outline's triangles all map to
+    /// its one stored polygon; a strip's triangles each map to their own
+    /// step's three corners — the records `0x55c9c0` hands the face tester.
     #[must_use]
     pub fn of(mesh: &RawMesh) -> Self {
         let topology = mesh.topology();
         let mut slot_of: HashMap<u32, u32> = HashMap::new();
+        // Face dedupe key: a `(polygon, step)` of the stored topology, with
+        // `usize::MAX` for an outline's whole-polygon face — its ear-clipped
+        // triangles share one stored face record, while a strip's steps are
+        // distinct faces (each step is its own three-corner face to the
+        // tester).
+        let mut face_slot_of: HashMap<(usize, usize), u32> = HashMap::new();
         let mut positions: Vec<[f32; 3]> = Vec::new();
         let mut indices: Vec<[u32; 3]> = Vec::with_capacity(topology.triangles.len());
+        let mut faces: Vec<CollisionFace> = Vec::new();
+        let mut face_of: Vec<Option<u32>> = Vec::with_capacity(topology.triangles.len());
         for triangle in &topology.triangles {
             let mut corners = [0u32; 3];
             let mut complete = true;
@@ -584,9 +650,72 @@ impl CollisionMesh {
             }
             if complete {
                 indices.push(corners);
+                face_of.push(Self::stored_face_slot(
+                    mesh,
+                    triangle,
+                    &mut face_slot_of,
+                    &mut faces,
+                ));
             }
         }
-        Self { positions, indices }
+        Self {
+            positions,
+            indices,
+            faces,
+            face_of,
+        }
+    }
+
+    /// The `faces` slot of `triangle`'s stored face, building the record on
+    /// first use — `None` when the face's corners cannot be resolved (the
+    /// same out-of-range refusal as the triangle loop's `complete` check).
+    ///
+    /// A [`PrimitiveKind::Polygon`] collapses to one record per stored
+    /// polygon — `0x55c9c0` tests the whole outline — while a
+    /// [`PrimitiveKind::TriangleStrip`] keeps one record per step, its three
+    /// corners in drawing order.
+    fn stored_face_slot(
+        mesh: &RawMesh,
+        triangle: &MeshTriangle,
+        face_slot_of: &mut HashMap<(usize, usize), u32>,
+        faces: &mut Vec<CollisionFace>,
+    ) -> Option<u32> {
+        let Some(polygon) = mesh.polygons.get(triangle.polygon) else {
+            // A topology triangle always names a stored polygon; this arm is
+            // unreachable and stays a refusal rather than a panic.
+            return None;
+        };
+        let outline = polygon.kind == PrimitiveKind::Polygon;
+        let key = if outline {
+            (triangle.polygon, usize::MAX)
+        } else {
+            (triangle.polygon, triangle.step)
+        };
+        let slot = *face_slot_of.entry(key).or_insert_with_key(|_| {
+            let corners: Vec<[f32; 3]> = if outline {
+                // `topology()` checked every stored corner of a polygon it
+                // produced triangles for, so each position index is in range.
+                polygon
+                    .corners
+                    .iter()
+                    .map(|corner| mesh.positions[corner.position as usize])
+                    .collect()
+            } else {
+                triangle
+                    .positions
+                    .iter()
+                    .map(|&position| mesh.positions[position as usize])
+                    .collect()
+            };
+            let slot = u32::try_from(faces.len()).expect("a mesh's stored faces fit in u32");
+            faces.push(CollisionFace {
+                polygon: triangle.polygon,
+                corners,
+                raw_flags: polygon.raw_flags,
+            });
+            slot
+        });
+        Some(slot)
     }
 
     /// The stored positions the index triples name, in first-reached order.
@@ -599,6 +728,22 @@ impl CollisionMesh {
     #[must_use]
     pub fn indices(&self) -> &[[u32; 3]] {
         &self.indices
+    }
+
+    /// The distinct stored faces [`Self::face_of`] names, in construction
+    /// order — one per stored outline polygon or per strip step.
+    #[must_use]
+    pub fn faces(&self) -> &[CollisionFace] {
+        &self.faces
+    }
+
+    /// Which [`Self::faces`] record each collision triangle stands in for,
+    /// aligned with [`Self::indices`]; `None` for a triangle whose stored
+    /// face could not be reconstructed. A collider built from this view keeps
+    /// per-triangle behaviour exactly where this map has no record.
+    #[must_use]
+    pub fn face_of(&self) -> &[Option<u32>] {
+        &self.face_of
     }
 
     /// Triangles this view carries, degenerate ones included.
@@ -4982,9 +5127,40 @@ mod tests {
         let without = build(plain);
 
         // Every stored flag bit but the measured two-sided one is unread: only
-        // the material index and `0x400` decide, and this stored word clears
-        // `0x400`, so the two meshes build identically.
-        assert_eq!(with_flags, without);
+        // the material index and `0x400` decide the drawn view, and this
+        // stored word clears `0x400`, so the two meshes draw identically. The
+        // collision view's side table keeps the stored flag word itself
+        // verbatim (task #2217), so the two builds differ only there.
+        assert_eq!(with_flags.vertices(), without.vertices());
+        assert_eq!(with_flags.triangles(), without.triangles());
+        assert_eq!(with_flags.groups(), without.groups());
+        assert_eq!(with_flags.source_faces(), without.source_faces());
+        assert_eq!(with_flags.culled_faces(), without.culled_faces());
+        let faces_of = |mesh: &RenderMesh| {
+            mesh.collision()
+                .faces()
+                .iter()
+                .map(|face| (face.polygon, face.corners.clone(), face.is_two_sided()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            with_flags.collision().positions(),
+            without.collision().positions()
+        );
+        assert_eq!(
+            with_flags.collision().indices(),
+            without.collision().indices()
+        );
+        assert_eq!(
+            with_flags.collision().face_of(),
+            without.collision().face_of()
+        );
+        assert_eq!(faces_of(&with_flags), faces_of(&without));
+        assert_eq!(
+            with_flags.collision().faces()[0].raw_flags,
+            0xF0F0_F0F0,
+            "the stored flag word is carried, unread bits included"
+        );
         let materials: Vec<u32> = with_flags
             .groups()
             .iter()
