@@ -159,6 +159,20 @@ field applies no measured effect. The field exists and is measured; what a
 zero-damage tangler does to a flight model is not visible in the measured path,
 and no drag or control-lock store is reachable from it.
 
+**Update (2026-10-29, tasks #2179/#2186).** The paragraph above is superseded on
+its last point: the per-hit routine `0x4b9bc0` does have a `TANGLER` branch of
+its own (`0x4b9ded`, before the damage path), which zeroes both damage channels
+and applies a timed tangle, and the actor force routine `0x48fc40` zeroes its
+force scalar while that tangle is live — see
+`docs/findings/2026-10-28-t452-tangler-effect.md` for the measurement.
+`t452_r02.limit.tangler_flight_effect` is resolved by task #2186 as that
+measured effect; its runtime expression is
+`docs/findings/2026-10-29-t452-reg-tangler-runtime.md` (the field opens at fire
+time and the session's timed tangle re-applies per tick). The two parts the
+measurement does not pin stay named:
+`t452_reg.limit.tangler_force_scalar_meaning` and
+`t452_reg.limit.tangler_field_origin`. Everything else in this section stands.
+
 ### SMOKE_SCREEN: a visual emitter, an area with a lifetime and no radius
 
 Parsing `SMOKE_SCREEN` sets flag `0x10000` (`0x4ba7f8`), default `TIME` 5.0 at

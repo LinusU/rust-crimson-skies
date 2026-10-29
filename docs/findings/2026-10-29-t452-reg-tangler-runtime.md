@@ -60,6 +60,12 @@ executable was run, and nothing here is `verified_original`. Test prefix
   (M01 flies the designed rocket loadout), so no production flight model reads
   this state yet; the task that measures and expresses the flight-model
   consumption is `T452-REG-TANGLER-EFFECT` (#2179).
+* The victim list. The session's per-tick pass reads the `OrdnanceStep`
+  target list, and M01's rocket target list omits the player's own actor. The
+  measured tick walks the whole actor list with the owner included, so the
+  flight consumer that drives a tangler must supply every actor it wants
+  tangled — including the player and the shooter. The runtime does not add
+  victims of its own; the ledger's `apply` docs state that obligation.
 
 `t452_r02.limit.tangler_flight_effect` is therefore resolved rather than kept:
 the effect it left unnamed is exactly the measured timed force-scalar

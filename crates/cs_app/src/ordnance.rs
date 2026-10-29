@@ -2409,6 +2409,13 @@ impl TanglerLedger {
     /// first position), in ascending actor order. The field's owner is not
     /// excluded: an owner the caller lists is tangled like any other actor.
     ///
+    /// The list is the whole actor set the measured tick walks
+    /// (`0x4b9590` walks the actor list and excludes nobody), so a caller that
+    /// omits an actor leaves it untangled. In particular M01's rocket target
+    /// list omits the player's own actor: a caller that wants the player
+    /// tangled by a field it fired has to list it, which is the flight
+    /// consumer's wiring (task T452-REG-TANGLER-EFFECT).
+    ///
     /// The order is deliberate. Applying before expiring means a victim still
     /// inside a live field is re-tangled on the tick its timer would otherwise
     /// clear, which is exactly the measured re-hit rule ("raise to max, never
@@ -5247,14 +5254,15 @@ pub fn measured_ordnance_declaration(
                     None
                 } else {
                     let ticks = seconds_to_ticks(seconds, ticks_per_second);
+                    // `measured_area` yields a timed area **with a radius**
+                    // only for `TANGLER`, which the branch above expresses as
+                    // its own field; this arm is the fallback for any future
+                    // measurement of another persistent record area. The
+                    // runtime's bounded area applies once and cannot outlive
+                    // its item, so a record whose measured area is longer than
+                    // its own flight cannot be expressed as one and is blocked
+                    // rather than flown as a blast.
                     if ticks > lifetime_value {
-                        // `measured_area` yields a timed area **with a radius**
-                        // only for `TANGLER`, whose field re-applies its
-                        // per-hit routine every tick; `SMOKE_SCREEN`'s radius
-                        // is a global key, not a record radius. The runtime's
-                        // bounded area applies once and cannot outlive its
-                        // item, so a record whose measured area is longer than
-                        // its own flight cannot be expressed as one.
                         blockers.push(OriginalRegistrationBlocker::new(
                             name,
                             "area_effect.lifetime_ticks",

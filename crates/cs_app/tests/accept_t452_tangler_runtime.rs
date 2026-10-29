@@ -597,6 +597,46 @@ fn accept_t452_tangler_runtime_the_field_lasts_its_time_and_reapplies_each_tick(
     assert!(session.tangler_fields().is_empty());
 }
 
+/// The measured tick walks the whole actor list with the owner included: the
+/// shooter's own actor, when the fire path lists it, is tangled by the field it
+/// fired exactly like any other victim.
+#[test]
+fn accept_t452_tangler_runtime_the_shooter_inside_the_field_is_tangled() {
+    let mut session = session_with_field(true);
+    let mut world = World::new();
+    launcher(&mut world);
+    let mut damage = damage_resolver();
+    let owner = path(actor(1), MOUNT_ORIGIN);
+    let victim = path(actor(2), MOUNT_ORIGIN);
+
+    let first = step(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[launch_order()],
+        &[owner, victim],
+        0,
+    );
+    let applied: Vec<ActorId> = first.tangler[0]
+        .applied
+        .iter()
+        .map(|application| application.target)
+        .collect();
+    assert_eq!(
+        applied,
+        vec![actor(1), actor(2)],
+        "the field's own shooter is a victim like any other: 0x4b9590 excludes nobody"
+    );
+    assert!(
+        session.is_tangled(&actor(1)),
+        "the shooter is tangled by the field it fired"
+    );
+    assert!(
+        !session.boost_allowed(&actor(1)),
+        "and its own boost is refused while the tangle is live"
+    );
+}
+
 /// An actor outside the measured 10 m radius is untouched; one just inside is
 /// tangled. The boundary is the measured strict `d2 < RADIUS²`.
 #[test]

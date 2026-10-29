@@ -47,7 +47,7 @@ routine has a branch of its own for the `TANGLER` flag (`0x40000`) at
 - Which of the two update paths (`0x47027c`, `0x48c606`) belongs to which
   actor kind.
 
-## Runtime consequence (open)
+## Runtime consequence
 
 The runtime `AreaEffect` applies damage once at detonation. The measured
 field is created at fire time, lasts `TIME`, is hit-tested every tick against
@@ -55,3 +55,14 @@ every live actor, and its effect is a per-victim timed status with a
 distance-dependent duration. The vocabulary needs: a persistent area field, a
 per-tick re-application, and a timed "force suppressed" actor status. That
 expression is split from this measurement.
+
+**Update (2026-10-29).** That expression now exists: the vocabulary landed in
+#2185, the per-tick field ledger and tangle timer in #2196, and the production
+fire path that opens `wep_12`'s field — with the readable tangle timer and the
+measured boost refusal — in #2186
+(`docs/findings/2026-10-29-t452-reg-tangler-runtime.md`). The claim
+`t452_r02.limit.tangler_flight_effect` is resolved by that effect; the
+unpinned parts above stay named
+(`t452_reg.limit.tangler_force_scalar_meaning`,
+`t452_reg.limit.tangler_field_origin`). This note records where the
+measurement is expressed; it claims no original-run behaviour.
