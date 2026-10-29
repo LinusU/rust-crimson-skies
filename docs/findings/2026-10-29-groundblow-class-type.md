@@ -62,8 +62,9 @@ measured engine facts).
    | 10 sound | `0x4e2bcc` | `0x94` = 148 | not a CS kind (`Reading sound node data: Must complete software.`, `0x62e834`; the short-read error is `Error reading node sound data.`, `0x62e814`) |
 
    The loader's error message calls the word **`class_type`**, which is the name this finding
-   and #2209 use for it. A CS container stores none of `0`, `7`, `8` or `10`: measured below,
-   M01's world container holds only `1, 2, 3, 4, 5, 6, 9`.
+   and #2209 use for it. M01's world container holds only `1, 2, 3, 4, 5, 6, 9`; the loader
+   refuses `7` and `8` by name, and none of the containers measured here stores `0` or `10`
+   (kind `10` is readable — it is the sound record — but no CS container seen here uses it).
 3. **Nodes the engine creates at run time get the type from their class constructor**, not
    from a file. `0x4cc4f0` takes a slot out of the same 212-byte node table and zeroes the
    whole 208-byte info record (`mov ecx, 0x34; rep stosd` = 52 dwords), then stamps the
@@ -191,7 +192,7 @@ like the array read does.
 | `0x4d8568` | the copy table: `1→0x4d84d6`, `2→0x4d8524`, `3,4→0x4d8544`, `5→0x4d84bc`, `6→0x4d84c9`, `7→0x4d850a`, `8→0x4d84fd`, `9→0x4d84e3`, `10→0x4d84f0`, `11→0x4d8517` |
 | `0x4d84bc` | the object3d copy: `0x4d8160(node)` → `0x4d1330()` (constructor, writes 5) then `0x4d7b90(new, source)` |
 | `0x4d7b90` | the info copy: every flag-guarded field through its own setter — bit `0x04` → `0x4cca30` (active), `0x08` → `0x4ccf00`, `0x10` → `0x4cd210` (intersection), `0x20` → the bbox setter, and so on; the curve is the same per-bit dispatch #727 section D measured. **No store to `+0x34`** |
-| `0x4d8430`, `0x4d82a0`, `0x4d8140`, `0x4d8450` | the copy routines behind the table's `7`, `8`, `10` and `11` entries — same shape (class constructor, then the info copy); no CS container stores those kinds |
+| `0x4d8430`, `0x4d82a0`, `0x4d8140`, `0x4d8450` | the copy routines behind the table's `7`, `8`, `10` and `11` entries — same shape (class constructor, then the info copy); no container measured here stores those kinds |
 
 `0x4d0430(list, node)` is how a node becomes findable by name: `0x4cf930()` takes an entry,
 `[entry] = node`, and the entry is linked into `[0x62cfb8 + list*4]`. `0x4d0320`
@@ -200,8 +201,9 @@ entry's node, moving the found entry to the head. That is the lookup the plane p
 
 Every class-typed node a constructor builds therefore carries its own constant, and the
 allocator's other call sites are not class constructors: class 8 has no constructor among
-them at all (its copy entry exists, but the loader refuses it and no CS container stores
-it), the by-name reader of section 1 copies the record instead, and the two builders
+them at all (its copy entry exists, but the loader refuses it and no container measured
+here stores it), the by-name reader of section 1 copies the record instead, and the two
+builders
 `0x4eda46` and `0x5bab8d` store the new node inside another object and write no class word
 themselves.
 
