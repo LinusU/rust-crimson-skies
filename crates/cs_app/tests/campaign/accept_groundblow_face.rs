@@ -320,6 +320,7 @@ fn compose() -> App {
     let stage = stage_for(&root, &plan).expect("stage");
     let mut app = build_headless(&stage).expect("M01 composes");
     app.world_mut().remove_resource::<LaunchCinematic>();
+    app.update();
     app
 }
 
@@ -331,12 +332,10 @@ fn compose() -> App {
 ///
 /// The tile is a **direct child** of `world1`, so the flat world draw spawns
 /// it as a `WorldColliderInstance` object collider (object id `node-547`),
-/// not a grouped scenery placement — and the sweep's owner filter does not
-/// class it sea or scenery today. The stored-face table rides the same
-/// mesh-collider spawn path regardless; this test reads the record off the
-/// entity's own `ColliderFaces` and drives the production face-record path
-/// ([`nearest_contact`]) over the entity's real `Collider`, pose and table,
-/// which is the same code a swept target runs.
+/// marked a `WorldSweepNode` because its stored node carries the contact bits
+/// — a swept target `probe_in_world` reaches. This test reads the record off
+/// the entity's own `ColliderFaces` and probes it through the production
+/// sweep.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_groundblow_face_m01_g28530_reports_the_stored_faces() {
@@ -376,6 +375,14 @@ fn accept_groundblow_face_m01_g28530_reports_the_stored_faces() {
         .clone();
     let position = app.world().get::<Position>(tile).expect("a pose").0;
     let rotation = app.world().get::<Rotation>(tile).expect("a pose").0;
+    assert!(
+        app.world().get::<ColliderFaces>(tile).is_some()
+            && app
+                .world()
+                .get::<cs_app::mission_session::WorldSweepNode>(tile)
+                .is_some(),
+        "the swept object collider carries its node marker and its faces"
+    );
 
     // The carried table is the collision view's own: the eight stored
     // outline polygons, each with its stored corners and flag word, and the
@@ -434,21 +441,27 @@ fn accept_groundblow_face_m01_g28530_reports_the_stored_faces() {
         "the solver's triangle count is the collision view's, unchanged"
     );
 
-    // The target the sweep would test: the entity's own collider, pose and
-    // face table, through the production face-record path.
+    // The entity is a real sweep target: a `WorldSweepNode` with the stored
+    // node's class type, so `target_of` would class it the original's way.
+    let sweep_node = app
+        .world()
+        .get::<cs_app::mission_session::WorldSweepNode>(tile)
+        .expect("the tile is a marked sweep node");
+    assert_eq!(sweep_node.node_slot, 547);
     let target = SweepTarget {
         entity: tile,
         collider: &collider,
         position,
         rotation,
         owner: SegmentProbeOwner::World,
-        class_type: OBJECT3D_CLASS_TYPE,
+        class_type: sweep_node.class_type,
         faces: Some(&carried),
     };
 
-    // Probe each of polygon 5's collision triangles: whichever ear-clipped
-    // half the segment meets, the record is the stored quad's `(0, 196608, 0)`
-    // — a triangle soup would report one half's `262144` there.
+    // Probe each of polygon 5's collision triangles through the production
+    // sweep: whichever ear-clipped half the segment meets, the record is the
+    // stored quad's `(0, 196608, 0)` — a triangle soup would report one
+    // half's `262144` there.
     let face5 = collision
         .faces()
         .iter()
@@ -462,6 +475,7 @@ fn accept_groundblow_face_m01_g28530_reports_the_stored_faces() {
         .collect();
     assert_eq!(halves.len(), 2, "the quad ear-clips to two triangles");
     let mut distinct = std::collections::BTreeSet::new();
+    let mut probed_population = false;
     for half in halves {
         let [a, b, c] = collision.indices()[half];
         let centroid = (Vec3::from(canonical.vertices()[a as usize])
@@ -494,6 +508,24 @@ fn accept_groundblow_face_m01_g28530_reports_the_stored_faces() {
                 close(contact.normal[axis], f64::from(expected[axis])),
                 "half {half}: normal {contact:?} ≠ stored face's {expected:?}"
             );
+        }
+        // The same segment run through the whole composed population answers
+        // (several water surfaces overlap here — which entity the probe picks
+        // among them is the sweep's own nearest rule).
+        if !probed_population {
+            let prober = app.world_mut().spawn_empty().id();
+            assert!(
+                probe_in_world(
+                    app.world(),
+                    world + Vec3::Y * 100.0,
+                    nose_down(),
+                    400.0,
+                    prober
+                )
+                .is_some(),
+                "the composed world's sweep answers at the tile"
+            );
+            probed_population = true;
         }
     }
     assert_eq!(
