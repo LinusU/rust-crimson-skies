@@ -6226,7 +6226,17 @@ fn request_screenshot(
     raw: Option<FlightCheckFrames>,
 ) {
     commands.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>| {
+        move |mut captured: On<ScreenshotCaptured>,
+              live: Option<Res<crate::render::presentation::LivePresentation>>,
+              mut filter_report: ResMut<crate::render::presentation::FrameFilterReport>| {
+            // The session's colour filter lands before measurement, raw
+            // recording and disk alike, so the judged frame is the frame the
+            // filtered run drew (F52-W2-wire).
+            crate::render::presentation::present_captured_frame(
+                live.as_deref(),
+                &mut filter_report,
+                &mut captured.event_mut().image,
+            );
             if let (Some(raw), Some(data)) = (&raw, captured.image.data.as_ref())
                 && let Ok(mut frames) = raw.0.lock()
             {

@@ -180,7 +180,7 @@ use bevy::image::{Image, ImageSampler};
 use bevy::mesh::Mesh;
 use bevy::prelude::{
     Assets, Bundle, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Entity, Handle,
-    Mesh3d, MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, Visibility,
+    Mesh3d, MeshMaterial3d, On, Res, ResMut, Resource, StandardMaterial, Transform, Visibility,
     WindowPlugin, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -4651,12 +4651,22 @@ struct RenderedView {
 
 /// Installs the screenshot observer and the capture resources once per app.
 fn install_capture_observer(app: &mut App) {
+    app.init_resource::<crate::render::presentation::FrameFilterReport>();
     if !app.world().contains_resource::<CapturedFrame>() {
         app.init_resource::<CapturedFrame>();
         app.add_observer(
-            |captured: On<ScreenshotCaptured>,
+            |mut captured: On<ScreenshotCaptured>,
              frame: Res<CapturedFrame>,
-             slot: Res<CaptureSlot>| {
+             slot: Res<CaptureSlot>,
+             live: Option<Res<crate::render::presentation::LivePresentation>>,
+             mut filter_report: ResMut<crate::render::presentation::FrameFilterReport>| {
+                // The session's colour filter lands before measurement and
+                // disk alike (F52-W2-wire).
+                crate::render::presentation::present_captured_frame(
+                    live.as_deref(),
+                    &mut filter_report,
+                    &mut captured.event_mut().image,
+                );
                 if captured.image.data.is_some() {
                     let image = captured.image.clone();
                     if let Ok(mut guard) = frame.0.lock() {

@@ -112,3 +112,54 @@ pub fn filter_frame(filter: ColourFilter, rgba: &mut [u8]) -> Result<(), FilterE
 pub fn present_frame(live: &LivePresentation, rgba: &mut [u8]) -> Result<(), FilterError> {
     filter_frame(live.presentation().colour_filter, rgba)
 }
+
+// ------------------------------------------------------------ the wire ---
+//
+// F52-W2-wire: the capture paths (the mission smoke's framebuffer shots and
+// the front end's screen capture) hand each delivered image through
+// [`present_captured_frame`] before it is measured or written, so the PNG and
+// the judgement see the frame the filtered run actually drew. What it did is
+// recorded in [`FrameFilterReport`], error and all — a buffer that is not
+// whole RGBA is an error the report names, never a silent pass.
+
+/// Resource: what the captured-frame filter did, capture by capture.
+#[derive(Resource, Debug, Default)]
+pub struct FrameFilterReport {
+    /// Delivered images the session's filter was applied to (including the
+    /// `Off` filter's no-op pass: the filter ran, the frame was unchanged).
+    pub filtered: u64,
+    /// Delivered images whose buffers were not whole RGBA pixels, verbatim —
+    /// the image is then saved unfiltered, and the error is still here.
+    pub errors: Vec<FilterError>,
+}
+
+/// Applies the live session's colour filter to a captured frame's RGBA
+/// buffer in place, before it is measured or saved (F52-W2-wire).
+///
+/// `live` is the world's [`LivePresentation`]; absent — a session-less
+/// capture, which no production capture path is — the frame is recorded as
+/// filtered under the designed `Off` default, which is the identity. A
+/// non-RGBA buffer is left untouched and named in `report`.
+pub fn present_captured_frame(
+    live: Option<&LivePresentation>,
+    report: &mut FrameFilterReport,
+    image: &mut bevy::image::Image,
+) {
+    let Some(data) = image.data.as_deref_mut() else {
+        return;
+    };
+    let filter = live.map_or(ColourFilter::Off, |live| live.presentation().colour_filter);
+    match filter_frame(filter, data) {
+        Ok(()) => report.filtered += 1,
+        Err(error) => report.errors.push(error),
+    }
+}
+
+/// Installs `session` as the app's [`LivePresentation`]: the one resource every
+/// presenter — effects, subtitles, colour filter, bus levels — reads each
+/// frame (F52-W2-wire). `run_playtest` and `run_windowed` install it before
+/// the first frame; a test installs it into the same headless app the
+/// schedule drives.
+pub fn install_live_presentation(app: &mut bevy::prelude::App, session: SettingsSession) {
+    app.insert_resource(LivePresentation(session));
+}

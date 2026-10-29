@@ -60,8 +60,8 @@ use bevy::app::PluginGroup;
 use bevy::camera::{ClearColorConfig, RenderTarget};
 use bevy::image::{Image, ImageSampler};
 use bevy::prelude::{
-    App, Assets, Camera, Camera2d, Color, DefaultPlugins, Handle, On, Res, Resource, Sprite,
-    Transform, Vec2, WindowPlugin, default,
+    App, Assets, Camera, Camera2d, Color, DefaultPlugins, Handle, On, Res, ResMut, Resource,
+    Sprite, Transform, Vec2, WindowPlugin, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -682,14 +682,27 @@ fn drive_capture(
     target: CaptureTarget,
     png: &Path,
 ) -> Result<(), ScreenCaptureError> {
+    app.init_resource::<crate::render::presentation::FrameFilterReport>();
     let png = png.to_path_buf();
-    let observer = move |captured: On<ScreenshotCaptured>, frame: Res<CapturedFrame>| {
-        if captured.image.data.is_some() {
-            let image = captured.image.clone();
-            *frame.0.lock().expect("the capture frame mutex") = Some(measure(&image));
-        }
-        save_to_disk(png.clone())(captured);
-    };
+    let observer =
+        move |mut captured: On<ScreenshotCaptured>,
+              frame: Res<CapturedFrame>,
+              live: Option<Res<crate::render::presentation::LivePresentation>>,
+              mut filter_report: ResMut<crate::render::presentation::FrameFilterReport>| {
+            // The session's colour filter lands before measurement and disk
+            // alike, so the judged frame is the frame the filtered run drew
+            // (F52-W2-wire).
+            crate::render::presentation::present_captured_frame(
+                live.as_deref(),
+                &mut filter_report,
+                &mut captured.event_mut().image,
+            );
+            if captured.image.data.is_some() {
+                let image = captured.image.clone();
+                *frame.0.lock().expect("the capture frame mutex") = Some(measure(&image));
+            }
+            save_to_disk(png.clone())(captured);
+        };
     app.add_observer(observer);
     for update in 0..MAX_CAPTURE_UPDATES {
         if update == WARMUP_FRAMES {
