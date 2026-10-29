@@ -149,6 +149,7 @@ fn healthy() -> SmokeMeasurements {
             active_loops: 1,
             radio_started: 1,
         },
+        presentation: crate::accept_f52_w2_evidence::healthy_presentation(),
         approach: cs_app::mission_session::ApproachMetrics {
             placed: true,
             anchor: Some("workersvoyagezep".to_owned()),

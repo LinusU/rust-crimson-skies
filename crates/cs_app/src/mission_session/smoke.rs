@@ -93,8 +93,11 @@ use bevy::prelude::{
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::ui::{ComputedNode, Node, UiGlobalTransform, Val};
+use cs_content::settings::ColourFilter;
 use cs_content::world::SurfaceRole;
+use cs_sim::audio_events::RadioLine;
 use cs_types::Tick;
+use cs_types::content::ContentKind;
 
 use super::MissionStage;
 use super::compose::MissionPlayerBody;
@@ -111,9 +114,11 @@ use super::preferences_overlay::PreferencesOverlay;
 use super::turret_fire::{MissionTurretFire, TurretWeaponRecord};
 use super::weapons::MissionWeaponReport;
 use super::world_draw::{HorizonRest, WorldWaterPart, node_slot_of};
+use crate::accessibility::motion::Effect;
 use crate::audio::loops::AudioSession;
 use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
+use crate::camera::effects::GameEvent;
 use crate::input::platform::PlatformInput;
 use crate::input::session::PauseReason;
 use crate::json::json_string;
@@ -264,6 +269,51 @@ const APPROACH_BUDGET_FRAMES: u32 = 1080;
 const APPROACH_MIN_FRAMES: u32 = 60;
 /// Frames into the post-wake phase at which the HUD screenshot is requested.
 const HUD_SHOT_OFFSET: u32 = 20;
+/// The designed `PlayerHit` damage the presentation probe presents
+/// (F52-W2-evidence, #2141): large enough that the shake and flash it asks
+/// for are plainly visible in the delivered frame.
+const PRESENTATION_PROBE_DAMAGE: f32 = 50.0;
+/// The probe line's speaker — it names itself, so no reader mistakes the
+/// line for mission content.
+const PRESENTATION_PROBE_SPEAKER: &str = "smoke-probe";
+/// The probe line's subtitle (designed): M01's own radio lines carry none,
+/// so an honest subtitle capture needs a line the script injected.
+const PRESENTATION_PROBE_SUBTITLE: &str = "presentation probe (designed test line)";
+/// How long the probe line stays the queue's active line, in simulation
+/// ticks: long enough to cover both probe shots.
+const PRESENTATION_PROBE_TICKS: u64 = 240;
+/// The probe line's queue priority. Mission radio lines queue at priority 1
+/// and are interruptible, so a probe at 2 preempts whatever chatter is live
+/// and stays the active line for the whole probe window — the evidence
+/// cannot depend on which mission line happened to be voicing.
+const PRESENTATION_PROBE_PRIORITY: u8 = 2;
+/// Frames into the presentation phase at which the all-effects shot is
+/// requested — the frame after the probe event was queued is the frame it
+/// presents on.
+const PRESENTATION_FX_SHOT_OFFSET: u32 = 1;
+/// The frame the phase `apply`s its designed flips — colour filter on,
+/// cosmetic motion reduced, UI scale raised — after the all-effects shot
+/// recorded the session the run opened with.
+const PRESENTATION_FLIP_OFFSET: u32 = 2;
+/// The frame the second `PlayerHit` is queued, so it presents under the
+/// flipped settings one frame later.
+const PRESENTATION_SECOND_HIT_OFFSET: u32 = 3;
+/// Frames into the presentation phase at which the reduced-effects shot is
+/// requested: the same designed hit, filtered.
+const PRESENTATION_FX_REDUCED_OFFSET: u32 = 4;
+/// Frames into the presentation phase at which the subtitle-only shot is
+/// requested.
+const PRESENTATION_SUBTITLE_OFFSET: u32 = 30;
+/// The frame the phase flips subtitles off, so the next frame's shot shows
+/// the switch suppressing the drawn row.
+const PRESENTATION_SUBTITLE_FLIP_OFFSET: u32 = 31;
+/// Frames into the presentation phase at which the subtitles-off shot is
+/// requested: the probe line still active, the row undrawn.
+const PRESENTATION_SUBTITLE_OFF_OFFSET: u32 = 32;
+/// Frames into the presentation phase at which it restores the session it
+/// found and hands over to the gun hold, whose `Space` press moved here
+/// from `Hud`'s exit.
+const PRESENTATION_END_OFFSET: u32 = 45;
 /// Frames the gun hold lasts: one second of `Space`.
 /// Frames after the gun hold starts before its side view has settled.
 const GUNS_SIDE_VIEW_SETTLE_FRAMES: u32 = 12;
@@ -1305,6 +1355,73 @@ pub struct PauseMapMetrics {
     pub resumed: bool,
 }
 
+/// What one screenshot's frame presented when the shot was requested
+/// (F52-W2-evidence, #2141): the live session's own settings plus the
+/// presented effects and the HUD row — the record a colour-filter, UI-scale,
+/// subtitle or shake/flash claim reads beside the PNG.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShotPresentation {
+    /// The shot's label (`frame_<frame>_<label>.png`).
+    pub label: String,
+    /// The smoke frame the shot was requested on.
+    pub frame: u32,
+    /// The session's colour filter when the frame was captured.
+    pub colour_filter: String,
+    /// The session's UI scale in percent.
+    pub ui_scale_percent: u16,
+    /// The session's subtitle switch.
+    pub subtitles_on: bool,
+    /// The session's reduced-shake switch.
+    pub reduce_shake: bool,
+    /// The session's reduced-flash switch.
+    pub reduce_flash: bool,
+    /// The text size the frame's HUD presentation laid out, in px.
+    pub text_px: u32,
+    /// The subtitle the row drew (`speaker: text`); `None` while the switch
+    /// is off or no captioned line was active.
+    pub subtitle: Option<String>,
+    /// The presented flash intensity (`0.0` while reduced flash holds or
+    /// nothing flashed).
+    pub flash: f32,
+    /// The presented camera-shake amplitude (`0.0` while reduced shake holds
+    /// or nothing shook).
+    pub shake: f32,
+    /// The effects the frame presented, by name — the required notices are
+    /// listed under reduced motion exactly where the cosmetic ones are not.
+    pub presented: Vec<String>,
+    /// The speaker of the line the radio queue held active on that frame.
+    pub radio_speaker: Option<String>,
+    /// The caption the queue's active line carried on that frame, if any —
+    /// the provenance of the drawn subtitle row.
+    pub radio_subtitle: Option<String>,
+    /// Whether the queue's active line was the designed probe.
+    pub probe_active: bool,
+}
+
+/// The F52-W2-evidence records (#2141): what the presentation phase injected
+/// and what it refused, so the per-shot records are never mistaken for
+/// mission content. The mission's own radio lines carry no subtitle — the
+/// radio session's "Absent, not invented" note — so an honest subtitle
+/// capture needs the labelled test line the phase enqueues on the production
+/// radio queue, and its voiced start shows in `audio.one_shots`.
+#[derive(Clone, Debug, Default)]
+pub struct PresentationMetrics {
+    /// The injected test line's speaker, when the phase enqueued it.
+    pub probe_speaker: Option<String>,
+    /// The test line's subtitle (designed).
+    pub probe_subtitle: Option<String>,
+    /// The delivered dialogue member the test line voices.
+    pub probe_asset: Option<String>,
+    /// The presentation event the phase pushed (`player_hit`).
+    pub probe_event: Option<String>,
+    /// Every refusal the phase recorded, in order: why the probe could not
+    /// enqueue its line or push its event, and any `apply` that could not
+    /// persist its change.
+    pub probe_refusals: Vec<String>,
+    /// What each requested shot's frame presented, in request order.
+    pub shots: Vec<ShotPresentation>,
+}
+
 /// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
@@ -1382,6 +1499,8 @@ pub struct SmokeMeasurements {
     pub convoy_kill: Option<convoy_kill::ConvoyKillMetrics>,
     /// The success stage ([`MissionSmokeMode::Success`] only).
     pub success: Option<success::SuccessMetrics>,
+    /// The F52-W2-evidence probe and per-shot presented records (#2141).
+    pub presentation: PresentationMetrics,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1935,6 +2054,7 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             m.audio.engine_bindings, m.audio.active_loops
         ),
     });
+    checks.extend(evaluate_presentation(m));
 
     // --- the launch cinematic ---------------------------------------------
     if let Some(c) = &m.cinematic {
@@ -2333,6 +2453,220 @@ fn evaluate_cockpit(cockpit: &CockpitViewMetrics, checks: &mut Vec<Check>) {
             ),
         });
     }
+}
+
+/// Judges the F52-W2-evidence presentation probe (#2141). Every claim is
+/// read off the per-shot records of the delivered frames, so a run where the
+/// session's switches suppress cosmetic motion or the subtitle row passes
+/// exactly where a run that keeps them does.
+fn evaluate_presentation(m: &SmokeMeasurements) -> Vec<Check> {
+    let p = &m.presentation;
+    let shots = &p.shots;
+    // A run that never reached the phase produced no probe records at all;
+    // its checks do not apply rather than fail. A phase that ran but
+    // refused (no audio session, no event queue) recorded its refusal and
+    // does apply.
+    let probe_ran = p.probe_speaker.is_some()
+        || p.probe_asset.is_some()
+        || p.probe_event.is_some()
+        || !p.probe_refusals.is_empty()
+        || shots
+            .iter()
+            .any(|shot| shot.label.starts_with("presentation_"));
+    let mut checks = vec![
+        Check {
+            id: "presentation_probe_radio".to_owned(),
+            applies: probe_ran,
+            passed: p.probe_asset.is_some(),
+            detail: format!(
+                "the labelled test line {} on the production radio queue ({})",
+                if p.probe_asset.is_some() {
+                    "enqueued"
+                } else {
+                    "never enqueued"
+                },
+                if p.probe_refusals.is_empty() {
+                    format!("voices {}", p.probe_asset.as_deref().unwrap_or("—"))
+                } else {
+                    p.probe_refusals.join("; ")
+                }
+            ),
+        },
+        Check {
+            id: "presentation_probe_event".to_owned(),
+            applies: probe_ran,
+            passed: p.probe_event.is_some(),
+            detail: format!(
+                "the production event queue {} the designed player_hit",
+                if p.probe_event.is_some() {
+                    "took"
+                } else {
+                    "never took"
+                }
+            ),
+        },
+        Check {
+            id: "presentation_probe_active".to_owned(),
+            applies: probe_ran && p.probe_asset.is_some(),
+            passed: shots.iter().any(|shot| shot.probe_active),
+            detail: format!(
+                "{} shot frame(s) held the probe line active on the radio queue",
+                shots.iter().filter(|shot| shot.probe_active).count()
+            ),
+        },
+    ];
+    // The probe's designed line drew its caption on some frame and the
+    // switch suppressed the row on another while the queue still carried
+    // the caption — the drawn and the suppressed state, both on delivered
+    // frames.
+    let drawn = shots
+        .iter()
+        .filter(|shot| {
+            shot.subtitles_on
+                && shot.probe_active
+                && shot
+                    .subtitle
+                    .as_deref()
+                    .is_some_and(|text| text.contains("presentation probe"))
+        })
+        .count();
+    let suppressed = shots
+        .iter()
+        .filter(|shot| {
+            !shot.subtitles_on
+                && shot.subtitle.is_none()
+                && shot.probe_active
+                && shot.radio_subtitle.is_some()
+        })
+        .count();
+    checks.push(Check {
+        id: "presentation_probe_subtitle".to_owned(),
+        applies: probe_ran && p.probe_asset.is_some() && !shots.is_empty(),
+        passed: drawn > 0 && suppressed > 0,
+        detail: format!(
+            "{drawn} shot frame(s) drew the probe's caption with the switch on; \
+             {suppressed} kept the row empty with it off while the queue's \
+             active line still carried the caption"
+        ),
+    });
+    // The designed player_hit presented its shake, flash and required
+    // notice on one delivered frame, then — after the phase reduced
+    // cosmetic motion — only the required notice on another.
+    let fx_shots = shots
+        .iter()
+        .filter(|shot| shot.label.starts_with("presentation_probe_fx"))
+        .collect::<Vec<_>>();
+    let consistent = fx_shots.iter().all(|shot| {
+        shot.presented.iter().any(|name| name == "damage_notice")
+            && shot.presented.iter().any(|name| name == "camera_shake") == !shot.reduce_shake
+            && shot.presented.iter().any(|name| name == "screen_flash") == !shot.reduce_flash
+            && (shot.shake > 0.0) == !shot.reduce_shake
+            && (shot.flash > 0.0) == !shot.reduce_flash
+    });
+    let kept = fx_shots
+        .iter()
+        .filter(|shot| {
+            !shot.reduce_shake && !shot.reduce_flash && shot.shake > 0.0 && shot.flash > 0.0
+        })
+        .count();
+    let reduced = fx_shots
+        .iter()
+        .filter(|shot| {
+            shot.reduce_shake
+                && shot.reduce_flash
+                && shot.shake == 0.0
+                && shot.flash == 0.0
+                && shot.presented.iter().any(|name| name == "damage_notice")
+        })
+        .count();
+    checks.push(Check {
+        id: "presentation_probe_effects".to_owned(),
+        applies: !fx_shots.is_empty(),
+        passed: consistent && kept > 0 && reduced > 0,
+        detail: format!(
+            "{} effect frame(s): {} presented the hit's shake and flash whole, \
+             {} presented only the required damage notice under the reduced pair{}",
+            fx_shots.len(),
+            kept,
+            reduced,
+            if consistent {
+                "".to_owned()
+            } else {
+                "; a frame's presented effects did not match its recorded switches".to_owned()
+            },
+        ),
+    });
+    // The colour filter claim: frames captured with it off and frames
+    // captured with it on, in the same run.
+    let unfiltered = shots
+        .iter()
+        .filter(|shot| shot.colour_filter == ColourFilter::Off.label())
+        .count();
+    let filtered = shots
+        .iter()
+        .filter(|shot| shot.colour_filter != ColourFilter::Off.label())
+        .count();
+    checks.push(Check {
+        id: "presentation_probe_filter".to_owned(),
+        applies: probe_ran && !shots.is_empty(),
+        passed: unfiltered > 0 && filtered > 0,
+        detail: format!(
+            "{unfiltered} shot frame(s) carried no colour filter and {filtered} \
+             carried one — the filtered PNGs are the enabled state's evidence"
+        ),
+    });
+    // The UI-scale claim: the same run's shots show the scale change reach
+    // the delivered layout — text pixels grow with it.
+    let at_base = shots
+        .iter()
+        .filter(|shot| shot.ui_scale_percent == 100 && shot.text_px > 0)
+        .map(|shot| shot.text_px)
+        .min();
+    let at_raised = shots
+        .iter()
+        .filter(|shot| shot.ui_scale_percent == 150 && shot.text_px > 0)
+        .map(|shot| shot.text_px)
+        .max();
+    checks.push(Check {
+        id: "presentation_probe_scale".to_owned(),
+        applies: probe_ran && (at_base.is_some() || at_raised.is_some()),
+        passed: match (at_base, at_raised) {
+            (Some(base), Some(raised)) => raised > base,
+            _ => false,
+        },
+        detail: match (at_base, at_raised) {
+            (Some(base), Some(raised)) => {
+                format!("shot frames at 100% laid text {base}px tall and at 150% {raised}px")
+            }
+            _ => "no paired scale shots recorded the delivered text size".to_owned(),
+        },
+    });
+    checks.push(Check {
+        id: "presentation_probe_settings".to_owned(),
+        applies: probe_ran,
+        passed: !shots.is_empty()
+            && shots
+                .iter()
+                .all(|shot| shot.text_px > 0 && shot.ui_scale_percent > 0),
+        detail: shots.first().map_or_else(
+            || "no shot recorded the session's settings".to_owned(),
+            |shot| {
+                format!(
+                    "{} shot frame(s) recorded the session's own settings; \
+                     the first reads filter {}, UI scale {}%, text {}px, \
+                     subtitles {}, reduce_shake {}, reduce_flash {}",
+                    shots.len(),
+                    shot.colour_filter,
+                    shot.ui_scale_percent,
+                    shot.text_px,
+                    shot.subtitles_on,
+                    shot.reduce_shake,
+                    shot.reduce_flash,
+                )
+            },
+        ),
+    });
+    checks
 }
 
 /// The first-control-frame check: the pose the run read at the first frame
@@ -2967,6 +3301,10 @@ struct SmokeData {
     leave_step: u8,
     /// The frame the current leave step began.
     leave_mark: u32,
+    /// The presentation settings the probe phase found, so the `apply`d
+    /// flips are put back before the next phase's checks judge colour
+    /// (F52-W2-evidence, #2141).
+    presentation_restore: Option<Box<cs_content::settings::Presentation>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2987,6 +3325,10 @@ enum Phase {
     /// selected target move to Site #2 (M01-EXAMINE-OBJECTIVE, #1754).
     Examine,
     Hud,
+    /// The F52-W2-evidence probe phase (#2141): a captioned test radio line
+    /// and a designed `PlayerHit` through the production queues,
+    /// photographed on the frame they present.
+    Presentation,
     Guns,
     Rocket,
     /// The flak phase (FLAK-C5-SMOKE, #1887): test-wake a sleeping flak
@@ -3352,6 +3694,29 @@ impl PauseMapParams<'_, '_> {
             row.logical.y as f32 + row.logical.height as f32 / 2.0,
         ))
     }
+}
+
+/// The presentation state `smoke_script` records beside each shot and the
+/// queues the F52-W2-evidence probe phase writes (#2141) — grouped so the
+/// system's parameter list stays inside Bevy's arity limit. `clear` rides
+/// along: the clear colour the `due` loop reads is the frame's own
+/// presentation ground.
+#[derive(SystemParam)]
+struct PresentationParams<'w> {
+    /// The live session the frame presents under (`None`: session-less);
+    /// mutable because the probe phase drives the same `apply` the
+    /// Preferences overlay uses, then restores what it found.
+    live: Option<ResMut<'w, crate::render::presentation::LivePresentation>>,
+    /// The frame's presented effects.
+    effects: Option<Res<'w, crate::camera::effects::PresentedEffects>>,
+    /// The frame's laid-out HUD presentation.
+    hud: Option<Res<'w, crate::ui::hud::presentation::PresentedHud>>,
+    /// The audio session the probe line is enqueued on.
+    audio: Option<ResMut<'w, AudioSession>>,
+    /// The gameplay-event queue the probe event is pushed on.
+    events: Option<ResMut<'w, crate::camera::effects::GameEventQueue>>,
+    /// The window's declared clear colour.
+    clear: Option<Res<'w, ClearColor>>,
 }
 
 /// The sun-aim phase's reads — the drawn flare, the camera `place_flares`
@@ -4331,7 +4696,7 @@ fn smoke_script(
     shots: Res<SmokeShots>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
-    clear: Option<Res<ClearColor>>,
+    mut presentation: PresentationParams<'_>,
     objective_nodes: ObjectiveNodes<'_, '_>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     scene: SceneParams<'_, '_>,
@@ -4707,6 +5072,109 @@ fn smoke_script(
                 due.push("hud".to_owned());
             } else if at == HUD_SHOT_OFFSET + 10 {
                 queue.0.push(KeyOp::Resume);
+                data.phase = Phase::Presentation;
+                data.phase_start = frame + 1;
+            }
+        }
+        // F52-W2-evidence (#2141): the presented-output probe. One captioned
+        // test radio line through the session's own `enqueue_radio` — its
+        // speaker names itself a test line — voices through `mix_radio`
+        // under the live bus levels and its subtitle rides
+        // `drive_hud_presentation` to the drawn row; two designed
+        // `PlayerHit`s through the production `GameEventQueue` present a
+        // shake, a flash and the required damage notice. The phase drives
+        // the live session's switches through the same `apply` the
+        // Preferences overlay uses, so the paired states a claim needs —
+        // filter off and on, cosmetic motion kept and reduced, the row drawn
+        // and suppressed, base and raised UI scale — sit on delivered frames
+        // of one run, each shot's record naming the state it presented. The
+        // session the run opened with is restored before the next phase's
+        // checks judge colour. Every shot is of the delivered frame, never a
+        // staged surface.
+        Phase::Presentation => {
+            if at == 0 {
+                if let Some(live) = presentation.live.as_deref_mut() {
+                    data.presentation_restore = Some(Box::new(live.presentation().clone()));
+                    if let Err(error) = live.apply(|settings| {
+                        settings.presentation.colour_filter = ColourFilter::Off;
+                        settings.presentation.subtitles = true;
+                        settings.presentation.reduce_shake = false;
+                        settings.presentation.reduce_flash = false;
+                        settings.presentation.ui_scale_percent = 100;
+                    }) {
+                        data.measurements
+                            .presentation
+                            .probe_refusals
+                            .push(format!("the open-state apply failed: {error}"));
+                    }
+                }
+                enqueue_presentation_probe(
+                    &mut data,
+                    presentation.audio.as_deref_mut(),
+                    flak.mission_host.as_deref(),
+                );
+                if let Some(events) = presentation.events.as_deref_mut() {
+                    events.push(GameEvent::PlayerHit {
+                        damage: PRESENTATION_PROBE_DAMAGE,
+                    });
+                    data.measurements.presentation.probe_event = Some("player_hit".to_owned());
+                } else {
+                    data.measurements
+                        .presentation
+                        .probe_refusals
+                        .push("no gameplay event queue".to_owned());
+                }
+            } else if at == PRESENTATION_FX_SHOT_OFFSET {
+                // One frame after the queue took the event is the frame it
+                // presents on: the veil, the shaken camera and the subtitle
+                // row are in this one delivered frame.
+                due.push("presentation_probe_fx".to_owned());
+            } else if at == PRESENTATION_FLIP_OFFSET {
+                if let Some(live) = presentation.live.as_deref_mut()
+                    && let Err(error) = live.apply(|settings| {
+                        settings.presentation.colour_filter = ColourFilter::Monochrome;
+                        settings.presentation.reduce_shake = true;
+                        settings.presentation.reduce_flash = true;
+                        settings.presentation.ui_scale_percent = 150;
+                    })
+                {
+                    data.measurements
+                        .presentation
+                        .probe_refusals
+                        .push(format!("the flipped-state apply failed: {error}"));
+                }
+            } else if at == PRESENTATION_SECOND_HIT_OFFSET {
+                if let Some(events) = presentation.events.as_deref_mut() {
+                    events.push(GameEvent::PlayerHit {
+                        damage: PRESENTATION_PROBE_DAMAGE,
+                    });
+                }
+            } else if at == PRESENTATION_FX_REDUCED_OFFSET {
+                // The same designed hit under the reduced-motion pair: the
+                // cosmetic shake and flash are filtered off this delivered
+                // frame while the required notice still presents.
+                due.push("presentation_probe_fx_reduced".to_owned());
+            } else if at == PRESENTATION_SUBTITLE_OFFSET {
+                due.push("presentation_subtitle".to_owned());
+            } else if at == PRESENTATION_SUBTITLE_FLIP_OFFSET {
+                if let Some(live) = presentation.live.as_deref_mut()
+                    && let Err(error) =
+                        live.apply(|settings| settings.presentation.subtitles = false)
+                {
+                    data.measurements
+                        .presentation
+                        .probe_refusals
+                        .push(format!("the subtitles-off apply failed: {error}"));
+                }
+            } else if at == PRESENTATION_SUBTITLE_OFF_OFFSET {
+                due.push("presentation_subtitle_off".to_owned());
+            } else if at >= PRESENTATION_END_OFFSET {
+                if let (Some(live), Some(restored)) = (
+                    presentation.live.as_deref_mut(),
+                    data.presentation_restore.take(),
+                ) {
+                    let _ = live.apply(|settings| settings.presentation = *restored);
+                }
                 data.phase = Phase::Guns;
                 data.phase_start = frame + 1;
                 data.effects_at_hold_start = None;
@@ -5228,7 +5696,7 @@ fn smoke_script(
         data.requested.push(label.clone());
     }
     let region = data.hud_region;
-    let clear_colours = clear.as_deref().map(clear_colour_encodings);
+    let clear_colours = presentation.clear.as_deref().map(clear_colour_encodings);
     for label in &due {
         let path = config
             .request
@@ -5251,6 +5719,7 @@ fn smoke_script(
             measured,
             raw,
         );
+        record_shot_presentation(&mut data, &presentation, label, frame);
     }
 
     // --- the end -----------------------------------------------------------
@@ -5967,6 +6436,129 @@ fn note_flak_flickers(data: &mut SmokeData, fx: Option<&FlakBurstFxReport>) {
     metrics.flak_flickers_at_shots = metrics.flak_flickers_at_shots.max(live);
 }
 
+/// F52-W2-evidence (#2141): enqueues the labelled captioned probe line on
+/// the production radio queue. The asset is a dialogue member the installed
+/// load really delivered — the delivered-first rule every one-shot producer
+/// follows — so `mix_radio` voices it and the one-shot tap records the gain
+/// the live bus level scaled it to; the speaker and text name it a designed
+/// test line, because M01's own radio lines carry no subtitle at all.
+fn enqueue_presentation_probe(
+    data: &mut SmokeData,
+    audio: Option<&mut AudioSession>,
+    host: Option<&MissionHost>,
+) {
+    let metrics = &mut data.measurements.presentation;
+    let Some(audio) = audio else {
+        metrics.probe_refusals.push("no audio session".to_owned());
+        return;
+    };
+    // The probe line must name a dialogue member the load actually delivers
+    // — `RadioLine::try_new` refuses any other kind — and one whose PCM the
+    // device library already holds, so the line really voices on the real
+    // mixer/device path. Two delivered populations answer that: the audio
+    // catalog's own dialogue members (`AudioSession::specs`), and the
+    // mission radio's prepared voice members, which `publish_prepared_voices`
+    // decoded into the device library under exactly the id their line
+    // names. The longest prepared line wins so the active window covers the
+    // whole probe schedule.
+    let asset = audio
+        .specs()
+        .map(|spec| spec.asset().clone())
+        .find(|asset| asset.kind() == ContentKind::Dialogue)
+        .or_else(|| {
+            host.and_then(|host| {
+                host.radio()
+                    .prepared()
+                    .max_by_key(|line| line.duration_ticks)
+                    .map(|line| line.asset.clone())
+            })
+        });
+    let Some(asset) = asset else {
+        metrics
+            .probe_refusals
+            .push("the installed load delivers no dialogue member".to_owned());
+        return;
+    };
+    let id = audio.mint_radio_id();
+    match RadioLine::try_new(
+        id,
+        PRESENTATION_PROBE_SPEAKER,
+        asset.clone(),
+        PRESENTATION_PROBE_PRIORITY,
+        false,
+        Some(PRESENTATION_PROBE_SUBTITLE),
+        PRESENTATION_PROBE_TICKS,
+    ) {
+        Ok(line) => {
+            audio.enqueue_radio(line);
+            metrics.probe_speaker = Some(PRESENTATION_PROBE_SPEAKER.to_owned());
+            metrics.probe_subtitle = Some(PRESENTATION_PROBE_SUBTITLE.to_owned());
+            metrics.probe_asset = Some(asset.to_string());
+        }
+        Err(error) => {
+            metrics.probe_refusals.push(error.to_string());
+        }
+    }
+}
+
+/// Records what the frame behind `label` presented — the live session's own
+/// settings plus the presented effects and the subtitle row — so a PNG claim
+/// is never made without the session state the frame was drawn under
+/// (F52-W2-evidence, #2141).
+fn record_shot_presentation(
+    data: &mut SmokeData,
+    presentation: &PresentationParams,
+    label: &str,
+    frame: u32,
+) {
+    let settings = presentation.live.as_deref().map(|live| live.presentation());
+    let hud = presentation.hud.as_deref();
+    let effects = presentation.effects.as_deref();
+    let radio = presentation
+        .audio
+        .as_deref()
+        .and_then(|audio| audio.radio.active());
+    data.measurements.presentation.shots.push(ShotPresentation {
+        label: label.to_owned(),
+        frame,
+        colour_filter: settings
+            .map_or(ColourFilter::Off, |p| p.colour_filter)
+            .label()
+            .to_owned(),
+        ui_scale_percent: settings.map_or(100, |p| p.ui_scale_percent),
+        subtitles_on: settings.is_some_and(|p| p.subtitles),
+        reduce_shake: settings.is_some_and(|p| p.reduce_shake),
+        reduce_flash: settings.is_some_and(|p| p.reduce_flash),
+        text_px: hud.map_or(0, |hud| hud.hud.text_px),
+        subtitle: hud
+            .and_then(|hud| hud.hud.subtitles.first())
+            .map(|line| format!("{}: {}", line.speaker, line.text)),
+        flash: hud.map_or(0.0, |hud| hud.flash),
+        shake: effects
+            .and_then(|effects| effects.frame.as_ref())
+            .map_or(0.0, |frame| frame.shake()),
+        presented: effects
+            .and_then(|effects| effects.frame.as_ref())
+            .map_or_else(Vec::new, |frame| {
+                frame.presented.iter().map(effect_label).collect()
+            }),
+        radio_speaker: radio.map(|line| line.speaker.clone()),
+        radio_subtitle: radio.and_then(|line| line.subtitle.clone()),
+        probe_active: radio.is_some_and(|line| line.speaker == PRESENTATION_PROBE_SPEAKER),
+    });
+}
+
+/// The JSON name of one presented effect.
+fn effect_label(effect: &Effect) -> String {
+    match effect {
+        Effect::CameraShake(_) => "camera_shake",
+        Effect::ScreenFlash(_) => "screen_flash",
+        Effect::DamageNotice => "damage_notice",
+        Effect::TargetNotice => "target_notice",
+    }
+    .to_owned()
+}
+
 fn update_flak_metrics(
     data: &mut SmokeData,
     fire: Option<&MissionTurretFire>,
@@ -6653,6 +7245,62 @@ fn lens_flare_json(metrics: Option<&LensFlareMetrics>) -> String {
     )
 }
 
+/// The F52-W2-evidence records as a JSON object (#2141): the injected probe
+/// (or the refusal that stopped it) and what each delivered frame presented
+/// when its screenshot was requested — the per-shot record a colour-filter,
+/// UI-scale, subtitle or shake/flash claim reads beside the PNG.
+#[must_use]
+pub fn presentation_json(metrics: &PresentationMetrics) -> String {
+    let shots = metrics
+        .shots
+        .iter()
+        .map(|shot| {
+            let presented = shot
+                .presented
+                .iter()
+                .map(|name| json_string(name))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"label\":{},\"frame\":{},\"colour_filter\":{},\
+                 \"ui_scale_percent\":{},\"subtitles_on\":{},\"reduce_shake\":{},\
+                 \"reduce_flash\":{},\"text_px\":{},\"subtitle\":{},\
+                 \"flash\":{:.3},\"shake\":{:.4},\"presented\":[{presented}],\
+                 \"radio_speaker\":{},\"radio_subtitle\":{},\"probe_active\":{}}}",
+                json_string(&shot.label),
+                shot.frame,
+                json_string(&shot.colour_filter),
+                shot.ui_scale_percent,
+                shot.subtitles_on,
+                shot.reduce_shake,
+                shot.reduce_flash,
+                shot.text_px,
+                json_option_str(shot.subtitle.as_deref()),
+                shot.flash,
+                shot.shake,
+                json_option_str(shot.radio_speaker.as_deref()),
+                json_option_str(shot.radio_subtitle.as_deref()),
+                shot.probe_active,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let refusals = metrics
+        .probe_refusals
+        .iter()
+        .map(|refusal| json_string(refusal))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"probe_speaker\":{},\"probe_subtitle\":{},\"probe_asset\":{},\
+         \"probe_event\":{},\"probe_refusals\":[{refusals}],\"shots\":[{shots}]}}",
+        json_option_str(metrics.probe_speaker.as_deref()),
+        json_option_str(metrics.probe_subtitle.as_deref()),
+        json_option_str(metrics.probe_asset.as_deref()),
+        json_option_str(metrics.probe_event.as_deref()),
+    )
+}
+
 fn json_option_f64(value: Option<f64>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| value.to_string())
 }
@@ -6901,6 +7549,7 @@ fn write_artifacts(
          \"pause_map\":{{\"preferences_opened\":{pm_opened},\"returned\":{pm_returned}}},\
          \"cockpit\":{cockpit},\"lens_flare\":{lens_flare},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
+         \"presentation\":{presentation},\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
         mission = json_string(&report.mission),
@@ -7064,6 +7713,7 @@ fn write_artifacts(
         actors = actors,
         placements = placements,
         shots = shots,
+        presentation = presentation_json(&report.measurements.presentation),
         checks = checks,
         failures = failures,
         passed = report.failures.is_empty(),
