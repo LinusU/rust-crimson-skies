@@ -395,14 +395,12 @@ fn orientation(rotation: Quat) -> cs_types::space::Quaternion {
 
 // ------------------------------------------------------------- retail M01 ---
 
-/// Two retail tests here compose M01 at once and both stage the launch sound
-/// container into one private cache path, which is not safe in parallel.
-static RETAIL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+/// The retail-compose lock: composing M01 stages the launch-sound container
+/// into the one private cache path every composition in this test binary
+/// shares, which is not safe in parallel — the lock is
+/// `common::retail_lock`'s, the one every retail suite here takes.
 pub(super) fn retail_lock() -> std::sync::MutexGuard<'static, ()> {
-    RETAIL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::campaign::common::retail_lock()
 }
 
 /// M01 composed headless, with the launch cinematic (4818 fixed ticks of held

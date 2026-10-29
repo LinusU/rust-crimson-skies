@@ -302,15 +302,7 @@ fn accept_groundblow_face_probe_in_world_reads_the_entities_face_table() {
 
 // ------------------------------------------------------------- retail M01 ---
 
-/// The two retail probes below compose M01 at once and stage its launch
-/// container into one private cache path — not safe in parallel.
-static RETAIL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn retail_lock() -> std::sync::MutexGuard<'static, ()> {
-    RETAIL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+use crate::campaign::common::retail_lock;
 
 /// M01 composed headless, with the launch cinematic removed so the sweep's
 /// world is live from the first boundary.

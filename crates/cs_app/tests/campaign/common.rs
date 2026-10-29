@@ -49,6 +49,19 @@ pub(crate) fn repo_path(relative: &str) -> PathBuf {
         .join(relative)
 }
 
+/// Serialises the tests that compose a retail mission: composing M01 stages
+/// the launch-sound container into the one private cache path every
+/// composition in this test binary shares, and two compositions in parallel
+/// were measured to fail `ZBD/soundsh.zbd does not match the installation's
+/// digest` (#2214 finding). One lock for the whole binary — per-file statics
+/// would not serialise one suite's composition against another's.
+pub(crate) fn retail_lock() -> std::sync::MutexGuard<'static, ()> {
+    static RETAIL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RETAIL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The declared campaign inventory committed with this stage.
 pub(crate) fn load_inventory() -> CampaignInventory {
     CampaignInventory::load(&repo_path("missions/bindings/campaign-inventory.tsv"))
