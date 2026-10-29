@@ -543,7 +543,7 @@ fn accept_t452_r02_a_beeper_seeker_is_a_guidance_modifier_with_no_kept_claim() {
 
 /// The claim ids this measured layer is allowed to report as resolved. A
 /// `resolved` entry outside this set would be a resolution nothing measured.
-const RESOLVABLE_CLAIMS: [&str; 7] = [
+const RESOLVABLE_CLAIMS: [&str; 8] = [
     T452_04_STATUS_KIND,
     T452_04_STATUS_DURATION,
     T452_04_AREA_RADIUS,
@@ -551,6 +551,9 @@ const RESOLVABLE_CLAIMS: [&str; 7] = [
     T452_04_CLUSTER,
     T452_R02_FUSE_CLAIM,
     T452_R02_LOST_TARGET_CLAIM,
+    // Task T452-REG-TANGLER-RUNTIME: the per-hit `TANGLER` branch is measured
+    // (the timed force-scalar suppression), so the effect claim is resolved.
+    T452_R02_TANGLER_EFFECT,
 ];
 
 /// The installation half: the same production function over the measured rows.
