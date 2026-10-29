@@ -56,7 +56,7 @@ does not act on the body's motion, only a crash does.
 | no sea skim at t=28..30 | the original is 1.2 m over the sea at t=28 and bounces to 7.2 m | follows from the two rows above: the sea contact (#1850) works (main skims the sea at t=55..61, never below -3 m), but the flight never gets there |
 | no beach impact at t=34..36, no 60 degree throw | speed 110 -> 78 m/s, path +61 degrees | #1852 (owner's finer capture of V+0x924 over t=34..36); the response law of #1849 is a normal impulse with restitution 0.6 and has no extra term |
 | trajectory after t=40 unrelated | original climbs to 1925 m at t=70 | consequence of the above |
-| ground-blow look-ahead (`groundblow_elev` 400, `groundblow_mag` 10) not applied | unknown whether the measured flight is affected | open unknown from `2026-10-21-m01-collision-response.md`; needs its own task |
+| ground-blow look-ahead (`groundblow_elev` 400, `groundblow_mag` 10) not applied | unknown whether the measured flight is affected | **closed by #2107** (2026-10-29): the term is applied from the frame's segment probe, and it does affect the measured flight from t≈38 — see the addendum below |
 | contact damage uncompared | the original survives both measured contacts | since #1983 the same window's nine contacts spend 1049 of the designed 1200 hull (six of them on the world collider); whether the original would call any of them fatal is unmeasured — the pool and the per-contact range stay the designed/retail values, `2026-10-23-crash-e-01-world-collider-is-terrain.md` |
 
 Heading agrees in the first seconds (positions at t=10 are 58 m apart, mostly altitude).
@@ -73,3 +73,27 @@ world with the sea contact source present, not the comparison: cited frames
 and the island ahead of the player body) and `frame_02854_hud.png`
 (pause map). Frames of the skim at t=55 and of the beach impact do not exist and
 are unmet. Private artifacts are under `private/evidence/1851/` (not committed).
+
+## Addendum, 2026-10-29 (#2107): the ground blow is on
+
+The ground-blow consumer landed (#2107,
+`2026-10-29-groundblow-assist-model.md`). The no-input flight above is
+unchanged for the first 37 s — the probe is along the nose and nothing is within
+its 400 m while the flight is level — and changes from t≈38, when the hillside
+ahead enters the probe. The pinned test's new numbers (same test, same 80 s):
+
+| t | ours before #2107 | ours after #2107 |
+| --- | --- | --- |
+| 40 | (-3982.3, 160.4, -4834.1) 100.1 | (-3977.9, 165.1, -4834.2) 98.3 |
+| first judged contact | t=41 | t=42 |
+| 42 | speed < 70 after the impact | 177.3 m, 93.8 m/s |
+| 60 | 1.1 m, 100.5 m/s, 4 judged · 400 hull | 422.1 m, 95.1 m/s, 2 judged · 267 hull |
+| 80 | 1.1 m, 59.3 m/s, 9 judged · 1049 hull | 725.0 m, 94.4 m/s, 2 judged · 267 hull |
+
+The blow lifts the aircraft over the hillside it used to strike, so the sea skim
+at t=55 and the nine contacts that spent 1049 of the designed hull no longer
+happen. This is closer to the measured original's post-impact climb (373.9 m at
+t=40, 1925 m at t=70) but it is still a pin of what main does. The divergence
+rows above that describe the skim and the later contacts describe the
+pre-#2107 flight and need re-deriving with the term on (follow-up task filed
+from #2107).
