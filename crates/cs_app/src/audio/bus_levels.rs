@@ -5,9 +5,13 @@
 //! one-shot voices alike — and every direct device call site in a live world
 //! goes through [`with_live_device`](super::mixer::with_live_device), which
 //! wraps the same way, so a level the player sets applies on the next voice
-//! command on every bus. The front-end `MenuAudio` and the cinematic probe
-//! drivers own separate devices outside the live session; they are named as
-//! limits in `docs/findings/2026-10-27-f52-w2-presentation-output.md`.
+//! command on every bus. The front-end `MenuAudio` owns a separate device and
+//! applies [`apply_bus_level`] against its own `SharedSettings` copy of the
+//! session (main, `f52_w2_menu_audio`), and the player-facing movie voice is
+//! scaled by `cinematic_voice_start` (main, `f52_w2_cinematics`); the only
+//! voice left outside the live levels is the cinematic *measurement* probe
+//! `play_on_device`, which deliberately starts at unity so the timings it
+//! reports do not move with the player's settings.
 
 use std::collections::BTreeMap;
 

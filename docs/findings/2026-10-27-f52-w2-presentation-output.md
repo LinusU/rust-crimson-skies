@@ -52,10 +52,12 @@ into `PlayerHit`; `emit_targeting_events` (in `Update`, after
 `drive_targeting_schedule`) emits `TargetChanged`. `present_game_events`
 drains the `GameEventQueue` once per rendered frame through
 `EffectFrame::present` and the live session into `PresentedEffects`;
-`apply_presented_shake` offsets the camera pose `follow_camera` computed this
-frame. `drive_hud_presentation` lays the active radio line's subtitle and the
-presented flash into `PresentedHud`; `SubtitleHudPlugin` draws them in
-windowed compositions. `present_captured_frame` filters every delivered
+`apply_presented_shake` offsets the camera pose in `PostUpdate`, after
+`follow_camera` and the mission's view passes (cockpit eye, external and
+crash cameras overwrite the transform after `Update`). `drive_hud_presentation`
+lays the active radio line's subtitle and the presented flash into
+`PresentedHud`, ordered after `advance_radio` so the line is this frame's;
+`SubtitleHudPlugin` draws them in windowed compositions. `present_captured_frame` filters every delivered
 screenshot before it is measured or saved, recording `FrameFilterReport`.
 `AudioOutput::leveled` wraps the device in `BusLevelDevice` for the whole
 `mix_session` pass and for every direct call site routed through
@@ -66,10 +68,19 @@ briefing voice scales through `apply_bus_level` on its own device.
 
 Remaining limits:
 
-- **`MenuAudio` and the cinematic probe drivers own separate devices** outside
-  the live session (`open_audible_device` directly, not the world's
-  `AudioOutput`): menu music/cues and cinematic playback do not pass through
-  `apply_bus_level` yet. Filed as follow-ups.
+- **The cinematic *measurement* probe `play_on_device` deliberately stays at
+  unity** on the Music bus: its reported timings must not move with the
+  player's settings. It is the only unscaled voice left — the player-facing
+  `MoviePlayer` voice is scaled by `cinematic_voice_start` (main,
+  `f52_w2_cinematics`) and `MenuAudio` by `f52_w2_menu_audio`.
+- **The colour filter reaches delivered captures, not the swapchain.** What
+  `present_frame`/`filter_frame` can do is multiply a CPU-side RGBA buffer,
+  and the only production buffers are the screenshots the smoke, the
+  playtest capture and the front-end capture driver deliver; the live
+  window's image is untouched (a filtered swapchain is a post-process pass
+  `filter_frame` cannot express). Captures under a session record the
+  filtered frame; everything the player sees stays unfiltered until the
+  post-process exists.
 - **Camera shake magnitude (`SHAKE_METERS`) and its phase are designed**; the
   original's shake is unrecovered.
 - **The flash veil's alpha (`FLASH_MAX_ALPHA`) and the subtitle style are

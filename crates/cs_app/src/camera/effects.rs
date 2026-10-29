@@ -210,8 +210,10 @@ pub const MUZZLE_FLASH_INTENSITY: f32 = 0.6;
 /// reads is the tick's own — filtered by the tick stamp the producers minted,
 /// exactly as `record_collisions` reads them:
 ///
-/// * a contact pair involving an `Aircraft`-layer body (the player's) becomes
-///   [`GameEvent::Impact`];
+/// * a contact pair involving an `Aircraft`-layer body becomes
+///   [`GameEvent::Impact`] (designed: the layer covers every aircraft, so a
+///   contact between NPCs presents too — the reports carry no impulse and no
+///   player flag to filter by);
 /// * the player's accepted shots and accepted ordnance launches become
 ///   [`GameEvent::WeaponFlash`];
 /// * a hit the published damage batch names on the player's victim becomes
