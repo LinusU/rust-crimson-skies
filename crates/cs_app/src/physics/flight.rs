@@ -77,6 +77,15 @@
 //!   [`InstrumentState`] together with its [`FlightEvidenceClass`]. The class is
 //!   derived from the tuning's [`Origin`], so a synthetic-model trace can never
 //!   be published as an original-reference result.
+//! * [`FlightTangle`] is the ordnance producer of the measured tangler status
+//!   (task #2179): a mission that owns an `OrdnanceSession` inserts the
+//!   session's [`TangleState`] for the actor on the body, and the driver binds
+//!   it before the equations run. While it is live the aircraft's thrust term
+//!   is zero and boost is refused — the two consequences the image's force
+//!   routine and boost setter measure — and removing the component (or a
+//!   producer that stops writing) clears it, because the status is a timer, not
+//!   a permanent capability. Lift, drag, gravity and control authority keep
+//!   running: the measured branch touches only the thrust scalar.
 //!
 //! # F25-E dispatch
 //!
@@ -135,6 +144,8 @@ use cs_types::content::Origin;
 use cs_types::space::{Quaternion, SpaceError};
 
 use cs_content::flight_tuning::{DeclaredAirframeTuning, TuningSchema};
+
+use crate::ordnance::TangleState;
 
 use super::adapter::{ForceRequest, ForceRequestError, ForceRequests};
 use super::body::{BodyError, BodyMode, BodySpec, spawn_body};
@@ -566,6 +577,29 @@ impl FlightEquipment {
     }
 }
 
+/// The measured tangler status a producer reports for one flight body
+/// (task #2179).
+///
+/// Inserted on a flight body by the mission producer that owns the ordnance
+/// session; `drive_flight_aircraft` binds it into [`FlightAircraft::set_tangle`]
+/// before the equations run, exactly as it binds [`FlightEquipment`]. The value
+/// is the session's own timed status (`OrdnanceSession::tangle_status`), handed
+/// over unchanged so the ordnance ledger stays the single owner of the timer.
+///
+/// **Absence is "not tangled".** A body with no `FlightTangle` component has
+/// its tangle cleared on the next driven tick, because the status is a live
+/// timer: a producer that stops writing must not leave an aircraft unable to
+/// produce thrust forever. The measured consequence of a live status is the
+/// force block's thrust scalar being zero and boost being refused
+/// (`docs/findings/2026-10-29-t452-tangler-flight-effect.md`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct FlightTangle(pub Option<TangleState>);
+
+impl FlightTangle {
+    /// An explicitly untangled body.
+    pub const CLEAR: Self = Self(None);
+}
+
 /// The damage system's assertion on one aircraft's thrust (F29-C.1a).
 ///
 /// A [`FlightAircraft`] has two producers of the [`DamageState`] the equations
@@ -611,6 +645,7 @@ pub struct FlightAircraft {
     propulsion_gate: PropulsionGate,
     engine: EngineState,
     boost_capacity_units: f64,
+    tangle: Option<TangleState>,
     command: FlightInput,
     last_output: Option<FlightOutput>,
     last_output_tick: Option<u64>,
@@ -731,6 +766,7 @@ impl FlightAircraft {
             propulsion_gate: PropulsionGate::Open,
             engine: EngineState::STOPPED,
             boost_capacity_units: 0.0,
+            tangle: None,
             command: FlightInput::NEUTRAL,
             last_output: None,
             last_output_tick: None,
@@ -901,6 +937,37 @@ impl FlightAircraft {
         Ok(())
     }
 
+    /// The measured tangler status this aircraft carries right now, if any.
+    ///
+    /// Task #2179 measured what a zero-damage `TANGLER` field does to a flight
+    /// model: the actor's force routine stores `0.0` into its force scalar while
+    /// the tangle flag is set, so the aircraft produces no thrust force and its
+    /// boost setter refuses to enable, while lift, drag, gravity and the
+    /// control torque keep running on the declared state
+    /// (`docs/findings/2026-10-29-t452-tangler-flight-effect.md`). This record
+    /// is the ordnance session's own timed status, handed over unchanged.
+    pub const fn tangle(&self) -> Option<TangleState> {
+        self.tangle
+    }
+
+    /// Binds the measured tangler status the next tick flies with, or clears it.
+    ///
+    /// The producer is the mission's ordnance session, which owns the timer:
+    /// `OrdnanceSession::tangle_status` (or [`Self::tangle`]'s source in
+    /// [`FlightTangle`]) is the value to hand over, and a tangle that has
+    /// cleared is `None` — never a stale one kept alive by the flight record.
+    /// The aircraft derives both measured consequences from it on every tick:
+    /// the thrust term is zero and boost is refused while it is live, and both
+    /// return as soon as it clears, because the original recomputes the scalar
+    /// from the untouched throttle store each call.
+    ///
+    /// There is deliberately no validation: a [`TangleState`] is the ordnance
+    /// session's own record (actor, remaining ticks, the field that applied it),
+    /// so the flight model has no value of its own to reject.
+    pub fn set_tangle(&mut self, tangle: Option<TangleState>) {
+        self.tangle = tangle;
+    }
+
     /// Binds a producer's [`FlightEquipment`] atomically: the whole record is
     /// validated first, and only a fully valid record replaces the aircraft's
     /// loadout, declared damage and reserve.
@@ -1012,7 +1079,12 @@ impl FlightAircraft {
             linear_velocity_mps: linear.0.to_array().map(f64::from),
             angular_velocity_radps: angular_body,
             engine: self.engine,
-            boost_available: self.boost_capacity_units > 0.0,
+            // Both measured tangle consequences come from the one status: the
+            // boost setter refuses to enable while the flag is set, and the
+            // force block's thrust scalar is zero while it is set
+            // (`docs/findings/2026-10-29-t452-tangler-flight-effect.md`).
+            boost_available: self.boost_capacity_units > 0.0 && self.tangle.is_none(),
+            thrust_suppressed: self.tangle.is_some(),
         };
         // The damage the equations see is the composition: the declared
         // record under the damage system's propulsion gate (F29-C.1a).
@@ -1465,6 +1537,7 @@ type FlightBodies<'world, 'state> = Query<
         Option<&'static AngularVelocity>,
         Option<&'static mut Mass>,
         Option<&'static FlightEquipment>,
+        Option<&'static FlightTangle>,
     ),
 >;
 
@@ -1480,11 +1553,17 @@ fn drive_flight_aircraft(
     let dt_s = time.timestep().as_secs_f64();
     let gravity_conflict = gravity.0 != Vec3::ZERO;
 
-    for (entity, mut aircraft, body, rotation, linear, angular, mass, equipment) in &mut bodies {
+    for (entity, mut aircraft, body, rotation, linear, angular, mass, equipment, tangle) in
+        &mut bodies
+    {
         if !body.is_dynamic() {
             report.parked += 1;
             continue;
         }
+        // The measured tangler status, before the equations run: a body with no
+        // producer record is not tangled, so a producer that stops writing
+        // clears the status rather than freezing a thrust cut in place.
+        aircraft.set_tangle(tangle.and_then(|tangle| tangle.0));
         // Producer state first: a declared equipment record is bound into the
         // record before the equations run, and a rejected one refuses the whole
         // tick rather than flying a half-bound loadout/damage/reserve. The

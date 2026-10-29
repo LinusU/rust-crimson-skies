@@ -389,6 +389,11 @@ impl ProbeRunner {
                 angular_velocity_radps: angular,
                 engine,
                 boost_available,
+                // A reference probe flies an untangled aircraft: the tangle is
+                // a status a live mission's ordnance session applies, and a
+                // reference trace measured from an untangled flight must not be
+                // flown with the thrust suppressed.
+                thrust_suppressed: false,
             };
             let output = self.model.compute(
                 &self.environment,

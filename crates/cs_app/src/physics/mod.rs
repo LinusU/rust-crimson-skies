@@ -96,7 +96,7 @@ pub use fixture::{
 };
 pub use flight::{
     FlightAircraft, FlightAircraftError, FlightForcesPlugin, FlightRefusal, FlightRefusalReason,
-    FlightSpawnError, FlightSpawnSpec, FlightTickReport, PropulsionGate,
+    FlightSpawnError, FlightSpawnSpec, FlightTangle, FlightTickReport, PropulsionGate,
     spawn_exceptional_flight_body, spawn_flight_body,
 };
 pub use preflight::{

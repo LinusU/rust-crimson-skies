@@ -333,6 +333,25 @@ pub struct FlightState {
     pub engine: EngineState,
     /// Whether boost capacity remains available this tick.
     pub boost_available: bool,
+    /// Whether the measured tangler tangle suppresses the thrust term.
+    ///
+    /// The original's actor force routine `0x48fc40` stores `0.0` into its
+    /// local force scalar `[ebp-8]` while the actor's status flag 2 is set
+    /// (`0x48fdd0..0x48fdd8`), instead of the product with the actor's
+    /// `+0x66c` and `+0x678` stores (`0x48fde1..0x48fdf0`), and that scalar is
+    /// what the
+    /// routine adds to the force as `-[ebp-8] * body Z` (`0x48fe91..0x48feb8`).
+    /// A tangled aircraft therefore produces **no thrust force**; lift, drag,
+    /// gravity, the control torque and the throttle store itself are untouched
+    /// (the branch skips only the scalar's multiply), so the thrust returns at
+    /// the held throttle as soon as the flag clears
+    /// (`docs/findings/2026-10-29-t452-tangler-flight-effect.md`).
+    ///
+    /// The tangle also refuses boost ([`Self::boost_available`] is `false`
+    /// while it is live); this field is the other half of the same measured
+    /// status, kept separate because the image checks it at a different place
+    /// (`0x4b2136`).
+    pub thrust_suppressed: bool,
 }
 
 impl FlightState {
@@ -345,6 +364,7 @@ impl FlightState {
             angular_velocity_radps: [0.0, 0.0, 0.0],
             engine: EngineState::STOPPED,
             boost_available: false,
+            thrust_suppressed: false,
         }
     }
 
@@ -630,15 +650,21 @@ impl FlightModel {
 
         // Thrust along body forward, with spool, damage and boost. A stopped
         // engine produces nothing at all: the idle thrust is the value at zero
-        // spool of a *running* engine, not a parked one's output.
+        // spool of a *running* engine, not a parked one's output. A measured
+        // tangler tangle zeroes the whole term, boost included: the original
+        // stores `0.0` into the force block's thrust scalar and its boost
+        // setter refuses to enable while the tangle flag is set
+        // (`docs/findings/2026-10-29-t452-tangler-flight-effect.md`).
         let spool = if state.engine.running {
             state.engine.spool.clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let boost_accepted =
-            input.boost && state.boost_available && self.tuning.boost.thrust_n > 0.0;
-        let base_thrust_n = if state.engine.running {
+        let boost_accepted = input.boost
+            && state.boost_available
+            && !state.thrust_suppressed
+            && self.tuning.boost.thrust_n > 0.0;
+        let base_thrust_n = if state.engine.running && !state.thrust_suppressed {
             self.tuning.engine.thrust_at(spool) * damage.thrust_authority
         } else {
             0.0

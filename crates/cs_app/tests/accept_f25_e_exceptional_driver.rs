@@ -123,6 +123,7 @@ fn state_of(sample: &PhysicsSample, engine: EngineState) -> FlightState {
         angular_velocity_radps: [0.0; 3],
         engine,
         boost_available: false,
+        thrust_suppressed: false,
     }
 }
 

@@ -159,6 +159,7 @@ fn fly(target_left: bool, flip_roll: bool) -> ProbeResult {
             angular_velocity_radps: angular,
             engine,
             boost_available: false,
+            thrust_suppressed: false,
         };
         let output = model
             .compute(
@@ -226,6 +227,7 @@ fn held_roll_min_up_y(roll: f64, ticks: usize) -> f64 {
             angular_velocity_radps: angular,
             engine,
             boost_available: false,
+            thrust_suppressed: false,
         };
         let output = model
             .compute(

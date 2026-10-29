@@ -138,6 +138,7 @@ impl Probe {
             angular_velocity_radps: self.angular,
             engine: self.engine,
             boost_available: false,
+            thrust_suppressed: false,
         };
         let output = self
             .model
