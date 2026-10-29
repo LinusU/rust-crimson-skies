@@ -8241,3 +8241,77 @@ name = "exposure.hit_measure"
 va = 0x004b97ac
 bytes = "50e8cef00700d95de8"
 fact = "the second hit path (0x4b9770) measures the victim's squared distance with 0x538880 and keeps it in [ebp-0x18], the value it later passes to the per-hit routine as the exposure's numerator; the tangler tick 0x4b95db..0x4b9606 does the same, so the ratio is (distance / IMPACT_PROXIMITY)^2"
+
+# T452-REG-TANGLER-EFFECT (task #2179): what a zero-damage TANGLER does to an actor.
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.hit_branch"
+va = 0x004b9ded
+bytes = "f7c100000400744989570489"
+fact = "in the per-hit routine 0x4b9bc0, a weapon whose flag word has bit 0x40000 (TANGLER) takes its own branch (0x4b9ded) before the ordinary damage path: it zeroes both damage channels [edi] and [edi+4] (0x4b9df5..0x4b9df8) and never reaches the armor/health path, so declaring zero damage is what the tangler does, not an absence of an effect"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.hit_duration"
+va = 0x004b9dfa
+bytes = "8b9010020000d9421cd87d0cd82ddc326000d80d24b16200d95508d81d20b16200df"
+fact = "the branch computes duration = max(2.0, 10.0 * (1.0 - exposure / RADIUS)) where exposure is the caller-supplied squared distance [ebp+0xc] (the tangler tick passes the 0x538880 result unchanged, 0x4b95f3) and RADIUS is the unsquared RADIUS the weapon object keeps at +0x1c (0x4b9e00..0x4b9e27); the constants are 1.0 at 0x6032dc, 10.0 at 0x62b124 and the 2.0 floor at 0x62b120; it then calls 0x4b1690 with (flag 2, set 1, that duration) on the victim (0x4b9e2d..0x4b9e34) and returns, for the owner as well as for any other actor"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.status_store"
+va = 0x004b1690
+bytes = "8b44240883f804568bf18b4c2408578bbedc020000752685c9740cc786dc02000004000000eb"
+fact = "0x4b1690(flag, set, duration) on an actor ORs the flag into the actor status word +0x2dc when set (0x4b16d5), clears it otherwise (0x4b16e3); flag 4 is special-cased (0x4b1697)"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.status_timer"
+va = 0x004b16f6
+bytes = "d986e0020000d85c2414dfe0f6c401740a8b4424148986e0020000"
+fact = "for flag 2 and set 1 the routine raises the actor timer +0x2e0 to the given duration only when it is larger than the current value (0x4b16f6..0x4b170b), so overlapping hits never shorten a tangle, and it calls 0x4b15c0 on a 0-to-1 and 0x4b1630 on a 1-to-0 transition of flag 2 (0x4b1721, 0x4b1739); those two attach and release a presentation object at +0x6cc and +0x6c8"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.force_zero"
+va = 0x0048fdd0
+bytes = "849edc0200007409c745f800000000eb12d9866c06"
+fact = "the actor force routine 0x48fc40 (ebx = 2 at 0x48fd7e) tests the actor status word +0x2dc against 2 (0x48fdd0); while flag 2 is set it stores 0.0 into its local force scalar [ebp-8] (0x48fdd8) instead of throttle +0x66c * output +0x678 * the scalar, so the scalar's force contribution -[ebp-8] * (+0x198,+0x19c,+0x1a0) added at 0x48fe91 is zero"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.countdown_force"
+va = 0x0048fd9b
+bytes = "8a86dc02000084c3743cd986e0020000d82544d79a00d996e0020000d81dc8326000dfe0f6c441740c6a00536a008bcee8c0180200"
+fact = "the same routine counts the tangle down first: +0x2e0 -= frame time at 0x9ad744 (0x48fda5..0x48fdb1) and, when it is no longer positive, clears flag 2 through 0x4b1690(0, 2, 0) (0x48fdc4..0x48fdcb)"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.countdown_other"
+va = 0x0047027c
+bytes = "f686dc02000002742cd986e0020000d82544d79a00d996e0020000d81dc8326000dfe0f6c441740d6a006a026a008bcee8df130400"
+fact = "two further per-actor updates (0x47027c and 0x48c606) run the identical countdown on +0x2e0 and the identical clear, so the tangle expires after its duration wherever the actor is updated"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.boost_refuse"
+va = 0x004b2136
+bytes = "f686dc020000020f"
+fact = "the boost setter 0x4b2110 refuses to enable while flag 2 is set (0x4b2136 jumps to the epilogue 0x4b22eb), and 0x4b1690 calls it with the argument 0 whenever flag 2 is touched (0x4b16ed), so a tangle ends any boost in progress"
+
+[[tangler_fact]]
+claim = "OWNER-STATIC-2026-10-28"
+provenance = "static"
+name = "tangler.ai_gate"
+va = 0x004202e3
+bytes = "f686dc020000020f85a5030000"
+fact = "an AI decision path (0x4202c8..0x4202ea) tests the actor status word against 2 and takes the branch to 0x420695 instead of falling through to its action setup at 0x4202f0 when the flag is set"
