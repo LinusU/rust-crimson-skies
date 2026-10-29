@@ -321,3 +321,15 @@ registration report now has sixteen of sixteen ids registered and no blocked
 id. The finding's other statements — the ten measured sites it pinned, the
 designed vocabulary it names, and everything it does not claim — stand
 unchanged.
+
+## Verification (2026-10-29, task #2156 integration)
+
+Re-run on main at 3ef143279 with `CS_GAME_DIR` and `CS_ENGINE_IMAGE` set:
+`cargo test --locked -p cs_app -- accept_t452_register_ accept_t452_media_silence_ --include-ignored`
+discovered, executed and passed 10 tests. That includes the retail registration
+of all sixteen declared ids with none blocked, the retail launch through the
+session path, and the synthetic refusal of a field no measurement states. The
+committed evidence report already carries that outcome. The claims it still
+lists (`t452_r02.limit.status_incapacitation`, `t452_reg.limit.tangler_field_origin`,
+`t452_reg.limit.tangler_force_scalar_meaning`, `t452_register.limit.per_box_weight`)
+each name their record and resolving task and are unchanged.
