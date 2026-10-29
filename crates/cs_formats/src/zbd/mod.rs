@@ -88,6 +88,7 @@ pub mod dispatch;
 pub mod effect_defs;
 pub mod family;
 pub mod header;
+pub mod maneuvers;
 pub mod placezeps;
 pub mod reader_archive;
 pub mod reader_tokens;
@@ -138,6 +139,7 @@ pub use header::{
     HeaderRule, INTERP_SIGNATURE, INTERP_SIGNATURE_OFFSET, INTERP_VERSION, INTERP_VERSION_OFFSET,
     SignatureRule,
 };
+pub use maneuvers::{DEFAULT_NATURAL_TOUCH, ManeuverError, ManeuverNode, read_maneuver_nodes};
 pub use reader_archive::{
     EncodingEvidence, ReaderArchive, ReaderEntry, ReaderError, read_reader_archive,
 };
