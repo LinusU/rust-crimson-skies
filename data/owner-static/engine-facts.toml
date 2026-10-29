@@ -9126,3 +9126,153 @@ name = "message.class_type"
 va = 0x62cb54
 bytes = "556e7265636f676e697a6564206e6f646520636c61737320747970653a20206e6f6465203d20257320636c6173735f74"
 fact = "the class types the query cannot intersect"
+
+# The ground blow's sqrt(Z·N) face evidence (task #2212,
+# GROUNDBLOW-NORMAL-SCALE, finding
+# docs/findings/2026-10-29-groundblow-normal-scale.md): the bound-corner
+# enumeration behind 0x55d270, the six faces' outward windings, the
+# unnormalised cross product 0x55d6c0 stores, and the retail face areas
+# the sqrt(dot) term actually sees on M01 content.
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_corner_build"
+va = 0x004cdabc
+bytes = "8b45708b108b4c244889118b50048951048b50148951088b500c89510c8b50048951108b50148951148b500c8951188b500489511c8b50088951208b108951248b50048951288b500889512c8b108951308b50108951348b50148951388b500c89513c8b50108951408b50148951448b500c8951488b501089514c8b50088951508b108951548b50105f8951588b40085d"
+fact = "0x4cd9d0's direct build copies the node bound record [ebp+0x70] (two vec3s lo=f0..f2, hi=f3..f5) into eight corners: c0=(f0,f1,f5), c1=(f3,f1,f5), c2=(f3,f1,f2), c3=(f0,f1,f2), c4=(f0,f4,f5), c5=(f3,f4,f5), c6=(f3,f4,f2), c7=(f0,f4,f2) — c0..c3 the y=lo.y ring then c4..c7 the y=hi.y ring, both walked in the same winding"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_face_x_min"
+va = 0x0055d286
+bytes = "8b0d845ea0008bc68b1089118b50048951048b40088941088b0d845ea00083c10c8d46308944241c8b1089118b50048951048b40088941088b0d845ea0008b5c242883c1188b6c24248d4654894424108b1089118b50048951048b40088941088b0d845ea0008d4624894424208b1083c12489118b50048951048b40086a006a048941088b0d845ea00051535557e8a7030000"
+fact = "0x55d270's first face loads buf = corners esi+0x00,+0x30,+0x54,+0x24 = (c0,c4,c7,c3), the x=lo.x quad, and calls 0x55d6c0 with count=4: N=(c4-c0)x(c7-c0)=(0,+Y,0)x(0,+Y,-Z) points -X, outward from the box"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_face_z_max"
+va = 0x0055d32d
+bytes = "8b15845ea00083c20c8d460c894424148b08890a8b4804894a048b40088942088b0d845ea00083c1188d463c894424288b1089118b50048951048b40088b54241c8941088b0d845ea0008b0283c12489018b42048941048b52086a006a04895108a1845ea00050535557e824030000"
+fact = "the second call keeps buf[0]=c0 and loads buf[1..3] = esi+0x0c,+0x3c,+0x30 = (c1,c5,c4), the z=hi.z quad: N=(c1-c0)x(c5-c0)=(+X,0,0)x(+X,+Y,0) points +Z, outward"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_face_x_max"
+va = 0x0055d3b0
+bytes = "8b15845ea0008b4c24288b0189028b41048942048b4908894a08a1845ea00083c0188d56188b0a89088b4a048948048b52088950088b0d845ea0008d4648894424248b1083c12489118b50048951048b40086a006a048941088b0d845ea00051535557e8a8020000"
+fact = "the third call sets buf = (esi+0x3c, carry-over c1, esi+0x18, esi+0x48) = (c5,c1,c2,c6), the x=hi.x quad: N=(c1-c5)x(c2-c5)=(0,-Y,0)x(0,-Y,-Z) points +X, outward"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_face_z_min"
+va = 0x0055d42c
+bytes = "a1845ea0008b5424108b0a89088b4a048948048b52088b4c24248950088b11a1845ea00083c00c89108b51048950048b49088948088b15845ea0008b4424208b0883c224890a8b4804894a048b40086a006a048942088b0d845ea00051535557e82f020000"
+fact = "the fourth call sets buf = (esi+0x54, esi+0x48, carry-over c2, esi+0x24) = (c7,c6,c2,c3), the z=lo.z quad: N=(c6-c7)x(c2-c7)=(+X,0,0)x(+X,-Y,0) points -Z, outward"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_face_y_min"
+va = 0x0055d4a5
+bytes = "8b068b15845ea00089028b4e04894a048b46088942088b0d845ea0008b4424208b1083c10c89118b50048951048b40088941088b0d845ea0008b4424148b1083c12489118b50048951048b40086a006a048941088b0d845ea00051535557e8b8010000"
+fact = "the fifth call sets buf = (esi+0x00, esi+0x24, carry-over c2, esi+0x0c) = (c0,c3,c2,c1), the y=lo.y quad: N=(c3-c0)x(c2-c0)=(0,0,-Z)x(+X,0,-Z) points -Y, outward"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.box_face_y_max"
+va = 0x0055d51c
+bytes = "8b15845ea0008b44241c8b08890a8b4804894a048b40088942088b0d845ea0008b4424288b1083c10c89118b50048951048b40088941088b0d845ea0008b4424248b1083c11889118b50048951048b40088941088b0d845ea0008b4424108b1083c12489118b50048951048b40086a006a048941088b0d845ea00051535557e820010000"
+fact = "the sixth call sets buf = (esi+0x30, esi+0x3c, esi+0x48, esi+0x54) = (c4,c5,c6,c7), the y=hi.y quad: N=(c5-c4)x(c6-c4)=(+X,0,0)x(+X,0,-Z) points +Y, outward — all six box faces point outward, N looking back at the incoming segment"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.cross_first_three"
+va = 0x0055d6d2
+bytes = "d9410cd82153d9411056d861048b74241cd941148b542424d86108"
+fact = "0x55d6c0 builds the face normal from the first three supplied corners only: e1=buf[1]-buf[0] (fld [ecx+0xc]/fsub [ecx] etc), e2=buf[2]-buf[0] ([ecx+0x18..0x20] minus [ecx..0x8]), then N=e1xe2 — the task's corner3 guess was wrong, the fourth corner is never in the normal"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.normal_unnormalised"
+va = 0x0055d713
+bytes = "d954242cd91ed9442410decad8cbdee9d954240cd95e04d9442414decad9442410d8c9deeaddd8d95608"
+fact = "the cross product is stored straight into the record: fstp [esi], [esi+4], [esi+8] (esi=record) with no divide or fsqrt — |N| stays the face's parallelogram area in m2 (2x triangle area on a tri)"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.accept_gate"
+va = 0x0055d75b
+bytes = "d9542420d81dc8326000dfe0f6c40175138b44243485c0"
+fact = "0x55d6c0 computes d2=dot(arg2_end-c0,N) and fcompares against 0.0 (0x6032c8): d2<0 (carry set, test ah,1 jne) continues; d2>=0 requires the two-sided flag arg ([esp+0x34]!=0) or the face is rejected — the arg2 endpoint must lie strictly on the -N side, so N faces the incoming segment"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.straddle_test"
+va = 0x0055d7a5
+bytes = "d95c242c8b5c242c33fbddd8f7c70000008075095f5e33c05b83c410c3"
+fact = "after the side gate, d1=dot(arg1_end-c0,N) is computed and xor'ed with d2 on the raw sign bits: equal signs return 0 (the segment must straddle the face plane); only then is the crossing point interpolated"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.two_sided_arg"
+va = 0x0055cc73
+bytes = "8b16c1ea0a83e20152"
+fact = "the soup path passes (vertex_info>>10)&1 of the stored polygon as the two-sided flag argument — RawPolygonInfo::flags()&0x04, RawPolygon::is_two_sided; the box path passes literal 0"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.selector_zero"
+va = 0x0055d27f
+bytes = "c7472000000000"
+fact = "0x55d270's first act zeroes record+0x20 (edi=record): the face-selector field is 0 for a bound-box hit, matching the hit_record record layout"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.dot_reject"
+va = 0x0048c118
+bytes = "d9450cd81dc8326000dfe0f6c4410f85c50000008b45d08b1783c00c508bcf"
+fact = "the ground-blow probe 0x48bf60 fcompares dot(backward_axis, record N) against 0.0 (0x6032c8) and jumps out on ah&0x41 (dot<=0 or unordered): non-positive or NaN dots get no blow"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.sqrt_site"
+va = 0x0048c142
+bytes = "d9450c8d45d4d9fa89450c895dd0dec9d87508d95d08"
+fact = "the amount formula: fld dot; fsqrt (0x48c148); fmulp with the (elev-distance) term; fdiv [ebp+8] (elev, [0x71c420]=400 m): amount=(elev-|hit-pos|)/elev*sqrt(dot(back,N_raw)) — the sqrt is applied to the raw, unnormalised dot"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.retail_water"
+va = 0x0055d6d2
+bytes = "d9410cd82153d9411056d861048b74241cd941148b542424d86108"
+fact = "retail read (ZBD/C3/gamez.zbd via cs_formats::gamez; va cites the cross-product site that gives |N| its m2 meaning): water node 547 'g28530' mesh 371, a 1024x1024 m tile at y=0 — stored outline poly 6 quad (-14848,0,-9216)(-14848,0,-9728)(-15360,0,-9728)(-15360,0,-9216) gives N=(0,262144,0) |N|=262144 m2; census of all 1556 water polys on 344 contactable nodes: every one N.y>0, |N| spanning 537..393216 m2, so sqrt(|N|) is 23x..627x the unit-face value — dot(back,N)=0 for a level aircraft over the flat sea, >0 once it descends"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.retail_terrain"
+va = 0x0055d6d2
+bytes = "d9410cd82153d9411056d861048b74241cd941148b542424d86108"
+fact = "retail read (same container and readers): island chunk node 2873 'g28603' mesh 761 (cliff1/forest1 textures, 22 stored triangle strips, transform det=+1) — poly 7's stored winding gives N=(10517.2,16384.0,0) |N|=19469 m2 unit (0.540,0.841,0): up-and-outward; dot(back,N)>0 for an aircraft descending on the out-of-hill side, <0 from behind (rejected, matching the one-sided soup accept)"
+
+[[groundblow_normal_fact]]
+claim = "OWNER-STATIC-2026-10-29"
+provenance = "static"
+name = "groundblow_normal.sqrt_dot_scale"
+va = 0x0048c148
+bytes = "d9fa"
+fact = "sqrt(dot(back,N)) is not sqrt(cos) on retail geometry: N is the unnormalised edge cross product, so the term is sqrt(|N|)*sqrt(cos) with |N| the face parallelogram area — 537..393216 m2 on M01 water tiles (23x..627x) and 19469..75963 m2 on the measured island strips (140x..276x); a unit normal understates the assist by two to three orders of magnitude"
