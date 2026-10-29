@@ -21,9 +21,9 @@
 //!
 //! `original-field.json` is a second production observation: the owner's own
 //! `wep_12` registered through the production path, its measured field opened
-//! by a real launch order through `step_ordnance_session`, and what that field
-//! did per tick. Identifiers, numbers and digests only: no original display
-//! text and no script text.
+//! by a real burst (a swept contact) through `step_ordnance_session`, and what
+//! that field did per tick. Identifiers, numbers and digests only: no original
+//! display text and no script text.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -43,7 +43,7 @@ use cs_app::weapons::MountPoseBinding;
 use cs_assets::install::{self, content_fingerprint, fingerprint, sha256};
 use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy, DamageResolver};
 use cs_sim::time::TickRate;
-use cs_sim::weapons::{OrdnanceId, OrdnanceRegistry, StatusEffectTarget, TargetPath};
+use cs_sim::weapons::{OrdnanceId, OrdnanceRegistry, StatusEffectTarget, SweptHit, TargetPath};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::net::SessionId;
@@ -62,11 +62,16 @@ const DAMAGE_PRODUCER: u32 = 101;
 const TICKS_PER_SECOND: u32 = 30;
 const GENERATION: SceneGeneration = SceneGeneration(1);
 
-/// The mount pose the fire path reads; the field centre is this, and it is
-/// deliberately not the world origin.
+/// The mount pose the fire path reads. The field is centred on the projectile's
+/// position when it bursts, not on this pose, so the two must stay apart.
 const MOUNT_ORIGIN: [f32; 3] = [3.0, 4.0, 10.0];
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-field.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): the owner's weapons.zrd is read by the production readers (read_original_component_table, read_original_weapon_records, read_original_weapon_media, read_original_ammo_declarations, read_original_weapons_provenance), every declared id is lowered by cs_app::ordnance::measured_ordnance_declaration and inserted by register_measured_ordnance, and this stage's record wep_12 now registers instead of being blocked. What was unexpressible before this stage was the TANGLER effect's runtime consequence, and it is measured: docs/findings/2026-10-28-t452-r02-ordnance-effects-fuses-and-swarm.md section 1 measured that a TANGLER record installs a tick callback (0x4ba877), that the fire path builds the field object at 0x4b94e0 with the record's RADIUS (image default 10.0 m at 0x4ba870; no retail wep_ record states RADIUS) and TIME (weP_12 2 s), that its tick 0x4b9590 subtracts the frame time and, while positive, walks the actor list and calls the weapon's per-hit routine for every actor whose squared distance is below RADIUS squared, the owner included, and removes the field at zero; docs/findings/2026-10-28-t452-tangler-effect.md measured what that hit does: the per-hit routine's TANGLER branch (0x4b9ded) zeroes both damage channels and applies a tangle of duration max(2.0 s, 10.0 * (1 - exposure / RADIUS)) with the constants at 0x6032dc/0x62b124/0x62b120, that a re-hit raises the timer at +0x2e0 and never shortens it, that three actor updates count it down and clear the flag, that the force routine 0x48fc40 stores 0.0 into its local force scalar [ebp-8] while the flag is set, and that the boost setter 0x4b2110 refuses to enable while the flag is set (a tangle ends a boost). The runtime expression this report records: the field opens at fire time from the launch order's own pose (the same pose the launch effect reports), lives TIME in whole 30 Hz ticks, re-applies the tangle to every actor inside RADIUS squared each tick, the owner included, and exposes a timed tangled state whose remaining ticks a flight consumer reads; a launch of a component with no registered field opens none. NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); which world position the original's fire path hands 0x4b94e0 (the field's own +0x08 slot is measured, not the caller's source; claim t452_reg.limit.tangler_field_origin); what the suppressed force scalar is in physical terms (claim t452_reg.limit.tangler_force_scalar_meaning); and the aircraft-side consumer that feeds a real flight model from this state (the ordnance session exposes it, and no production mission opens a wep_12 field: M01 flies the designed rocket loadout, so nothing in a live mission reads it yet). The claim t452_r02.limit.tangler_flight_effect is resolved by this stage: the effect it once left unnamed is the measured timed force-scalar suppression above, and the two unpinned parts stay named on the record. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated structurally with tools/validate_evidence.py - not with --require-pass, because the report's `unknowns` list carries every unpinned part, derived (never typed) from the production report's own kept claims and blockers. None is deleted to satisfy a validator.";
+/// The tick a swept contact bursts the projectile: the launch tick plus two
+/// advances, so the item's position has moved twice and the third advance (this
+/// one) ends at the burst position the field is centred on.
+const BURST_TICK: u64 = 2;
+
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES=retail,gpu,audio); this report is derived from the recorded log plus a second production pass recorded in original-field.json. MEASURED (identifiers, numbers, counts and digests only, no original display text, no script text): the owner's weapons.zrd is read by the production readers (read_original_component_table, read_original_weapon_records, read_original_weapon_media, read_original_ammo_declarations, read_original_weapons_provenance), every declared id is lowered by cs_app::ordnance::measured_ordnance_declaration and inserted by register_measured_ordnance, and this stage's record wep_12 now registers instead of being blocked. What was unexpressible before this stage was the TANGLER effect's runtime consequence, and it is measured: docs/findings/2026-10-28-t452-r02-ordnance-effects-fuses-and-swarm.md section 1 measured that a TANGLER record installs a tick callback (0x4ba877), that the fire path builds the field object at 0x4b94e0 with the record's RADIUS (image default 10.0 m at 0x4ba870; no retail wep_ record states RADIUS) and TIME (weP_12 2 s), that its tick 0x4b9590 subtracts the frame time and, while positive, walks the actor list and calls the weapon's per-hit routine for every actor whose squared distance is below RADIUS squared, the owner included, and removes the field at zero; docs/findings/2026-10-28-t452-tangler-effect.md measured what that hit does: the per-hit routine's TANGLER branch (0x4b9ded) zeroes both damage channels and applies a tangle of duration max(2.0 s, 10.0 * (1 - exposure / RADIUS)) with the constants at 0x6032dc/0x62b124/0x62b120, that a re-hit raises the timer at +0x2e0 and never shortens it, that three actor updates count it down and clear the flag, that the force routine 0x48fc40 stores 0.0 into its local force scalar [ebp-8] while the flag is set, and that the boost setter 0x4b2110 refuses to enable while the flag is set (a tangle ends a boost). The runtime expression this report records: the field opens when the projectile bursts, centred on the projectile's own position on that tick (the rocket+0x48 the burst hook 0x4ba660 reads; tasks T452-REG-TANGLER-ORIGIN and T452-REG-TANGLER-BURST-OPEN), lives TIME in whole 30 Hz ticks, re-applies the tangle to every actor inside RADIUS squared each tick, the owner included, and exposes a timed tangled state whose remaining ticks a flight consumer reads; a launch alone opens nothing, the silent end of RANGE opens nothing, and a launch of a component with no registered field opens none. NOT CLAIMED: any original-run behavior (retail is read access and no agent ran the original executable); what the suppressed force scalar is in physical terms (claim t452_reg.limit.tangler_force_scalar_meaning); and the aircraft-side consumer that feeds a real flight model from this state (the ordnance session exposes it, and no production mission opens a wep_12 field: M01 flies the designed rocket loadout, so nothing in a live mission reads it yet). The claim t452_r02.limit.tangler_flight_effect is resolved by this stage: the effect it once left unnamed is the measured timed force-scalar suppression above; the field origin this stage left unnamed is measured too (the projectile's position at its burst) and its claim t452_reg.limit.tangler_field_origin is resolved by T452-REG-TANGLER-BURST-OPEN, so only the force scalar stays named on the record. The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated structurally with tools/validate_evidence.py - not with --require-pass, because the report's `unknowns` list carries every unpinned part, derived (never typed) from the production report's own kept claims and blockers. None is deleted to satisfy a validator.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -355,7 +360,6 @@ fn drive(game_dir: &Path) -> Driven {
     launcher(&mut world);
     let mut damage = damage_resolver();
     let victim = actor(2);
-    let targets = [path(victim, MOUNT_ORIGIN)];
     let launch = step_ordnance_session(
         &mut world,
         &mut session,
@@ -376,16 +380,76 @@ fn drive(game_dir: &Path) -> Driven {
                 status_recipient: StatusEffectTarget::whole_actor(victim),
             },
         })],
-        &tick_step(0, &targets),
+        &tick_step(0, &[]),
     );
     assert_eq!(launch.launched.len(), 1, "the record launches");
-    assert_eq!(launch.tangler_opened.len(), 1, "the launch opens the field");
+    assert!(
+        launch.tangler_opened.is_empty() && session.tangler_fields().is_empty(),
+        "a launch alone opens no field (task #2203)"
+    );
+
+    // The projectile leaves the mount along -z at the record's own measured
+    // VELOCITY and advances once on each of ticks 0, 1 and 2, so its position
+    // on the burst tick is the mount pose less three advances on z.
+    let row = table
+        .rows
+        .iter()
+        .find(|row| row.record == TANGLER_RECORD)
+        .expect("wep_12");
+    let flown_m = row.velocity.expect("wep_12 declares VELOCITY") / f64::from(TICKS_PER_SECOND)
+        * (BURST_TICK as f64 + 1.0);
+    let burst_centre = [
+        MOUNT_ORIGIN[0],
+        MOUNT_ORIGIN[1],
+        MOUNT_ORIGIN[2] - flown_m as f32,
+    ];
+    let targets = [path(victim, burst_centre)];
+
+    let quiet = step_ordnance_session(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[],
+        &tick_step(1, &targets),
+    );
+    assert!(
+        quiet.tangler_opened.is_empty() && session.tangler_fields().is_empty(),
+        "flight without a burst opens no field"
+    );
+
+    let projectile = launch.launched[0];
+    let burst = step_ordnance_session(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[],
+        &intercept_step(
+            BURST_TICK,
+            &targets,
+            &[SweptHit {
+                projectile,
+                target: victim,
+                time_of_impact: 0.5,
+            }],
+        ),
+    );
+    assert_eq!(burst.tangler_opened.len(), 1, "the burst opens the field");
 
     let open = session
         .tangler_fields()
         .first()
         .cloned()
         .expect("the field is open");
+    assert_eq!(
+        open.centre,
+        WorldPosition::try_new([
+            f64::from(burst_centre[0]),
+            f64::from(burst_centre[1]),
+            f64::from(burst_centre[2])
+        ])
+        .expect("the fixture burst position is finite"),
+        "the field is centred on the projectile's position at the burst"
+    );
     let mut driven = Driven {
         centre: open.centre,
         radius_m: open.radius_m,
@@ -405,11 +469,11 @@ fn drive(game_dir: &Path) -> Driven {
             }
         }
     };
-    count(&launch, &mut driven);
+    count(&burst, &mut driven);
     driven.boost_refused_while_tangled = !session.boost_allowed(&victim);
 
-    let limit = open.lifetime_ticks + driven.duration_ticks + 8;
-    for at in 1..=limit {
+    let limit = BURST_TICK + open.lifetime_ticks + driven.duration_ticks + 8;
+    for at in (BURST_TICK + 1)..=limit {
         let tick = step_ordnance_session(
             &mut world,
             &mut session,
@@ -429,13 +493,22 @@ fn drive(game_dir: &Path) -> Driven {
         "the tangle reaches its own boundary"
     );
     assert!(
-        driven.opened_at == 0,
-        "the field opened on the fire tick it was launched on"
+        driven.opened_at == BURST_TICK,
+        "the field opened on the burst tick, not on the launch tick"
     );
     driven
 }
 
 fn tick_step(at: u64, targets: &[TargetPath]) -> OrdnanceStep<'_> {
+    intercept_step(at, targets, &[])
+}
+
+/// One step of a session that is told about swept contacts.
+fn intercept_step<'a>(
+    at: u64,
+    targets: &'a [TargetPath],
+    impacts: &'a [SweptHit],
+) -> OrdnanceStep<'a> {
     OrdnanceStep {
         at: Tick(at),
         dt_s: 1.0 / f64::from(TICKS_PER_SECOND),
@@ -443,7 +516,7 @@ fn tick_step(at: u64, targets: &[TargetPath]) -> OrdnanceStep<'_> {
         generation: GENERATION,
         guidance: None,
         targets,
-        impacts: &[],
+        impacts,
         blast_recipients: None,
         victim_nodes: None,
     }
