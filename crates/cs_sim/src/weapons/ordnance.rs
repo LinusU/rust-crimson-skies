@@ -3680,7 +3680,10 @@ impl OrdnanceState {
     /// [`crate::weapons::guns::Ballistics::sweep`] produces — ascending time
     /// of impact, with the actor id as the tie-breaker — so `impacts.first()`
     /// is the earliest contact rather than whichever report a caller happened
-    /// to collect first. `paths` carries no such requirement: the nearest
+    /// to collect first. The contacts are taken to be this item's own: `first()`
+    /// is not filtered by [`SweptHit::projectile`] here, so a caller that holds
+    /// several live items passes each one only its own hits (as
+    /// `cs_app::ordnance::step_ordnance_session` does, preserving the order). `paths` carries no such requirement: the nearest
     /// in-range path is chosen here, with the same tie-breaker.
     ///
     /// One consequence of the order above is worth stating: a

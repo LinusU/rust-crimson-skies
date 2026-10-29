@@ -3049,9 +3049,19 @@ pub fn step_ordnance_session(
                 .map(|item| item.projectile())
                 .collect();
             for projectile in live {
+                // Only this item's own contacts reach its fuse: `decide` takes
+                // the first one, so another item's earlier hit would burst
+                // this one with a foreign victim and time of impact. The
+                // filter keeps `impacts`' ascending-time order.
+                let own_impacts: Vec<SweptHit> = step
+                    .impacts
+                    .iter()
+                    .filter(|hit| hit.projectile == projectile)
+                    .copied()
+                    .collect();
                 let decision = session
                     .runtime
-                    .decide(&projectile, step.targets, step.impacts);
+                    .decide(&projectile, step.targets, &own_impacts);
                 let trigger = match decision {
                     Ok(FuseDecision::Triggered(trigger)) => trigger,
                     Ok(FuseDecision::Consumed { range_m }) => {
