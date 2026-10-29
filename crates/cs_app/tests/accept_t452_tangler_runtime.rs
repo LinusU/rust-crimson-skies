@@ -162,10 +162,10 @@ fn tangler_row() -> OriginalComponentLaunch {
     }
 }
 
-/// The same measured `wep_12` with a declared lifetime instead of the record's
-/// own silent `RANGE` end, so the runtime's **timed fuse** ends it: the only
-/// non-contact trigger this session can reach, used to check that a burst with
-/// no swept contact keeps the item's tick-end position (task #2205).
+/// A fixture variant of `wep_12` that declares a lifetime instead of the
+/// record's own silent `RANGE` end, so the runtime's **timed fuse** ends it:
+/// the only non-contact trigger this session can reach, used to check that a
+/// burst with no swept contact keeps the item's tick-end position (task #2205).
 fn timed_tangler_row() -> OriginalComponentLaunch {
     OriginalComponentLaunch {
         lifetime: OriginalLifetime::Declared {
