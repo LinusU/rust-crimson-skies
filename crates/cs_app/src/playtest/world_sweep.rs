@@ -8,9 +8,7 @@
 //! `0x4c8ec0` (`docs/findings/2026-10-29-groundblow-world-segment-sweep.md`,
 //! sections 0.4, 1–5 and 8). This module is the port's query for that answer,
 //! over the colliders the playtest already spawns plus the live aircraft, and
-//! the fill that hands it to [`OriginalInput::segment_probe`].
-//!
-//! [`OriginalInput`]: cs_sim::flight::original::OriginalInput
+//! the fill that hands it to `OriginalInput::segment_probe`.
 //!
 //! # What the record keeps
 //!
