@@ -267,6 +267,7 @@ mod accept_crash_d_01_contact_fx;
 mod accept_crash_d_02_contact_sparks;
 mod accept_crash_d_03_wing_fire;
 mod accept_groundblow_fill;
+mod accept_groundblow_props;
 mod accept_m01_c3_player_config;
 mod c4_m01_fu;
 mod c5_m04_fu;

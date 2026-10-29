@@ -64,6 +64,7 @@ use crate::scene::SceneGenerations;
 use crate::weapons::SessionDamageResolver;
 
 use crate::playtest::scene::PlaytestSea;
+use crate::playtest::world_sweep::class_type_intersects;
 use crate::playtest_retail::{
     CONTACT_SWEEP_NODE_FLAGS, PlaytestConfig, WorldScenery, WorldSources, build_world_scenery,
     read_world_sources,
@@ -945,6 +946,59 @@ fn attach_world_parts(
     }
 }
 
+/// Marks the collider of one world-definition object whose source node the
+/// original's world sweep tests (task #2216): the node stores
+/// [`CONTACT_SWEEP_NODE_FLAGS`] (`node+0x24 & 0x14`) and a class type the sweep
+/// dispatches ([`class_type_intersects`]).
+///
+/// The world definition's flat objects (M01: 374 of them, the `g28xxx` terrain
+/// and water tiles and the `zepbridge` props) are `StaticWorld` bodies that are
+/// neither [`PlaytestSea`] nor [`WorldSceneryCollider`]; the marker is what
+/// states which of them the sweep's population includes.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldSweepNode {
+    /// The stored slot of the node it belongs to.
+    pub node_slot: u32,
+    /// The node's stored class type (`node+0x34`).
+    pub class_type: u32,
+}
+
+/// Marks each solid collider of a world-definition object whose stored node
+/// carries the sweep's bits and a dispatched class type ([`WorldSweepNode`]).
+fn mark_world_sweep_nodes(
+    mut commands: Commands,
+    stage: Res<MissionStage>,
+    spawned: Query<
+        (Entity, &WorldObjectBinding, &WorldColliderInstance),
+        Added<WorldColliderInstance>,
+    >,
+) {
+    let Some(source) = &stage.world_draw else {
+        return;
+    };
+    let nodes = source.sources().world().nodes();
+    for (entity, binding, instance) in &spawned {
+        if instance.role() != WorldCollisionRole::Solid {
+            continue;
+        }
+        let Some(slot) = node_slot_of(binding.object().as_str()) else {
+            continue;
+        };
+        let Some(node) = nodes.nodes.get(slot as usize) else {
+            continue;
+        };
+        if node.flags() & CONTACT_SWEEP_NODE_FLAGS != CONTACT_SWEEP_NODE_FLAGS
+            || !class_type_intersects(node.info.node_type)
+        {
+            continue;
+        }
+        commands.entity(entity).insert(WorldSweepNode {
+            node_slot: slot,
+            class_type: node.info.node_type,
+        });
+    }
+}
+
 /// The root entity of the drawn scenery ([`MissionWorldParts::scenery`]).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct WorldSceneryRoot;
@@ -1207,6 +1261,7 @@ impl Plugin for MissionWorldDrawPlugin {
             Update,
             (
                 attach_world_parts,
+                mark_world_sweep_nodes,
                 attach_world_scenery,
                 anchor_horizon_to_camera,
                 // Ordered after the spawn so a run where the scenery attaches

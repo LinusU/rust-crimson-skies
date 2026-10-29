@@ -114,7 +114,7 @@ use cs_sim::flight::original::{OriginalInput, SegmentProbeHit, SegmentProbeOwner
 use cs_types::space::Quaternion;
 
 use super::scene::{PlaytestOriginalFlight, PlaytestSea};
-use crate::mission_session::WorldSceneryCollider;
+use crate::mission_session::{WorldSceneryCollider, WorldSweepNode};
 use crate::physics::BodyLayer;
 
 /// The class type every M01 collider stores, and the type the sweep's dispatch
@@ -247,6 +247,7 @@ pub struct SweepTarget<'a> {
 pub fn owner_of(
     is_sea: bool,
     is_scenery: bool,
+    is_node: bool,
     layer: CollisionLayer,
     is_prober: bool,
     on_path: bool,
@@ -256,7 +257,7 @@ pub fn owner_of(
         // probe cannot hit its own geometry.
         return None;
     }
-    if is_sea || is_scenery {
+    if is_sea || is_scenery || is_node {
         return Some(SegmentProbeOwner::World);
     }
     if layer == CollisionLayer::Aircraft {
@@ -279,6 +280,9 @@ pub struct ColliderKind {
     pub is_sea: bool,
     /// Whether the collider carries [`WorldSceneryCollider`].
     pub is_scenery: bool,
+    /// The class type of the collider's [`WorldSweepNode`], when it carries
+    /// one (a world-definition object whose node the original sweeps).
+    pub node_class: Option<u32>,
 }
 
 /// The [`SweepTarget`] for one collider entity, or `None` when the sweep does
@@ -301,11 +305,12 @@ pub fn target_of<'a>(
         owner: owner_of(
             kind.is_sea,
             kind.is_scenery,
+            kind.node_class.is_some(),
             kind.layer,
             entity == prober,
             on_path,
         )?,
-        class_type: OBJECT3D_CLASS_TYPE,
+        class_type: kind.node_class.unwrap_or(OBJECT3D_CLASS_TYPE),
     })
 }
 
@@ -544,6 +549,7 @@ pub struct SweepColliders<'w, 's> {
             Has<PlaytestSea>,
             Has<WorldSceneryCollider>,
             Option<&'static crate::mission_actors::ScriptedAircraftActor>,
+            Option<&'static WorldSweepNode>,
         ),
     >,
 }
@@ -552,11 +558,12 @@ impl SweepColliders<'_, '_> {
     /// Every collider the sweep tests.
     fn targets(&self, prober: Entity) -> impl Iterator<Item = SweepTarget<'_>> {
         self.colliders.iter().filter_map(
-            move |(entity, collider, position, rotation, layer, is_sea, is_scenery, actor)| {
+            move |(entity, collider, position, rotation, layer, is_sea, is_scenery, actor, node)| {
                 let kind = ColliderKind {
                     layer: layer.0,
                     is_sea,
                     is_scenery,
+                    node_class: node.map(|node| node.class_type),
                 };
                 target_of(
                     entity,
@@ -708,6 +715,7 @@ pub fn probe_in_world(
             layer: layer.0,
             is_sea: entity.contains::<PlaytestSea>(),
             is_scenery: entity.contains::<WorldSceneryCollider>(),
+            node_class: entity.get::<WorldSweepNode>().map(|node| node.class_type),
         };
         let on_path = entity
             .get::<crate::mission_actors::ScriptedAircraftActor>()

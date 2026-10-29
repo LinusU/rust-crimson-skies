@@ -456,6 +456,7 @@ pub use world_draw::{
     GroundTargetLayoutReport, GroundTargetLayoutRow, HORIZON_SUBTREE_LABEL, HorizonRest,
     HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts, PresentedLayout,
     WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldSceneryCollider, WorldSceneryNode,
-    WorldSceneryRoot, WorldWaterArt, WorldWaterLevel, WorldWaterPart, apply_ground_target_layout,
-    bind_sea_to_world_water, build_scenery, build_world_draw, water_level_of,
+    WorldSceneryRoot, WorldSweepNode, WorldWaterArt, WorldWaterLevel, WorldWaterPart,
+    apply_ground_target_layout, bind_sea_to_world_water, build_scenery, build_world_draw,
+    water_level_of,
 };

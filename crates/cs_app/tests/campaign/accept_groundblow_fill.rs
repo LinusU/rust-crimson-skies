@@ -189,6 +189,7 @@ fn accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prob
     let owner = cs_app::playtest::world_sweep::owner_of(
         false,
         false,
+        false,
         CollisionLayer::Aircraft,
         false,
         false,
@@ -218,6 +219,7 @@ fn accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prob
         cs_app::playtest::world_sweep::owner_of(
             false,
             false,
+            false,
             CollisionLayer::Aircraft,
             true,
             false
@@ -227,12 +229,20 @@ fn accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prob
     // Anything that is neither scenery nor an aircraft body is not a world
     // node the port's sweep answers for.
     assert_eq!(
-        cs_app::playtest::world_sweep::owner_of(false, false, CollisionLayer::Debris, false, false),
+        cs_app::playtest::world_sweep::owner_of(
+            false,
+            false,
+            false,
+            CollisionLayer::Debris,
+            false,
+            false
+        ),
         None
     );
     assert_eq!(
         cs_app::playtest::world_sweep::owner_of(
             true,
+            false,
             false,
             CollisionLayer::StaticWorld,
             true,
