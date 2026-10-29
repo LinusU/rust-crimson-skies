@@ -58,6 +58,18 @@ fn accept_t452_tangler_the_committed_rows_cover_the_measured_sites() {
             "tangler.countdown_other",
             "tangler.boost_refuse",
             "tangler.ai_gate",
+            // Task #2202 measured what the AI gate above skips: the maneuver
+            // chooser's nitro-maneuver gate.
+            "tangler_ai.gate_sequence",
+            "tangler_ai.skip_target",
+            "tangler_ai.record_base",
+            "tangler_ai.record_stride",
+            "tangler_ai.explicit_index",
+            "tangler_ai.nitro_key",
+            "tangler_ai.maneuver_table",
+            "tangler_ai.maneuver_names",
+            "tangler_ai.boost_on_choice",
+            "tangler_ai.weighted_pick",
             "tangler.thrust_scalar",
             "tangler.thrust_vector",
         ]
@@ -102,7 +114,7 @@ fn accept_t452_tangler_image_rows_match_the_engine_image() {
     );
     let image = std::fs::read(path).expect("the engine image reads");
     let rows = committed_rows();
-    assert_eq!(rows.len(), 11);
+    assert_eq!(rows.len(), 21);
     for (name, va, bytes, _) in rows {
         let offset = usize::try_from(va - IMAGE_BASE).expect("offset");
         assert_eq!(

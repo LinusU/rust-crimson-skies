@@ -118,6 +118,7 @@ mod accept_t452_r05_slot_and_status;
 mod accept_t452_r05ammo_script_census;
 mod accept_t452_smoke;
 mod accept_t452_smoke_stun;
+mod accept_t452_tangler_ai_gate;
 mod accept_t452_tangler_measurement;
 mod accept_t452_tangler_vocab;
 mod accept_t454_guidance_loss;
