@@ -289,6 +289,11 @@ impl<R: std::io::Read> FrameSource for TeeSource<R> {
 /// Plays the MPEG program stream at `path` through the real output device and
 /// hands each shown frame, letterboxed into `surface_size`, to `presenter`.
 ///
+/// This is a measurement probe: its voice starts at unity gain on the Music
+/// bus, not through the player's bus levels, so the timings it reports do not
+/// move with the settings. The player-facing path is
+/// [`MoviePlayer`](super::movie_player::MoviePlayer).
+///
 /// `limit` stops the run early with [`PlaybackEnd::TimeLimit`] (never a
 /// completion). `declaration` is the `$CS_CAPABILITIES` declaration: without
 /// `audio` the device is refused by name before any hardware call.

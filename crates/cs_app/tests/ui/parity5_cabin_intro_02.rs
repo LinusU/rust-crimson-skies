@@ -21,6 +21,7 @@ use cs_app::cinematics::movie_player::{
     AudioOutput, MovieEnd, MovieFinished, MovieOutcome, MoviePlayer, MoviePlayerPlugin, MoviePoll,
     MoviePresenter, skip_requested,
 };
+use cs_content::settings::Presentation;
 use cs_sim::cinematic_state::MediaFailure;
 use cs_types::content::{ContentId, ContentKind};
 
@@ -170,7 +171,13 @@ fn synthetic_file(name: &str) -> PathBuf {
 }
 
 fn open(name: &str) -> MoviePlayer {
-    MoviePlayer::open(&synthetic_file(name), &media(), &AudioOutput::Silent).unwrap()
+    MoviePlayer::open(
+        &synthetic_file(name),
+        &media(),
+        &AudioOutput::Silent,
+        &Presentation::designed(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -214,6 +221,7 @@ fn accept_parity5_cabin_intro_02_missing_and_foreign_files_are_media_failures() 
         Path::new("/nonexistent/chap1.mpg"),
         &media(),
         &AudioOutput::Silent,
+        &Presentation::designed(),
     )
     .unwrap_err();
     assert!(
@@ -226,7 +234,13 @@ fn accept_parity5_cabin_intro_02_missing_and_foreign_files_are_media_failures() 
     std::fs::create_dir_all(&dir).unwrap();
     let foreign = dir.join("foreign.mpg");
     std::fs::write(&foreign, b"RIFF not an mpeg program stream at all").unwrap();
-    let error = MoviePlayer::open(&foreign, &media(), &AudioOutput::Silent).unwrap_err();
+    let error = MoviePlayer::open(
+        &foreign,
+        &media(),
+        &AudioOutput::Silent,
+        &Presentation::designed(),
+    )
+    .unwrap_err();
     assert!(
         matches!(
             error,
@@ -242,6 +256,7 @@ fn accept_parity5_cabin_intro_02_a_missing_audio_capability_is_refused_by_name()
         &synthetic_file("nodevice.mpg"),
         &media(),
         &AudioOutput::Device(CapabilityDeclaration::parse("retail,gpu")),
+        &Presentation::designed(),
     )
     .unwrap_err();
     match error {
@@ -369,6 +384,7 @@ fn accept_parity5_cabin_intro_02_retail_chap1_plays_with_audio_and_renders_its_f
         &game.join("GOSDATA/ASSETS/GRAPHICS/MPG/chap1.mpg"),
         &media,
         &AudioOutput::Device(declaration),
+        &Presentation::designed(),
     )
     .expect("chap1.mpg opens with the audio device");
     assert_eq!((player.info().width, player.info().height), (320, 240));

@@ -46,7 +46,10 @@ use bevy::prelude::{
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
-use cs_sim::audio_events::{AudioBus, AudioDevice, DeviceVoiceId, VoiceStart, VoiceStop};
+use cs_content::settings::Presentation;
+use cs_sim::audio_events::{
+    AudioBus, AudioDevice, DeviceVoiceId, VoiceLevel, VoiceStart, VoiceStop,
+};
 use cs_sim::cinematic_state::{
     CinematicScript, CinematicState, CompletionKind, FailureRecovery, MasterClock, MediaFailure,
     PausePolicy, SYNTHETIC_PLAYER,
@@ -61,6 +64,7 @@ use super::mpeg::{MPEG_PS_FORMAT, MpegAudioSource, MpegVideoInfo, MpegVideoSourc
 use super::playback::{MediaClock, VideoPlayback};
 use super::session::{CinematicSession, MissionHandback};
 use super::{CinematicPlan, MediaAvailability, PresentationPlan, fit_letterboxed};
+use crate::audio::bus_levels::apply_bus_level;
 use crate::audio::device::{
     AudibleDevice, CapabilityDeclaration, InMemorySamples, PcmAudio, open_audible_device,
 };
@@ -126,6 +130,31 @@ impl From<MovieEnd> for MovieOutcome {
     }
 }
 
+/// The start of a movie's one voice: the Music bus at the live level of
+/// `presentation`.
+///
+/// The player-facing [`MoviePlayer`] starts its voice through this. The
+/// measurement probe `play_on_device` in `device` starts a voice at unity on
+/// purpose, so its reported timings do not depend on the player's settings.
+#[must_use]
+pub fn cinematic_voice_start(media: &ContentId, presentation: &Presentation) -> VoiceStart {
+    let level = apply_bus_level(
+        presentation,
+        AudioBus::Music,
+        VoiceLevel {
+            gain: 1.0,
+            pitch: 1.0,
+        },
+    );
+    VoiceStart {
+        asset: media.clone(),
+        bus: AudioBus::Music,
+        gain: level.gain,
+        pan: 0.0,
+        pitch: level.pitch,
+    }
+}
+
 fn failure(detail: impl std::fmt::Display) -> MediaFailure {
     MediaFailure::DecodeFailed {
         detail: detail.to_string(),
@@ -169,10 +198,16 @@ impl MoviePlayer {
     /// not an MPEG-1 program stream `MissingDecoder`, an undecodable stream,
     /// an unusable audio track or an output device that cannot be opened
     /// `DecodeFailed` with the reason.
+    ///
+    /// `presentation` is the live accessibility presentation at the start: the
+    /// movie's voice takes its Music bus level (see [`cinematic_voice_start`]).
+    /// This is the player-facing path, so the caller passes the settings
+    /// instead of this opening its own.
     pub fn open(
         path: &Path,
         media: &ContentId,
         output: &AudioOutput,
+        presentation: &Presentation,
     ) -> Result<Self, MediaFailure> {
         let video = MpegVideoSource::open(path, media)?;
         let info = video.info();
@@ -193,13 +228,7 @@ impl MoviePlayer {
                 let mut device = open_audible_device(Arc::new(library), declaration)
                     .map_err(|e| failure(format!("audio device: {} ({})", e.detail, e.code)))?;
                 let voice = device
-                    .start_one_shot(VoiceStart {
-                        asset: media.clone(),
-                        bus: AudioBus::Music,
-                        gain: 1.0,
-                        pan: 0.0,
-                        pitch: 1.0,
-                    })
+                    .start_one_shot(cinematic_voice_start(media, presentation))
                     .map_err(|e| failure(format!("audio device: {} ({})", e.detail, e.code)))?;
                 Some((device, voice))
             }

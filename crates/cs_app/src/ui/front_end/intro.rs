@@ -29,6 +29,8 @@ use bevy::ecs::message::MessageCursor;
 use bevy::prelude::{Messages, World};
 use cs_types::content::ContentId;
 
+use cs_content::settings::Presentation;
+
 use super::Screen;
 use super::movie::movie_media;
 use super::retail::MOVIE_DIRECTORY;
@@ -37,6 +39,7 @@ use super::start_flow::StartStep;
 use crate::cinematics::movie_player::{
     AudioOutput, MovieFinished, MovieOutcome, MoviePlayer, MoviePresenter,
 };
+use crate::render::presentation::LivePresentation;
 
 /// The measured intro movie, under [`MOVIE_DIRECTORY`].
 pub const INTRO_FILE: &str = "chap1.mpg";
@@ -258,7 +261,12 @@ impl IntroState {
             chapter => format!("chap{chapter}.mpg"),
         };
         let media: ContentId = movie_media(&file);
-        let opened = MoviePlayer::open(&path, &media, &movie.output);
+        // The live presentation when the world keeps one; the designed
+        // defaults (every bus at unity) otherwise.
+        let presentation = world
+            .get_resource::<LivePresentation>()
+            .map_or_else(Presentation::designed, |live| live.presentation().clone());
+        let opened = MoviePlayer::open(&path, &media, &movie.output, &presentation);
         // Messages written before this start belong to earlier movies.
         if let Some(messages) = world.get_resource::<Messages<MovieFinished>>() {
             self.finished.clear(messages);
