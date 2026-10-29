@@ -148,17 +148,24 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
     }
     assert!(at(20).p.y - 46.3 > 100.0, "{report}");
     // The original is on the sea at t=28; main is 148 m up. Main flies into
-    // the island's hillside at t=40..42 instead (#1814: the scenery below the
+    // the island's hillside at t=40..42 (#1814: the scenery below the
     // world's grouping nodes is solid now; before, nothing there collided and
     // the flight went on to dive onto the sea at t=55). The original has its
     // own beach impact at t=34..36 (110 -> 78 m/s).
     assert!(at(28).p.y > 140.0, "{report}");
+    // #2107's ground blow now fires on the hillside approach: from t≈38 the
+    // 400 m probe meets the hillside within its own length, the term lifts the
+    // aircraft (165 m at t=40, 177 m at t=42) and the judged contact lands one
+    // second later than it did before the consumer. The pre-#2107 pin was
+    // (0, 1, 2).
     assert_eq!(
         (at(40).judged, at(41).judged, at(42).judged),
-        (0, 1, 2),
+        (0, 0, 2),
         "{report}"
     );
-    assert!(at(40).speed > 99.0 && at(42).speed < 70.0, "{report}");
+    assert!(at(40).speed > 97.5 && at(42).speed < 95.0, "{report}");
+    // The contact still takes speed out of the flight.
+    assert!(at(41).speed > at(42).speed + 2.0, "{report}");
     // The bounce throws main up and it keeps climbing; it is never reset.
     assert!(at(SECONDS).resets == 0 && at(41).resets == 0, "{report}");
     assert!(
@@ -167,7 +174,9 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
     );
     assert!(at(SECONDS).judged > 0, "no judged contact at all: {report}");
     // After the hillside the original reaches 1925 m at t=70 (the 60 degree
-    // throw is unmet: the response is a normal impulse); main climbs to 567 m.
+    // throw is unmet: the response is a normal impulse); main climbs to 569 m.
+    // After #2107's ground blow lifts it over the hillside it is still climbing
+    // at 725 m by t=80, still far below the original's throw.
     let ceiling = s.iter().map(|x| x.p.y).fold(f32::MIN, f32::max);
     assert!(ceiling < 1000.0, "ceiling {ceiling}: {report}");
     assert!(at(70).speed > 80.0, "{report}");
@@ -178,15 +187,16 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
         );
     }
     // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage. Two
-    // episodes at the hillside (t=41, 42) spend 455 of the designed 1200 hull
-    // (the designed crash-to-hull curve, #2005) and nothing after; the pool
-    // holds, so the flight is never crashed.
+    // episodes at the hillside spend 267 of the designed 1200 hull (the
+    // designed crash-to-hull curve, #2005) and nothing after; the pool holds,
+    // so the flight is never crashed. Before #2107's ground blow the same
+    // flight hit the hillside at t=41/42 and spent 455.
     assert_eq!(
         (at(60).judged, at(70).judged, at(SECONDS).judged),
         (2, 2, 2),
         "{report}"
     );
-    assert!((at(SECONDS).hull_damage - 455.0).abs() < 1.0, "{report}");
+    assert!((at(SECONDS).hull_damage - 267.0).abs() < 1.0, "{report}");
     assert!(s.iter().all(|x| !x.crashed), "{report}");
 }
 

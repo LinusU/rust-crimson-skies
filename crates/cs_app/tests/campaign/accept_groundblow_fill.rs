@@ -15,7 +15,7 @@
 //! face rule, the class-type filter and the owner resolution. The retail half
 //! composes the real M01 (`CS_GAME_DIR`) and proves the production fill carries
 //! the query's answer at the production step, and that handing it to the law
-//! changes no trajectory.
+//! makes the ground blow (`0x48c220`, #2107) fire.
 use std::path::PathBuf;
 
 use avian3d::prelude::{Collider, LinearVelocity, Position, Rotation};
@@ -662,6 +662,11 @@ fn accept_groundblow_fill_m01_fills_the_probe_from_the_production_world() {
     let (sea, centre, top) = above_the_flat_sea(&mut app);
     let start = Vec3::new(centre.x, top + DIVE_ALTITUDE_M, centre.z + PROBE_BACKOFF_M);
     place(&mut app, player, start, dive_nose(), 60.0);
+    // The pose the fill is cast from on the first tick. The law consumes the
+    // answer (#2107), so by the time the loop below ends the aircraft is no
+    // longer at this pose: the sweep answers about the *placed* dive, and the
+    // in-tick `check_fill` comparison above is what ties the stored fill to it.
+    let (placed_position, placed_rotation) = pose(&app, player);
     for _ in 0..4 {
         app.update();
     }
@@ -678,7 +683,7 @@ fn accept_groundblow_fill_m01_fills_the_probe_from_the_production_world() {
 
     // The record's own unnormalised normal and chord distance, from the same
     // query over the same world, on the tile the dive was placed over.
-    let (position, rotation) = pose(&app, player);
+    let (position, rotation) = (placed_position, placed_rotation);
     let dive = probe_in_world(app.world(), position, rotation, elevation, player)
         .expect("the sea answers beneath the placed aircraft");
     assert_eq!(dive.owner, SegmentProbeOwner::World);
@@ -710,12 +715,15 @@ fn withhold_groundblow_probes(mut probes: ResMut<GroundBlowProbes>) {
     probes.hits.clear();
 }
 
-/// M01 flies identically whether the driver hands the law the sweep's answer or
-/// nothing at all: nothing reads `segment_probe` until #2107, and the fill on
-/// the production step changes no tick of the trajectory.
+/// The fill's answer reaches the law: two M01s in lockstep, both on the same
+/// dive over the same sea tile, one with the driver handed the sweep's answer
+/// and one with the answer withheld between the fill and the driver. Up to
+/// #2107 nothing read `segment_probe` and the two runs were identical; the
+/// ground-blow consumer makes the dive fire, so the trajectories diverge while
+/// both runs still cast and count the overlay.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
+fn accept_groundblow_fill_m01_ground_blow_consumes_the_filled_probe() {
     let _guard = retail_lock();
     let mut filled = compose();
     let mut withheld = compose();
@@ -734,16 +742,26 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
 
     // Both aircraft start from the same pose over M01's mapped flat sea, nose
     // 60 degrees down at 60 m/s, so the 400 m probe meets water within its own
-    // length on the first tick: the comparison must run over ticks where the
-    // sweep really answers.
+    // length on the first tick. The runs differ only in what the driver was
+    // handed.
     let (_, centre, top) = above_the_flat_sea(&mut filled);
     let start = Vec3::new(centre.x, top + DIVE_ALTITUDE_M, centre.z + PROBE_BACKOFF_M);
     let nose = dive_nose();
     place(&mut filled, a, start, nose, 60.0);
     place(&mut withheld, b, start, nose, 60.0);
+    let (position, rotation) = pose(&filled, a);
+    let elevation = elev(&filled, a);
+    let dive = probe_in_world(filled.world(), position, rotation, elevation, a)
+        .expect("the dive has a surface to hand the law");
+    assert_eq!(dive.owner, SegmentProbeOwner::World);
+    assert!(
+        (0.0..=elevation).contains(&dive.distance_m),
+        "the hit must lie on the 400 m segment"
+    );
 
     let mut answers = 0;
-    for tick in 0..120 {
+    let mut diverged = false;
+    for _ in 0..3 {
         filled.update();
         withheld.update();
         let pa = (
@@ -764,7 +782,7 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
                 .expect("a body pose")
                 .0,
         );
-        assert_eq!(pa, pb, "tick {tick} differs with the fill on");
+        diverged |= pa != pb;
         if filled
             .world()
             .resource::<GroundBlowProbes>()
@@ -775,9 +793,12 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
         }
     }
     assert!(
-        answers >= 100,
-        "the sweep answered on only {answers} of 120 ticks: the comparison is \
-         vacuous without a hit"
+        answers >= 1,
+        "the sweep answered on no tick: the comparison is vacuous"
+    );
+    assert!(
+        diverged,
+        "withholding the fill's answer changed no tick: the law did not read it"
     );
     // The driver overlay really ran on the production step: every tick the
     // player's law stepped is counted, in both runs.
@@ -787,7 +808,7 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
         .resource::<PlaytestState>()
         .groundblow_probes;
     assert!(
-        filled_applied >= 120,
+        filled_applied >= 3,
         "the driver overlaid the probe on only {filled_applied} ticks"
     );
     assert_eq!(
