@@ -31,6 +31,7 @@ mod catalog;
 mod cues;
 mod evidence;
 mod fidelity;
+mod first_run;
 mod gpu_capture;
 mod navigation;
 mod objective_page;
