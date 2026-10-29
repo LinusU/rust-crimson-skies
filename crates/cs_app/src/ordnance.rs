@@ -935,13 +935,13 @@ pub struct OrdnanceLaunch {
     pub engagement: OrdnanceEngagement,
 }
 
-/// One tangler field the fire path opens on this tick (task #2196).
+/// One tangler field opened by an explicit order on this tick (task #2196).
 ///
-/// The field needs no registered component: what it does is a property of the
-/// record's `TANGLER` key, and [`TanglerFieldDeclaration`] is already that
-/// record's lowered form (task #2185). A record whose *other* values are still
-/// blocked — `wep_12`'s flight effect, `t452_r02.limit.tangler_flight_effect`
-/// — can therefore open its measured field without being registered.
+/// A registered component opens its field itself, from its own launch order
+/// (`OrdnanceSession::register_tangler_field`, task #2186); this order is the
+/// other producer, for a fire path that knows a record's measured field but
+/// does not register the component. Both open the same measured declaration
+/// (task #2185).
 ///
 /// The centre is the fire path's, not the ledger's: see
 /// [`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`].
