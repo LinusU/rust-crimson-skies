@@ -33,7 +33,11 @@
 //! Nothing here owns ordnance state: the in-flight fuse, the guidance
 //! trackers, the status ledger and the nitro ledger are
 //! `cs_sim::weapons::ordnance`'s; these are the conversion and binding
-//! records the ECS wiring consumes (F28-C).
+//! records the ECS wiring consumes (F28-C). The one exception is the measured
+//! tangler field ledger ([`TanglerLedger`], task #2196): its vocabulary is
+//! `cs_content`'s ([`cs_content::ordnance::TanglerFieldDeclaration`]) and
+//! `cs_sim` may not depend on `cs_content`, so the ledger that applies it per
+//! tick lives at this boundary, which sees both.
 //!
 //! [`session_ordnance_audit`] is the one reader that walks a whole live
 //! session at once: it reports, per registered component, which channels reach
@@ -51,7 +55,7 @@ use cs_content::ordnance::{
     DeclaredLostTargetBehavior, DeclaredNitroActivationRule, DeclaredNitroParameters,
     DeclaredNitroRefusedRecovery, DeclaredOrdnance, DeclaredOrdnanceDetails,
     DeclaredOrdnanceFamily, DeclaredProjectile, DeclaredProximityFuse, DeclaredStackLoad,
-    DeclaredStatusEffect,
+    DeclaredStatusEffect, TangleStatus, TanglerFieldDeclaration,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
@@ -812,6 +816,28 @@ pub enum OrdnanceEventKind {
         /// The tick it expired on.
         expired_at: Tick,
     },
+    /// A measured tangler field tangled an actor: the start of one episode.
+    ///
+    /// The measured field re-applies its hit every tick, but a re-hit that only
+    /// raises a live timer is the same continuous status, so it is not
+    /// announced again.
+    TangleStarted {
+        /// The tangled actor.
+        target: ActorId,
+        /// The field that tangled it.
+        field: TanglerFieldId,
+        /// The tick the timer clears on.
+        expires_at: Tick,
+    },
+    /// A tangle timer reached its expiry boundary.
+    TangleExpired {
+        /// The actor that cleared.
+        target: ActorId,
+        /// The field that last applied it.
+        field: TanglerFieldId,
+        /// The tick it cleared on.
+        expired_at: Tick,
+    },
     /// A nitro activation was resolved.
     Nitro {
         /// The actor whose booster ran.
@@ -905,6 +931,27 @@ pub struct OrdnanceLaunch {
     pub engagement: OrdnanceEngagement,
 }
 
+/// One tangler field the fire path opens on this tick (task #2196).
+///
+/// The field needs no registered component: what it does is a property of the
+/// record's `TANGLER` key, and [`TanglerFieldDeclaration`] is already that
+/// record's lowered form (task #2185). A record whose *other* values are still
+/// blocked — `wep_12`'s flight effect, `t452_r02.limit.tangler_flight_effect`
+/// — can therefore open its measured field without being registered.
+///
+/// The centre is the fire path's, not the ledger's: see
+/// [`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TanglerFieldOrder {
+    /// The declaration the record lowered to.
+    pub declaration: TanglerFieldDeclaration,
+    /// The actor whose weapon opened it. It is hit like every other actor
+    /// inside the field.
+    pub owner: ActorId,
+    /// Where the fire path centres it, world metres.
+    pub centre: WorldPosition,
+}
+
 /// One authoritative ordnance command for a tick.
 ///
 /// Orders are the input boundary the cockpit and the AI share; the step
@@ -921,6 +968,12 @@ pub enum OrdnanceOrder {
         /// Whether the control is held this tick.
         requested: bool,
     },
+    /// Open one measured tangler field at fire time.
+    ///
+    /// A replayed order opens a second field: unlike a launch, the order
+    /// carries no once-only request id, because the fire path that produces it
+    /// owns its own ledger.
+    Tangler(TanglerFieldOrder),
 }
 
 /// Why one order was refused, changing no state.
@@ -962,6 +1015,8 @@ pub enum OrdnanceOrderRefusal {
     /// The runtime refused the order: a foreign session, a duplicate item, a
     /// non-finite wind or velocity, or an unknown booster.
     Runtime(OrdnanceRuntimeError),
+    /// The tangler ledger refused the field the order asked to open.
+    Tangler(TanglerFieldRefusal),
 }
 
 impl std::fmt::Display for OrdnanceOrderRefusal {
@@ -985,6 +1040,7 @@ impl std::fmt::Display for OrdnanceOrderRefusal {
                 write!(f, "{shooter}'s {ordnance} stack is spent")
             }
             Self::Runtime(source) => write!(f, "the runtime refused the order: {source}"),
+            Self::Tangler(source) => write!(f, "the tangler ledger refused the order: {source}"),
         }
     }
 }
@@ -1208,6 +1264,19 @@ pub struct OrdnanceSessionTick {
     pub areas_expired: Vec<ExpiredArea>,
     /// The area advance was refused whole.
     pub areas_refused: Option<OrdnanceRuntimeError>,
+    /// Tangler fields that reached their expiry boundary this tick.
+    pub tangler_expired: Vec<ExpiredTanglerField>,
+    /// The tangler fields this tick's orders opened, in order.
+    pub tangler_opened: Vec<TanglerFieldId>,
+    /// One entry per live tangler field this tick, with every victim it
+    /// re-tangled. An empty `applied` list is "nobody was inside".
+    pub tangler: Vec<TanglerFieldTick>,
+    /// Tangle timers that began this tick, one per episode.
+    pub tangles_started: Vec<TangleTransition>,
+    /// Tangle timers that cleared this tick.
+    pub tangles_expired: Vec<ExpiredTangle>,
+    /// The tangler ledger refused this tick's field pass whole.
+    pub tangler_refused: Option<TanglerFieldRefusal>,
     /// One entry per nitro order that reached a registered booster.
     pub nitro: Vec<(ActorId, NitroTick)>,
     /// The network events emitted this tick.
@@ -1300,6 +1369,9 @@ pub struct OrdnanceSession {
     launched_units: BTreeMap<(ActorId, OrdnanceId), u64>,
     effects: Vec<OrdnanceEffect>,
     events: Vec<OrdnanceNetworkEvent>,
+    /// The measured tangler fields and the tangle timers they leave on actors
+    /// (task #2196). Session-confined like every other ledger here.
+    tangler: TanglerLedger,
     resolved_through: Option<Tick>,
     closed: bool,
 }
@@ -1346,6 +1418,7 @@ impl OrdnanceSession {
             launched_units: BTreeMap::new(),
             effects: Vec::new(),
             events: Vec::new(),
+            tangler: TanglerLedger::new(session_id, tick, rate),
             resolved_through: None,
             closed: false,
         })
@@ -1488,6 +1561,46 @@ impl OrdnanceSession {
         status
     }
 
+    /// The tangle timer on one actor, when it is tangled right now.
+    ///
+    /// This is the flight-model consumer of the measured tangler status: the
+    /// original suppresses the force scalar `[ebp-8]` of `0x48fc40` while the
+    /// status is live, and what that scalar *is* stays the named claim
+    /// [`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR).
+    /// The timer is whole simulation ticks, so a consumer never reads a
+    /// render-frame duration.
+    ///
+    /// A closed session has tangled nobody: [`close`](Self::close) rebuilds
+    /// the ledger empty with the runtime.
+    #[must_use]
+    pub fn tangle_status(&self, target: &ActorId) -> Option<TangleState> {
+        self.tangler.tangled(target).copied()
+    }
+
+    /// Whether one actor is tangled right now.
+    #[must_use]
+    pub fn is_tangled(&self, target: &ActorId) -> bool {
+        self.tangle_status(target).is_some()
+    }
+
+    /// Every tangled actor right now, in ascending actor order.
+    #[must_use]
+    pub fn tangled(&self) -> Vec<TangleState> {
+        self.tangler.tangles().copied().collect()
+    }
+
+    /// The open tangler fields, in ascending id order.
+    #[must_use]
+    pub fn tangler_fields(&self) -> Vec<OpenTanglerField> {
+        self.tangler.iter().cloned().collect()
+    }
+
+    /// The tangler ledger, for a consumer that needs the whole of it.
+    #[must_use]
+    pub const fn tangler(&self) -> &TanglerLedger {
+        &self.tangler
+    }
+
     /// Registers one actor's declared loadout.
     ///
     /// This is the stage's *producer* boundary: the components arrive as the
@@ -1624,9 +1737,9 @@ impl OrdnanceSession {
     }
 
     /// Ends the session: every live item and its tracker, the routed ledger,
-    /// the status ledger, the nitro tables and the lowered loadout are
-    /// released, every mirror is despawned, and no further order, step or
-    /// registration is accepted.
+    /// the status ledger, the tangler fields and tangle timers, the nitro
+    /// tables and the lowered loadout are released, every mirror is
+    /// despawned, and no further order, step or registration is accepted.
     ///
     /// The runtime is *dropped and rebuilt empty*, not merely made
     /// unreachable, so an accessor cannot read a stale effect or a spent
@@ -1650,6 +1763,7 @@ impl OrdnanceSession {
             self.rate,
             self.producer,
         );
+        self.tangler = TanglerLedger::new(self.session_id, self.runtime.tick(), self.rate);
         OrdnanceTeardownReport {
             projectiles,
             mirrors,
@@ -1716,6 +1830,605 @@ impl EngineStatus {
     }
 }
 
+// ==================================================== T452-REG-TANGLER-LEDGER ====
+//
+// Task #2196. `docs/findings/2026-10-28-t452-r02-ordnance-effects-fuses-and-swarm.md`
+// §1 (`TANGLER`) measured, statically in the owner-supplied decrypted engine
+// image, what a `TANGLER` record does: at fire time it builds an area field
+// object (`0x4b94e0`) holding the owner, the weapon object and a world
+// position at `+0x08`, the squared radius at `+0x14` and the remaining `TIME`
+// at `+0x18`; the field's tick (`0x4b9590`) subtracts the frame time from
+// `+0x18` and, while that stays positive, walks the actor list and re-applies
+// the weapon's own per-hit routine to every live actor whose squared distance
+// from the field position is below the squared radius
+// (`0x4b95db`–`0x4b961a`), the owner included; at `<= 0` it unlinks and frees
+// itself (`0x4b96f2`–`0x4b9736`). The victim's tangle is the timed status the
+// vocabulary of task #2185 already declares
+// ([`TangleStatus`](cs_content::ordnance::TangleStatus)): a re-hit raises the
+// timer but never shortens it, and the timer counts down to expiry.
+//
+// The pure vocabulary is `cs_content`'s
+// ([`cs_content::ordnance::TanglerFieldDeclaration`], [`TangleStatus`]); it
+// cannot move into `cs_sim`, which must not depend on `cs_content`. So the
+// ledger that *applies* that vocabulary per tick lives here, at the
+// application boundary that sees both, and it owns no pose: the field centre
+// is supplied by the fire path that opens the field, and the victims are the
+// tick's own [`TargetPath`] list, exactly as
+// [`OrdnanceRuntime::open_area`] reads them.
+
+/// Claim: which world position the original's fire path hands the field
+/// constructor `0x4b94e0`.
+///
+/// The finding pins the constructor, the field's own `+0x08` position slot,
+/// its `RADIUS²`/`TIME` slots and its tick, but not which entity's position
+/// the caller passes — the launcher at fire time, the projectile's first
+/// pose, or another point. This ledger therefore takes the centre from its
+/// producer and names the gap rather than choosing one of them.
+pub const T452_REG_TANGLER_FIELD_ORIGIN_CLAIM: &str = "t452_reg.limit.tangler_field_origin";
+
+/// The identity of one open tangler field: a session-qualified, never-recycled
+/// serial, in the shape of [`ProjectileId`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TanglerFieldId {
+    /// The session generation the field belongs to.
+    pub session: u64,
+    /// The field's serial within that session.
+    pub serial: u64,
+}
+
+impl std::fmt::Display for TanglerFieldId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tangler field {}:{}", self.session, self.serial)
+    }
+}
+
+/// One open tangler field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenTanglerField {
+    /// The field's identity.
+    pub instance: TanglerFieldId,
+    /// The record that declared it.
+    pub record: String,
+    /// The actor whose weapon opened it. It is hit like every other actor
+    /// inside; the measured tick excludes nobody.
+    pub owner: ActorId,
+    /// Where it is centred, from the fire path
+    /// ([`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`]).
+    pub centre: WorldPosition,
+    /// Its radius, metres, unsquared.
+    pub radius_m: f64,
+    /// How long it lives, in whole simulation ticks.
+    pub lifetime_ticks: u64,
+    /// The tick it opened on.
+    pub opened_at: Tick,
+    /// The tick it expires on: live at every tick before this one, gone at it,
+    /// the status ledger's boundary rule.
+    pub expires_at: Tick,
+    /// The measured per-victim duration rule it re-applies every tick.
+    pub status: TangleStatus,
+}
+
+impl OpenTanglerField {
+    /// Whether the field is live at `tick`.
+    #[must_use]
+    pub fn is_live_at(&self, tick: Tick) -> bool {
+        tick < self.expires_at
+    }
+
+    /// Whether an actor at squared distance `d2` (square metres) is inside it:
+    /// strictly below `RADIUS²`, as the measured tick compares.
+    #[must_use]
+    pub fn contains_d2(&self, d2: f64) -> bool {
+        d2 < self.radius_m * self.radius_m
+    }
+}
+
+/// The tangle one actor is under right now.
+///
+/// This is the state the flight model reads: the measured fact is that the
+/// original suppresses the force scalar `[ebp-8]` of `0x48fc40` while the
+/// status is live, and what that scalar *is* stays the named claim
+/// [`T452_REG_TANGLER_FORCE_SCALAR`](cs_content::ordnance::T452_REG_TANGLER_FORCE_SCALAR).
+/// Nothing here decides a flight-model meaning beyond the timer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TangleState {
+    /// The tangled actor.
+    pub target: ActorId,
+    /// Whole ticks left before it clears, as of the ledger's tick. Both the
+    /// field-expiry advance and the application pass refresh it, so a consumer
+    /// never reads a value older than the last tick the ledger resolved.
+    pub remaining_ticks: u64,
+    /// The longest single hit duration this tangle has been given. A re-hit
+    /// raises the timer toward it; it never shortens it.
+    pub duration_ticks: u64,
+    /// The tick it clears on.
+    pub expires_at: Tick,
+    /// The tick it was last (re-)applied on.
+    pub applied_at: Tick,
+    /// The field that last applied it.
+    pub field: TanglerFieldId,
+}
+
+/// One field's tangle of one victim on one tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TangleApplication {
+    /// The tangled actor.
+    pub target: ActorId,
+    /// Its squared distance from the field centre, square metres: the value
+    /// the measured duration formula divides.
+    pub distance_squared: f64,
+    /// The duration this hit gave, whole ticks.
+    pub duration_ticks: u64,
+    /// The timer after the raise, whole ticks.
+    pub remaining_ticks: u64,
+    /// The tick the timer now clears on.
+    pub expires_at: Tick,
+}
+
+/// One live field's application pass on one tick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TanglerFieldTick {
+    /// The field.
+    pub field: TanglerFieldId,
+    /// Every victim it tangled this tick, in ascending actor order. Empty is
+    /// "nobody was inside", which is a miss and not a silent pass.
+    pub applied: Vec<TangleApplication>,
+}
+
+/// A tangle timer that started.
+///
+/// One event per episode, not one per re-application: a re-hit that only raises
+/// a live timer is the same continuous status, so it changes no transition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TangleTransition {
+    /// The actor that became tangled.
+    pub target: ActorId,
+    /// The field that tangled it.
+    pub field: TanglerFieldId,
+    /// The tick the timer clears on.
+    pub expires_at: Tick,
+}
+
+/// One tick's tangler result: what each live field applied, the tangles that
+/// began and the ones that cleared.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TanglerTick {
+    /// One entry per live field, in ascending field id order.
+    pub passes: Vec<TanglerFieldTick>,
+    /// Tangles that began this tick.
+    pub started: Vec<TangleTransition>,
+    /// Tangle timers that cleared this tick.
+    pub expired: Vec<ExpiredTangle>,
+}
+
+/// A tangler field that reached its expiry boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpiredTanglerField {
+    /// The field.
+    pub instance: TanglerFieldId,
+    /// The record that declared it.
+    pub record: String,
+    /// The tick it expired on.
+    pub expired_at: Tick,
+}
+
+/// A tangle timer that cleared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExpiredTangle {
+    /// The actor that cleared.
+    pub target: ActorId,
+    /// The field that last applied it.
+    pub field: TanglerFieldId,
+    /// The tick it cleared on.
+    pub expired_at: Tick,
+    /// The longest single hit duration it had been given.
+    pub duration_ticks: u64,
+}
+
+/// Why the tangler ledger refused a call.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TanglerFieldRefusal {
+    /// The call named another session generation.
+    ForeignSession {
+        /// The ledger's generation.
+        expected: u64,
+        /// The generation the call named.
+        found: u64,
+    },
+    /// The tick went backwards.
+    NonMonotonicTick {
+        /// The ledger's tick.
+        at: Tick,
+        /// The tick the call named.
+        found: Tick,
+    },
+    /// The declaration's `TIME` covers no whole tick.
+    NonPositiveLifetime {
+        /// The declared lifetime, seconds.
+        seconds: f64,
+    },
+    /// The declaration's radius is not a finite positive length.
+    NonFiniteRadius {
+        /// The declared radius, metres.
+        metres: f64,
+    },
+    /// A victim's position was not finite.
+    NonFinitePosition {
+        /// The victim whose position could not be used.
+        target: ActorId,
+    },
+}
+
+impl std::fmt::Display for TanglerFieldRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ForeignSession { expected, found } => {
+                write!(f, "session {found} is not this ledger's session {expected}")
+            }
+            Self::NonMonotonicTick { at, found } => {
+                write!(f, "tick {found:?} is before the ledger's tick {at:?}")
+            }
+            Self::NonPositiveLifetime { seconds } => {
+                write!(f, "a field lifetime of {seconds} s covers no whole tick")
+            }
+            Self::NonFiniteRadius { metres } => {
+                write!(f, "a field radius of {metres} m is not a positive length")
+            }
+            Self::NonFinitePosition { target } => {
+                write!(f, "{target}'s position is not finite")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TanglerFieldRefusal {}
+
+/// The session's open tangler fields and the tangle timers they leave behind.
+///
+/// Every field is **bounded**: it carries an expiry tick of
+/// `opened_at + lifetime_ticks`, [`advance_to`](Self::advance_to) removes
+/// exactly the fields whose boundary was reached and reports each once, and
+/// the ledger is confined to one session generation, so a restarted session (a
+/// new ledger) inherits nothing. A tangle outlives the field that applied it:
+/// it is the victim's own timer and counts down on its own expiry tick.
+#[derive(Clone, Debug)]
+pub struct TanglerLedger {
+    session: SessionId,
+    tick: Tick,
+    rate: TickRate,
+    next_serial: u64,
+    fields: BTreeMap<TanglerFieldId, OpenTanglerField>,
+    tangles: BTreeMap<ActorId, TangleState>,
+}
+
+impl TanglerLedger {
+    /// Opens an empty ledger for one session generation, positioned at `tick`.
+    #[must_use]
+    pub fn new(session: SessionId, tick: Tick, rate: TickRate) -> Self {
+        Self {
+            session,
+            tick,
+            rate,
+            next_serial: 0,
+            fields: BTreeMap::new(),
+            tangles: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this ledger is confined to.
+    #[must_use]
+    pub const fn session(&self) -> SessionId {
+        self.session
+    }
+
+    /// The tick the ledger is positioned at.
+    #[must_use]
+    pub const fn tick(&self) -> Tick {
+        self.tick
+    }
+
+    /// The declared tick rate whole-tick durations are converted with.
+    #[must_use]
+    pub const fn rate(&self) -> TickRate {
+        self.rate
+    }
+
+    /// How many fields are open.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether no field is open.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// One open field by id.
+    #[must_use]
+    pub fn get(&self, instance: &TanglerFieldId) -> Option<&OpenTanglerField> {
+        self.fields.get(instance)
+    }
+
+    /// Every open field, in ascending id order.
+    pub fn iter(&self) -> impl Iterator<Item = &OpenTanglerField> {
+        self.fields.values()
+    }
+
+    /// The tangle timer on one actor, when it is tangled at the ledger's tick.
+    #[must_use]
+    pub fn tangled(&self, target: &ActorId) -> Option<&TangleState> {
+        self.tangles
+            .get(target)
+            .filter(|state| state.expires_at > self.tick)
+    }
+
+    /// Every tangle timer, in ascending actor order.
+    pub fn tangles(&self) -> impl Iterator<Item = &TangleState> {
+        self.tangles
+            .values()
+            .filter(|state| state.expires_at > self.tick)
+    }
+
+    /// Opens one field from a declaration the fire path already lowered.
+    ///
+    /// The centre is the caller's, not a default and not derived from a pose
+    /// the ledger does not own ([`T452_REG_TANGLER_FIELD_ORIGIN_CLAIM`]).
+    /// The lifetime is the declaration's `TIME` in whole ticks, rounded up as
+    /// the original's step is (`seconds_to_ticks`).
+    ///
+    /// # Errors
+    ///
+    /// [`TanglerFieldRefusal::ForeignSession`] for another generation,
+    /// [`TanglerFieldRefusal::NonMonotonicTick`] for a tick before the
+    /// ledger's, or [`TanglerFieldRefusal::NonPositiveLifetime`] /
+    /// [`TanglerFieldRefusal::NonFiniteRadius`] for a declaration with no
+    /// positive finite lifetime or radius.
+    pub fn open(
+        &mut self,
+        session: SessionId,
+        tick: Tick,
+        order: &TanglerFieldOrder,
+    ) -> Result<TanglerFieldId, TanglerFieldRefusal> {
+        self.check(session, tick)?;
+        if order.owner.session != self.session {
+            return Err(TanglerFieldRefusal::ForeignSession {
+                expected: self.session.get(),
+                found: order.owner.session.get(),
+            });
+        }
+        let declaration = &order.declaration;
+        if !declaration.radius_m.is_finite() || declaration.radius_m <= 0.0 {
+            return Err(TanglerFieldRefusal::NonFiniteRadius {
+                metres: declaration.radius_m,
+            });
+        }
+        if !declaration.lifetime_s.is_finite() || declaration.lifetime_s <= 0.0 {
+            return Err(TanglerFieldRefusal::NonPositiveLifetime {
+                seconds: declaration.lifetime_s,
+            });
+        }
+        let lifetime_ticks = seconds_to_ticks(declaration.lifetime_s, self.rate.ticks_per_second());
+        let instance = TanglerFieldId {
+            session: self.session.get(),
+            serial: self.next_serial,
+        };
+        self.next_serial += 1;
+        self.fields.insert(
+            instance,
+            OpenTanglerField {
+                instance,
+                record: declaration.record.clone(),
+                owner: order.owner,
+                centre: order.centre,
+                radius_m: declaration.radius_m,
+                lifetime_ticks,
+                opened_at: tick,
+                expires_at: Tick(tick.0 + lifetime_ticks),
+                status: declaration.status.clone(),
+            },
+        );
+        Ok(instance)
+    }
+
+    /// Advances the ledger to `tick` and reports every field that reached its
+    /// expiry boundary, each exactly once, boundary tick first then id.
+    ///
+    /// # Errors
+    ///
+    /// [`TanglerFieldRefusal::ForeignSession`] or
+    /// [`TanglerFieldRefusal::NonMonotonicTick`].
+    pub fn advance_to(
+        &mut self,
+        session: SessionId,
+        tick: Tick,
+    ) -> Result<Vec<ExpiredTanglerField>, TanglerFieldRefusal> {
+        self.check(session, tick)?;
+        let mut expired = Vec::new();
+        self.fields.retain(|instance, field| {
+            if field.is_live_at(tick) {
+                return true;
+            }
+            expired.push(ExpiredTanglerField {
+                instance: *instance,
+                record: field.record.clone(),
+                expired_at: field.expires_at,
+            });
+            false
+        });
+        expired.sort_by(|a, b| {
+            a.expired_at
+                .cmp(&b.expired_at)
+                .then(a.instance.cmp(&b.instance))
+        });
+        self.tick = tick;
+        for state in self.tangles.values_mut() {
+            state.remaining_ticks = state.expires_at.0.saturating_sub(tick.0);
+        }
+        Ok(expired)
+    }
+
+    /// Runs one tick's application pass: every live field re-applies its tangle
+    /// to every supplied actor inside its radius, then the tangle timers that
+    /// reached their boundary are reported and cleared.
+    ///
+    /// `targets` is the same [`TargetPath`] list the proximity fuse and the
+    /// area pass read, so the pass adds no input and owns no pose. One victim
+    /// is tangled once per field per tick (a repeated path is read once, at its
+    /// first position), in ascending actor order. The field's owner is not
+    /// excluded: an owner the caller lists is tangled like any other actor.
+    ///
+    /// The order is deliberate. Applying before expiring means a victim still
+    /// inside a live field is re-tangled on the tick its timer would otherwise
+    /// clear, which is exactly the measured re-hit rule ("raise to max, never
+    /// shorten"); an actor that has left every field is reported expired once,
+    /// on its own boundary tick.
+    ///
+    /// # Errors
+    ///
+    /// [`TanglerFieldRefusal::ForeignSession`] for another generation or a
+    /// victim from one, [`TanglerFieldRefusal::NonMonotonicTick`] for a tick
+    /// before the ledger's, or [`TanglerFieldRefusal::NonFinitePosition`] for
+    /// a victim whose squared distance is not finite.
+    pub fn apply(
+        &mut self,
+        session: SessionId,
+        tick: Tick,
+        targets: &[TargetPath],
+    ) -> Result<TanglerTick, TanglerFieldRefusal> {
+        self.check(session, tick)?;
+        let mut victims: BTreeMap<ActorId, WorldPosition> = BTreeMap::new();
+        for path in targets {
+            if path.actor().session != self.session {
+                return Err(TanglerFieldRefusal::ForeignSession {
+                    expected: self.session.get(),
+                    found: path.actor().session.get(),
+                });
+            }
+            victims.entry(path.actor()).or_insert(path.current());
+        }
+
+        // Read the fields out before the pass so the tangle map can be written
+        // while each field's radius and rule are still borrowed.
+        let fields: Vec<OpenTanglerField> = self.fields.values().cloned().collect();
+        // Validate every distance first: a refusal below must change nothing,
+        // so nothing is written until each pair is known to be finite.
+        for field in &fields {
+            for (target, position) in &victims {
+                if !squared_distance(field, *position).is_finite() {
+                    return Err(TanglerFieldRefusal::NonFinitePosition { target: *target });
+                }
+            }
+        }
+        let mut passes = Vec::with_capacity(fields.len());
+        let mut started = Vec::new();
+        for field in &fields {
+            let mut applied = Vec::new();
+            for (target, position) in &victims {
+                let d2 = squared_distance(field, *position);
+                if !field.contains_d2(d2) {
+                    continue;
+                }
+                let duration_ticks =
+                    seconds_to_ticks(field.status.duration_for(d2), self.rate.ticks_per_second());
+                let raised = Tick(tick.0 + duration_ticks);
+                let current = self
+                    .tangles
+                    .get(target)
+                    .filter(|state| state.expires_at > tick);
+                let expires_at = current.map_or(raised, |state| state.expires_at.max(raised));
+                let ceiling = current.map_or(duration_ticks, |state| {
+                    state.duration_ticks.max(duration_ticks)
+                });
+                if current.is_none() {
+                    started.push(TangleTransition {
+                        target: *target,
+                        field: field.instance,
+                        expires_at,
+                    });
+                }
+                let state = TangleState {
+                    target: *target,
+                    remaining_ticks: expires_at.0 - tick.0,
+                    duration_ticks: ceiling,
+                    expires_at,
+                    applied_at: tick,
+                    field: field.instance,
+                };
+                self.tangles.insert(*target, state);
+                applied.push(TangleApplication {
+                    target: *target,
+                    distance_squared: d2,
+                    duration_ticks,
+                    remaining_ticks: state.remaining_ticks,
+                    expires_at,
+                });
+            }
+            passes.push(TanglerFieldTick {
+                field: field.instance,
+                applied,
+            });
+        }
+
+        let mut expired = Vec::new();
+        for state in self.tangles.values_mut() {
+            // The timer is read at the ledger's tick, so an actor that no
+            // field re-applied still reports the ticks it has left.
+            state.remaining_ticks = state.expires_at.0.saturating_sub(tick.0);
+        }
+        self.tangles.retain(|_, state| {
+            if state.expires_at > tick {
+                return true;
+            }
+            expired.push(ExpiredTangle {
+                target: state.target,
+                field: state.field,
+                expired_at: state.expires_at,
+                duration_ticks: state.duration_ticks,
+            });
+            false
+        });
+        expired.sort_by(|a, b| {
+            a.expired_at
+                .cmp(&b.expired_at)
+                .then(a.target.cmp(&b.target))
+        });
+        self.tick = tick;
+        Ok(TanglerTick {
+            passes,
+            started,
+            expired,
+        })
+    }
+
+    fn check(&self, session: SessionId, tick: Tick) -> Result<(), TanglerFieldRefusal> {
+        if session != self.session {
+            return Err(TanglerFieldRefusal::ForeignSession {
+                expected: self.session.get(),
+                found: session.get(),
+            });
+        }
+        if tick < self.tick {
+            return Err(TanglerFieldRefusal::NonMonotonicTick {
+                at: self.tick,
+                found: tick,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The squared distance from a field's centre to `position`, square metres:
+/// the value the measured duration formula divides and the containment test
+/// compares with `RADIUS²`.
+fn squared_distance(field: &OpenTanglerField, position: WorldPosition) -> f64 {
+    let dx = position.x() - field.centre.x();
+    let dy = position.y() - field.centre.y();
+    let dz = position.z() - field.centre.z();
+    dx * dx + dy * dy + dz * dz
+}
+
 // -------------------------------------------------------------------- step ---
 
 /// Runs one tick of the ordnance path: launch from live poses, guidance,
@@ -1737,7 +2450,8 @@ impl EngineStatus {
 ///
 /// # Ordering
 ///
-/// Status expiry, then orders, then guidance, then motion, then the fuse
+/// Status expiry, then areas, then tangler fields, then orders, then the
+/// tangler application pass, then guidance, then motion, then the fuse
 /// decisions, then the mirror pass. An item launched on this tick is moved by
 /// the same step, and an item that triggers on this tick applies its effects
 /// on this tick — before the next advance retires it. A guided item that loses
@@ -1788,6 +2502,14 @@ pub fn step_ordnance_session(
     match session.runtime.advance_areas(session.session_id, step.at) {
         Ok(expired) => tick.areas_expired = expired,
         Err(source) => tick.areas_refused = Some(source),
+    }
+
+    // Tangler fields expire on that same rule too, before this tick's orders
+    // can open new ones. A field opened at tick T with a `TIME` of N ticks is
+    // live at T..T+N-1 and reported here at T+N, so it applies exactly N times.
+    match session.tangler.advance_to(session.session_id, step.at) {
+        Ok(expired) => tick.tangler_expired = expired,
+        Err(source) => tick.tangler_refused = Some(source),
     }
 
     // One launcher read per actor per tick, shared by every launch order that
@@ -1957,7 +2679,73 @@ pub fn step_ordnance_session(
                         .push(OrdnanceOrderRefusal::Runtime(source)),
                 }
             }
+            OrdnanceOrder::Tangler(order) => {
+                if order.owner.session.get() != session.session {
+                    tick.orders_refused.push(OrdnanceOrderRefusal::Runtime(
+                        OrdnanceRuntimeError::ForeignSession {
+                            expected: session.session,
+                            found: order.owner.session.get(),
+                        },
+                    ));
+                    continue;
+                }
+                match session.tangler.open(session.session_id, step.at, order) {
+                    Ok(field) => tick.tangler_opened.push(field),
+                    Err(source) => tick
+                        .orders_refused
+                        .push(OrdnanceOrderRefusal::Tangler(source)),
+                }
+            }
         }
+    }
+
+    // The tangler pass runs after the orders so a field opened at fire time on
+    // this tick applies on this tick, and it reads the same `TargetPath` list
+    // the proximity fuse and the area pass read, so it adds no input. Its own
+    // `apply` expires the tangle timers after applying, so a victim still
+    // inside a live field is re-tangled rather than reported expired. Only a
+    // transition is announced — a tangle beginning or clearing — never the
+    // per-tick re-application the measured field performs.
+    match session
+        .tangler
+        .apply(session.session_id, step.at, step.targets)
+    {
+        Ok(outcome) => {
+            for transition in &outcome.started {
+                let event = push_network_event(
+                    &mut session.events,
+                    &mut session.next_event_sequence,
+                    session.session_id,
+                    step.at,
+                    session.producer,
+                    OrdnanceEventKind::TangleStarted {
+                        target: transition.target,
+                        field: transition.field,
+                        expires_at: transition.expires_at,
+                    },
+                );
+                tick.events.push(event);
+            }
+            for expired in &outcome.expired {
+                let event = push_network_event(
+                    &mut session.events,
+                    &mut session.next_event_sequence,
+                    session.session_id,
+                    step.at,
+                    session.producer,
+                    OrdnanceEventKind::TangleExpired {
+                        target: expired.target,
+                        field: expired.field,
+                        expired_at: expired.expired_at,
+                    },
+                );
+                tick.events.push(event);
+            }
+            tick.tangler = outcome.passes;
+            tick.tangles_started = outcome.started;
+            tick.tangles_expired = outcome.expired;
+        }
+        Err(source) => tick.tangler_refused = Some(source),
     }
 
     session.runtime.retarget_marker_seekers(session.session_id);

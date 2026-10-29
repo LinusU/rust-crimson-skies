@@ -303,6 +303,7 @@ mod accept_t452_instant;
 mod accept_t452_ordnance_catalogue;
 mod accept_t452_register;
 mod accept_t452_silent_expiry;
+mod accept_t452_tangler_ledger;
 mod accept_t457_loop_route_ecs_binding;
 mod accept_t526_lateral_rejoin;
 mod accept_t533_flythrough_label_rule;
