@@ -93,6 +93,13 @@
 //!   state (`[0x62cb50]`, the list at `0xa070a8`) whose value at ground-blow
 //!   time is unmeasured (§6 of the class-type finding); the port has no
 //!   equivalent list, so it cannot apply it without guessing.
+//! * **The 32-contact abort (`0x4c9a9d`) is not reproduced.** The original
+//!   aborts the whole query — and reports no contact — when a 33rd record would
+//!   be appended; this sweep keeps the nearest contact instead. Reproducing it
+//!   now would be wrong rather than faithful: the abort counts the original's
+//!   *stored polygons*, while the port's face count is triangles (the gap
+//!   above), so a quad-heavy mesh would abort here where the original would
+//!   not. Recorded with the polygon gap (#2217).
 
 use avian3d::parry::query::{Ray, RayCast};
 use avian3d::prelude::{Collider, Position, Rotation};
