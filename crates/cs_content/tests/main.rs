@@ -89,6 +89,7 @@ mod accept_f64_b_blueprint_import;
 mod accept_f64_b_retail_import_surface;
 mod accept_flight_ai_parameter_randomisation;
 mod accept_flight_original_retail;
+mod accept_groundblow_class;
 mod accept_groundblow_normal_scale;
 mod accept_groundblow_probe;
 mod accept_groundblow_sweep;
