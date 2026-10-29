@@ -5652,6 +5652,9 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
         // `t452_reg.limit.tangler_force_scalar_meaning` is resolved (task #2179:
         // the scalar is the force block's thrust magnitude) and no record keeps
         // it any more, so it needs no kept-claim context.
+        // The runtime opened the field (T452-REG-TANGLER-RUNTIME, done) but did
+        // not measure which position the original's fire path hands it, so the
+        // open owner is the measurement task, not the runtime it follows.
         T452_REG_TANGLER_FIELD_ORIGIN_CLAIM => (
             "which world position the original's fire path hands the field constructor \
              0x4b94e0: measured as the projectile's position at its burst (rocket+0x48), \

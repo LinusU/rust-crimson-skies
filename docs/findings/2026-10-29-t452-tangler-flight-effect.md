@@ -109,7 +109,9 @@ drives the production path:
 * `t452_r02.limit.tangler_flight_effect` stays resolved by #2186; this stage is
   the flight-model half of the expression it announced.
 * `t452_reg.limit.tangler_field_origin` still stays named: which world position
-  the original's fire path hands `0x4b94e0` is not measured.
+  the original's fire path hands `0x4b94e0` is not measured. Its kept-claim
+  context names its open owner `T452-REG-TANGLER-ORIGIN` (#2201), not the
+  completed runtime task that opened the field.
 * The AI decision path at `0x4202e3` still stays named (what it skips at
   `0x420695`), as does which per-actor update counts the timer down for which
   actor kind.
@@ -119,7 +121,9 @@ The three committed acceptance reports of the earlier T452 stages
 `T452-REG-SILENT-EXPIRY.json`, `T452-RUNTIME-REGISTER.json`) name the scalar
 claim in their `unknowns` lists as of their own runs; those copies are records
 of those runs and are not edited by hand. A regeneration of each harness drops
-the entry, because the registration report no longer keeps the claim.
+the `unknowns` entry, because the registration report no longer keeps the
+claim; their harness method texts still describe the stage as of its own run
+and are left as those stages' records.
 
 ## Not claimed
 
