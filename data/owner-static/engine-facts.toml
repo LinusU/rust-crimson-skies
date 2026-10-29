@@ -8349,7 +8349,7 @@ name = "tangler_origin.hook_site"
 va = 0x005ac7c3
 bytes = "8b7424408b860c0200003bc18b7c2448740c575556ffd0"
 fact = "the hook is invoked only from the impact/burst function 0x5ac7a0(weapon, record, rocket, override): esi=weapon, edi=rocket, push edi/ebp/esi then call [weapon+0x20c] (0x5ac7c7..0x5ac7d8), so the field is created when a projectile bursts or impacts, not when the launcher fires"
-=======
+
 [[tangler_fact]]
 claim = "OWNER-STATIC-2026-10-29"
 provenance = "static"
@@ -8365,4 +8365,3 @@ name = "tangler.thrust_vector"
 va = 0x0048fe91
 bytes = "d945f88d4de8d9e0894d0cd9c0d88e98010000"
 fact = "the only use of the scalar after the tangle branch is the thrust term: 0x48fe91 loads [ebp-8], negates it (0x48fe97), and multiplies it by the actor's +0x198/+0x19c/+0x1a0 (0x48fe9e, 0x48fea9, 0x48feb2) into the force vector, so a zero scalar means the thrust force contribution '-[ebp-8] * body Z' is exactly zero while lift, drag, gravity and the control torque keep their own stores"
->>>>>>> f75286f26 (Measure that the tangle's force scalar is the force block's thrust)
