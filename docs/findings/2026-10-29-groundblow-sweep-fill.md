@@ -28,7 +28,10 @@ tests against `$CS_GAME_DIR`, and are values of this port, not of the original.
    cliffs (#1814), plus every body on the `CollisionLayer::Aircraft` layer but
    the prober. `owner_of` states the resolution: scenery and sea are
    `SegmentProbeOwner::World`, an aircraft body is
-   `SegmentProbeOwner::Vehicle { on_path: false }`, the prober is not tested.
+   `SegmentProbeOwner::Vehicle { on_path }` — since #2215 the flag is read
+   from the entity's `ScriptedAircraftActor`, which the spawn resolves from
+   the record's taxi-path field and the mission's `*_aipath` table — the
+   prober is not tested.
 3. **The record's conventions** are produced as the decode measures them:
    * the normal is the hit face's **unnormalised** edge cross product — for a
      triangle the collider's own three vertices (`|N| = 2 * area`), for a
@@ -98,7 +101,7 @@ Each of these is visible to #2107 and is recorded rather than approximated:
 | the stored polygon's two-sided bit (`(vertex_info >> 10) & 1`, pushed as the face test's `flag` at `0x55cc73`) | the port's collision view is a triangle soup and drops the stored flag word | a two-sided stored outline hit from its back side is reported here as no contact where the original keeps it. C3's measured water and island polygons are one-sided; no count for the rest is committed |
 | a quad's parallelogram area | the same popup: the port has triangles, the original takes the stored polygon's first three corners | on a stored quad the port reports `2 * triangle area` where the original reports the quad's parallelogram: `sqrt(1/2)` on the probe's `sqrt(dot)` for those faces |
 | an aircraft's mesh | the port's player aircraft body carries the designed 12 x 2 x 10 m box (an AI aircraft 12 x 4 x 12), not the airframe's mesh nodes | an aircraft hit follows the measured box rule, not the mesh's triangles |
-| the vehicle's `+0xcc` taxi-path byte | the plane record's `+0x11c` path branch (`0x47c568`) is not imported, and no component carries it | every port vehicle states `on_path: false`; a parked aircraft the original would count as ground is discarded by the player's gate |
+| the vehicle's taxi *behaviour* | #2215 imported the `+0xcc` byte (`ScriptedAircraftActor::on_path`, resolved through `MissionTaxiPaths` from the record's field-40 name and the `*_aipath` node's `*_aipN` point count), not the path's points or the first-point placement | a parked aircraft's flag now follows the data — `true` where its record names a two-or-more-point path, `false` otherwise (all of M01's own records carry none); the aircraft still does not taxi to or along the path |
 | props, turrets, ground targets | they are not `PlaytestSea`/`WorldSceneryCollider`; the owner's scope for this stage is the scenery and the live aircraft | the original sweeps those nodes too (its polygon census names `gun`, `turret` and `hull` faces), so a dive at a turret finds nothing here |
 | the layer filter `0x56c430(node+0x30)` and the query thresholds `0x71e8ac`/`0x71e8b0` | runtime state whose value at ground-blow time is unmeasured (#2213 §6) | the port applies none of them |
 | the 32-contact abort (`0x4c9a9d`) | the abort counts the original's *stored polygons*; the port's faces are triangles (the quad gap above), so reproducing it now would abort earlier than the original | a segment crossing 33+ port triangles still reports its nearest contact where the original would report none. Recorded with #2217 |
@@ -122,7 +125,9 @@ Prefix `accept_groundblow_fill_`,
 * `accept_groundblow_fill_population_is_the_marked_colliders` — a bare world
   with a `PlaytestSea` quad and an `Aircraft`-layer box: the sea answers as
   `World` at its own surface, the box as `Vehicle { on_path: false }` at its
-  `+Z` face with `|N| = 24` (12 x 2), and the prober never hits its own box.
+  `+Z` face with `|N| = 24` (12 x 2) — the body carries no scripted actor,
+  so the loader's default `0` is what resolves — and the prober never hits
+  its own box.
 * `accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prober`
   — the same box record through `nearest_contact`, with `owner_of`'s refusals
   for debris and for a sea-marked prober.
