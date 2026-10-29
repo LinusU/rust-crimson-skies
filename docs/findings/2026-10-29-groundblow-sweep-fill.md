@@ -162,32 +162,37 @@ On the task branch, after the change (exit codes as observed):
 ```sh
 cargo fmt --all -- --check                                            # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
-cargo test --locked -p cs_app                                         # exit 0 (277 + 1290 + 336 + 813 + 10 + 1 passed, 0 failed)
-cargo test --locked -p cs_app --test cs_app_tests_d -- accept_groundblow_fill_   # exit 0, 6 passed, 2 ignored
+cargo test --locked -p cs_app                                         # exit 0 (277 + 1291 + 336 + 815 + 517 + 10 + 1 passed, 0 failed)
+cargo test --locked -p cs_app --test cs_app_tests_d -- accept_groundblow_fill_   # exit 0, 7 passed, 2 ignored
 cargo test --locked -p cs_app --test cs_app_tests_d -- accept_groundblow_fill_ --include-ignored
-#   exit 0: 8 discovered, 8 passed (the two retail members compose M01; ~8 min)
+#   exit 0: 9 discovered, 9 passed (the two retail members compose M01; ~9 min)
 ```
+
+The review pass (`deepseek-1`, fresh context, same agent instance — not an
+independent model) added the overlay seam and its test and moved the retail
+dive onto the tile's world pose; it re-ran the four checks above on the rebased
+head and the smoke below.
 
 The owner-command smoke (`docs/PLAYTEST.md`) on a release build of this
 branch's head, with M01 composed from `$CS_GAME_DIR`:
 
 ```sh
-cargo build --release -p cs_app --bin cs                             # exit 0
-./target/release/cs --profile-dir private/evidence/2214-smoke/profile \
+cargo build --release --locked -p cs_app --bin cs          # exit 0
+./target/release/cs --profile-dir private/evidence/2214-review-smoke/profile \
   --cs-path "$CS_GAME_DIR" --mission M01 --smoke-seconds 45 \
-  --capture-dir private/evidence/2214-smoke/run2                     # exit 0
+  --capture-dir private/evidence/2214-review-smoke/run2    # exit 0
 #   "mission smoke: M01 — 81 checks, 0 failed, framebuffers 79 in
-#    private/evidence/2214-smoke/run2"
+#    private/evidence/2214-review-smoke/run2"
 #   "mission smoke: 4128 frames, 8082 ticks, 81 checks, failures: none"
 ```
 
 The retained frames are the smoke's own scene shots (for example
 `frame_02342_scene_39s.png`: the zeppelin, its boats, the sea and the sky).
 `private/` is Git-ignored, so they are owner-visible evidence, not committed
-bytes. **The same command without `--profile-dir` exits 1 after the 81 checks
-pass**, on `cs: accessibility settings: the change is live but could not be
-saved: No such file or directory` — the default user-data directory does not
-exist on this host; filed as #2219.
+bytes. Before #2219 landed the same command without `--profile-dir` exited 1
+after the 81 checks passed (the default user-data directory did not exist on
+this host); on the rebased head the smoke exits 0 (the first run of this
+command on the branch, taken before that merge, exited 1 on the settings save).
 
 `cargo test --workspace --locked` was not run locally: CI runs the full suite
 on the pushed commit (AGENTS.md). The only crate this branch changes is
