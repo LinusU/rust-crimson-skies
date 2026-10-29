@@ -78,7 +78,7 @@ So even a complete, exact query could not be wired from the owner paths this
 task lists. The seam's `segment_probe` field is carried by
 `PlaytestOriginalFlight::input()` as `None` (the one line this task added
 there, because the struct's field list is exhaustive), with a comment naming
-#2107.
+the completing query (#2214) and the consumer (#2107).
 
 ## 4. What the follow-up needs
 
@@ -102,3 +102,14 @@ A task that fills the probe needs, in one place:
 
 Until then `OriginalInput::segment_probe` stays `None` in every production
 path, which is what makes the owner smoke unchanged by this task.
+
+## 5. Owner decision, 2026-10-29 (post-block)
+
+The owner retitled this task to items 1 and 2 only and moved item 3 out of it:
+#2214 (`GROUNDBLOW-SWEEP-FILL`) owns building the sweep and filling
+`segment_probe` at the playtest flight step, with owner paths
+`crates/cs_app/src/playtest/mod.rs`, `crates/cs_app/src/playtest/scene.rs` and
+a new `crates/cs_app/src/playtest/world_sweep.rs` — the site §3 derives. The
+class-type predicate of §4.3 got its own measurement task, #2213
+(`GROUNDBLOW-CLASS-TYPE`), which #2214 waits on. This branch therefore lands
+the globals and the seam only, exactly as §1 lists them.

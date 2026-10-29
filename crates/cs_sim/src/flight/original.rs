@@ -694,7 +694,7 @@ pub struct OriginalInput {
     /// along the body's backward axis (`-V[+0x198]`) and reads the nearest
     /// contact of the world sweep `0x4c8ec0`. That query needs the world
     /// database's nodes, which this law does not have; the frame's caller
-    /// fills this from the session's own physics world (task #2210's seam).
+    /// fills this from the session's own physics world (#2214 fills it).
     ///
     /// **Nothing in this law reads it yet.** The force block that consumes it
     /// is #2107, so a filled probe changes no trajectory today.
