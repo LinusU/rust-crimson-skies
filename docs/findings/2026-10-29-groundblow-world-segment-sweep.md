@@ -9,13 +9,20 @@ offset + `0x400000` below VA `0x643000`) was disassembled with
 `llvm-objdump -d -M intel` and Capstone 5.0.7 into `private/`. **The original
 executable was not run**: every claim is `static` (claim id
 `OWNER-STATIC-2026-10-29`), nothing is `verified_original`. Implementer:
-`deepseek-1`; no independent review yet.
+`deepseek-1`; reviewed by `deepseek-1` in a fresh pass that re-disassembled
+every claim below and corrected the `VehicleList` state-restore writes, the
+probe's axis construction and the Rust collider inventory (same agent instance,
+so this is **not** independent review).
 
 Read first, as the task asked: `2026-10-25-force-block-reread.md` section 4.1,
 `2026-10-21-m01-contact-response-static-locate.md` (e), #2107's block reason and
-`2026-10-22-m01-sea-contact.md`. #2208 (the hit record's position field) has
-**not** landed, so the record layout below is measured here from its writers and
-its two consumers rather than taken from #2208.
+`2026-10-22-m01-sea-contact.md`. #2208 (the hit record's position field, landed
+as `2026-10-29-hit-record-contact-point.md` after this measurement started)
+agrees with the layout below on the `0x2c` stride, `+0xc` = the segment∩face
+point, `+0x1c` = the distance sort, `+0x24` = the node and `+0x28` = the
+node's `+0x40` surface row; it also measured `+0x20`, which is the hit face's
+**surface object** (`0x55c9c0` writes it at `0x55cdce`, a box hit stores 0 at
+`0x55d27f`) rather than a face selector — that correction is taken here.
 
 The cited bytes are the machine-readable block at the end;
 `accept_groundblow_sweep_*` re-reads every row from the image, and the same rows
@@ -32,10 +39,13 @@ are committed as `[[groundblow_sweep_fact]]` in
    node's **current** transform. A node is tested only when its flag word
    `node+0x24` carries **both** `0x04` and `0x10` (plus the layer filter
    `0x56c430` and the caller's node-flag mask `0x71e8b4`, which the ground blow
-   leaves 0). Terrain, water tiles, buildings and **aircraft** are all nodes in
+   leaves 0). Terrain, water tiles and **aircraft** were measured to be nodes in
    that one database, so all of them answer; nothing in the query is specific to
-   a surface class. Class types `1, 5, 6, 7, 8, 9, 10` are intersected, types
-   `2, 3, 4` log `Unrecognized node class type` and are skipped.
+   a surface class. Any other scenery answers only if its node sits in the same
+   database with the same flags and a class the dispatch can intersect; no
+   building node was measured here, and section 7 states what that leaves open.
+   Class types `1, 5, 6, 7, 8, 9, 10` are intersected; types `2, 3, 4` and any
+   value outside `1..10` log `Unrecognized node class type` and are skipped.
    **There is no sea plane.** The sea answers only through its water-tile nodes'
    own triangles (their flag words were measured in
    `2026-10-22-m01-sea-contact.md`: `0x0308831c` / `0x0308031c`, both carrying
@@ -48,9 +58,9 @@ are committed as `[[groundblow_sweep_fact]]` in
    the face's parallelogram area), `+0x0c` the contact point (three `f32`,
    metres), `+0x18` unwritten by every writer read here, `+0x1c` the **squared**
    distance `|p0 - point|^2` (written by `0x4c8ec0` alone, and only when the
-   count is above one), `+0x20` a face selector the box test zeroes, `+0x24` the
-   hit **node** (the owner), `+0x28` the node's `+0x40` sub-object (or the first
-   descendant that has one). There is no distance along the ray and no
+   count is above one), `+0x20` the hit face's surface object (0 for a box hit),
+   `+0x24` the hit **node** (the owner), `+0x28` the node's `+0x40` surface row
+   (or the first descendant that has one). There is no distance along the ray and no
    normalised distance; the probe's own length `groundblow_elev` = 400 is
    **400 metres** (`[position]` in the committed facts: world units are metres).
    The ground blow does not read `+0x1c`: it computes `|point - position|` itself
@@ -66,12 +76,17 @@ are committed as `[[groundblow_sweep_fact]]` in
    `2026-10-21-m01-contact-response-static-locate.md` (e)**, which has the
    comparison inverted. `V+0xac` is a **collision-grace deadline in seconds**
    (`now + 1.0`, set on both aircraft by the contact response `0x48d383` /
-   `0x48d395` when class 0 or 4 hits class 0 or 4); the ground blow of a
-   **non-player** is skipped entirely while `now < V+0xac`. `V+0xb4` is a second
-   deadline of the same shape that scales a non-player's ground blow (and its
-   velocity alignment) by `0.15` while `now < V+0xb4`; **no writer other than the
-   reset (0) exists in this image**, so in a retail session the field reads 0 and
-   that damping is unreachable — recorded, not guessed. `V+0xcc` is a **byte flag
+   `0x48d395` when a class 0/4 hit resolves to a class 0/4 vehicle); the ground
+   blow of a **non-player** is skipped entirely while `now < V+0xac`. `V+0xb4` is
+   a second deadline of the same shape that scales a non-player's ground blow
+   (and its velocity alignment) by `0.15` while `now < V+0xb4`. **No site assigns
+   it a non-zero value**: the only stores into the vehicle's field are the reset
+   (`0x4b058b`, 0) and the `VehicleList` state build/apply pair (`0x4b3ee0` /
+   `0x4b40c0`), which round-trips the vehicle's own `+0xac/+0xb0/+0xb4` through
+   the record's `+0x3c/+0x40/+0x44`; the other `[reg+0xb4]` stores in the image
+   belong to other classes (section 6). So in a session that never restores such
+   a state the field reads 0 and the damping is unreachable — recorded, not
+   guessed. `V+0xcc` is a **byte flag
    the record loader sets to 1 when the record carries a path**
    (`0x47c568`): the same branch stores the path at `V+0xc8`, and the flag makes
    the vehicle skip the placement restore on wake (`0x4b1025`) and take the
@@ -83,13 +98,19 @@ are committed as `[[groundblow_sweep_fact]]` in
    sight (`crates/cs_app/src/mission_session/turret_fire.rs`,
    `SpatialQuery::cast_ray_predicate` → `RayHitData { entity, distance, normal }`),
    which is exactly "nearest surface along a segment, with a normal and an
-   owner". What it does **not** give: (a) the rest of M01's scenery — only the
-   water tiles are colliders (#1850); (b) hits on **other aircraft**, because the
-   existing call filters to static bodies, while the original's probe hits them
-   and then discards them by the `V+0xcc` rule; (c) the original's **unnormalised**
-   face normal, which changes `sqrt(Z·N)` by `sqrt(area)`; (d) the original's
+   owner". What it does **not** give: (a) the dynamic targets — the existing call
+   filters to static bodies, while the original's probe hits **aircraft** and
+   then discards them by the `V+0xcc` rule; (b) the original's **unnormalised**
+   face normal, which changes `sqrt(Z·N)` by `sqrt(area)`; (c) the original's
    chord distance `|point - position|` (Avian gives the along-ray distance — the
-   two agree only when the contact is perpendicular to the probe).
+   two agree only when the contact is perpendicular to the probe); (d) the
+   original's class-type filter, because the port spawns a collider for every
+   placement that stores the `0x14` flags, while the original skips class types
+   2, 3, 4 and any value outside 1..10. The static scenery itself is no longer a
+   gap: since #1814 every placement with the flags and a collision view is a
+   collider (water tiles as `PlaytestSea`, the mountains, cliffs and land as
+   `WorldSceneryCollider` — `world_draw.rs`, `tests/campaign/m01_scenery_colliders.rs`),
+   so #1850's "only water tiles" is superseded.
    `cs_sim::weapons::WeaponState::sweep` is a swept-OBB query over **actor boxes
    only** and cannot see the world; the contact reporting
    (`crates/cs_app/src/physics/contacts.rs`, `world/crossings.rs`) reports pairs,
@@ -100,6 +121,15 @@ are committed as `[[groundblow_sweep_fact]]` in
 `float 0x48bf60(V, vec3 axis, vec3 *out)`. `V` is the vehicle, `axis` the probe
 direction the caller passes, `out` a vector the caller has zeroed; the return
 value is the probe's "amount".
+
+The one caller, `0x48c220` (`0x48c258`..`0x48c2b1`), passes the **negated third
+row of `V`'s matrix** (`V+0x198..0x1a0`, sign bits flipped at `0x48c28f` /
+`0x48c294` / `0x48c29a`) as that axis, and a stack copy of the
+zero-initialised global triple `0x75d1b8` as `out`. The triple at `0x75d1b8`
+lies in BSS, so the accumulating vector starts at zero. The segment therefore
+runs along `-V[+0x198]`, while the amount's `dot` below uses the un-negated
+`V[+0x198]`: a face whose normal points back along the body's third axis — the
+surface the segment runs toward — gives `dot > 0`, which is what fires a dive.
 
 | site | what it does |
 | --- | --- |
@@ -205,7 +235,7 @@ Then `0x4c9a00(node, count)` dispatches on `node+0x34`, the node's class type
 
 | type | handler | what it tests |
 | --- | --- | --- |
-| 1 | `0x4c9fe0` | the node's own polygon list `node+0x3c` through `0x55c9c0`, then recurses into `node+0x56/+0x5c` |
+| 1 | `0x4c9d89` (thunk) → `0x4c9fe0` | the node's own polygon list `node+0x3c` through `0x55c9c0`, then recurses into `node+0x56/+0x5c` |
 | 2, 3, 4 | `0x4c9daf` | nothing: logs `Unrecognized node class type:  node = %s class_type = %d` (`0x62cb54`, `cls_di.c`) and returns 3 |
 | 5 | `0x4c9adf` | the node box through `0x4cc010` → `0x55d270`, appends a contact |
 | 6 | `0x4c9c72` | the node box (skipped when `node+0x38`'s `+4` is below the double at `0x6033e8`), then recurses into the children |
@@ -213,6 +243,10 @@ Then `0x4c9a00(node, count)` dispatches on `node+0x34`, the node's class type
 | 8 | `0x4c9d76` | the node box through `0x4cc010` → `0x55d270` (`0x4c9e10`) |
 | 9 | `0x4c9d9c` | `0x4ca140` |
 | 10 | `0x4c9dd7` | nothing: returns the count unchanged |
+
+The dispatch is `lea ecx, [type-1]; cmp ecx, 9; ja 0x4c9daf` (`0x4c9acb`..`0x4c9ad2`),
+so a `node+0x34` of 0 or above 11 takes the same "Unrecognized" handler as types
+2, 3 and 4.
 
 The contact cap is **32** (`0x4c9a9d`): a 33rd hit logs `Database intersections
 array is full` (`0x62cbb0`) and aborts the query with 1. Each node is tested with
@@ -238,17 +272,17 @@ saved by `0x4c8ec0`, then up to 32 records of `0x2c` bytes from `out+4`.
 | `+0x0c` | contact point, 3 × `f32`, metres, world space | `0x55d7d0`..`0x55d805` | the ground blow (`0x48c131`), the contact response |
 | `+0x18` | no writer found in this image | — | — |
 | `+0x1c` | `|p0 - point|^2`, squared metres | `0x4c8ec0` only, and only when the count exceeds 1 | nothing measured (the ground blow does not) |
-| `+0x20` | a face selector; the box test zeroes it before testing the six faces | `0x55d27f` | not measured |
+| `+0x20` | the hit face's **surface object** (a pointer; `0x55c9c0` writes it at `0x55cdce`, a box hit stores 0 at `0x55d27f`) | `0x55cdce`, `0x55d27f` | `0x5ad330`'s solid/effect-only test (`[surf+0x20] == 1`; #2208) |
 | `+0x24` | the hit **node** (the owner) | `0x4c7f5a`, `0x4c9e54`, `0x4c800b`, `0x4ca06e` | the ground blow's owner gate, the contact response |
-| `+0x28` | the node's `+0x40` sub-object, or the first descendant that has one | `0x4c7f69`..`0x4c7f9f`, `0x4c8044` | `0x5abcf0`'s surface index (`[record+0x20][+0x20]` in `2026-10-25-m01-hit-dispatch-team-trace.md`) |
+| `+0x28` | the node's `+0x40` surface row, or the first descendant that has one | `0x4c7f69`..`0x4c7f9f`, `0x4c8044` | `0x5abcf0`'s surface index (`[record+0x20][+0x20]` in `2026-10-25-m01-hit-dispatch-team-trace.md`; #2208 confirms the writer) |
 
 `0x4c7f50` appends one record: it stores the node at `+0x24`, resolves `+0x28`
 down the first-child chain, advances `0x71e9f4` by `0x2c` and increments
 `out[0]`.
 
 This corrects one detail of `2026-10-21-m01-contact-response-static-locate.md`
-(b): the sub-object is at `+0x28`, not `+0x20`; `+0x20` is the face selector.
-The owner at `+0x24` matches that finding.
+(b): the sub-object is at `+0x28`, not `+0x20`; `+0x20` is the face's surface
+object. The owner at `+0x24` matches that finding.
 
 ## 5. The player's hit-owner gate (`0x48c036`..`0x48c0e9`)
 
@@ -282,20 +316,31 @@ else                                            -> use the hit
 
 * **`V+0xac` — the collision-grace deadline, seconds.** `[0x71c470]` is the
   simulation clock (`0x4897c4`: `[0x71c470] += [0x9ad744]`, the frame time, every
-  frame). The only writers are the contact response, which stores
-  `[0x71c470] + 1.0` (`0x6032dc`) into **both** vehicles when a class 0/4 hit
-  resolves to a class 0/4 vehicle (`0x48d31e`..`0x48d395`), and the reset
-  (`0x4b057f`, 0). `0x48d807` makes the vehicle's own contact sweep return at
-  once while `now < V+0xac`, and `0x48c241`..`0x48c252` skips a **non-player's**
-  ground blow over the same window. The player's ground blow is not gated by it.
+  frame). The contact response stores `[0x71c470] + 1.0` (`0x6032dc`) into
+  **both** vehicles when a class 0/4 hit resolves to a class 0/4 vehicle
+  (`0x48d31e`..`0x48d395`), and the reset clears it (`0x4b057f`, 0).
+  `0x48d807` makes the vehicle's own contact sweep return at once while
+  `now < V+0xac`, and `0x48c241`..`0x48c252` skips a **non-player's** ground blow
+  over the same window. The player's ground blow is not gated by it. The only
+  other store is the state-restore pair below, which copies the vehicle's own
+  value back.
 * **`V+0xb4` — a second deadline, same shape.** `0x48c317`..`0x48c345`: while
   `now < V+0xb4`, a non-player's `ai_groundblow * groundblow_mag` factor and its
-  amount are both multiplied by `0.15` (`0x6036a8`). **No writer sets it to
-  anything but 0** in this image: the scan for `[reg+0xb4]` stores finds only the
-  reset (`0x4b058b`) for the vehicle class (the other hits are the airframe
-  params struct at `0x47a796`, another class at `0x4bd576`, and stack frames).
-  So in a retail session the damping is unreachable. Recorded as measured, not
-  assigned a meaning.
+  amount are both multiplied by `0.15` (`0x6036a8`). **No site assigns it a
+  non-zero value.** A `[reg+0xb4]` store scan over the image finds, for this
+  vehicle class, only the reset (`0x4b058b`, 0) and the `VehicleList` state pair
+  (`0x4729b0` registers the build `0x472b20` and the apply `0x472b90`): the build
+  `0x4b3ee0` copies `V+0xac/+0xb0/+0xb4` into the record's `+0x3c/+0x40/+0x44`
+  (`0x4b3f9a`..`0x4b3fb5`) and the apply `0x4b40c0` writes the same three record
+  fields back into `V+0xac/+0xb0/+0xb4` (`0x4b426d`..`0x4b4288`), so a save and
+  restore round-trips the field instead of inventing a value. The remaining
+  `[reg+0xb4]` stores belong to other classes: `0x4a9b96` (a different class,
+  vtable `0x608b48`, whose constructor zeroes its own `+0xb4`), `0x4aa148` /
+  `0x4aa171` (another class's object), `0x47a796` (`health` in the airframe
+  params), `0x4bd576` and `0x4bdb84` (`max_rate_pitch` in the airframe class),
+  plus `0x4b4282`'s copy through the big world object.
+  So in a session that never restores such a state the field reads 0 and the
+  damping is unreachable. Recorded as measured, not assigned a meaning.
 * **`V+0xcc` — "the record carried a path", a byte.** Set to 1 only at
   `0x47c568`, in the loader's path branch: when the record's `+0x11c` resolves
   through `0x4511b0(0x6541b0, 0, name, 1)` to a path with at least two points,
@@ -337,11 +382,11 @@ Yes, through its tiles, and only through them.
 
 | candidate | what it answers | verdict for the ground blow |
 | --- | --- | --- |
-| `SpatialQuery::cast_ray_predicate` — `crates/cs_app/src/mission_session/turret_fire.rs` (`line_of_sight`), `targeting_input.rs`, `mission_session/smoke/crash.rs` | the nearest **static** collider along a ray, as `RayHitData { entity, distance, normal }` (avian3d 0.7.0, `spatial_query/ray_caster.rs`) | the right **transport**: the probe is exactly "from the position along an axis, `elev` long". Missing: dynamic targets (aircraft), the rest of the scenery as colliders, the unnormalised normal, the chord distance |
+| `SpatialQuery::cast_ray_predicate` — `crates/cs_app/src/mission_session/turret_fire.rs` (`line_of_sight`), `targeting_input.rs`, `mission_session/smoke/crash.rs` | the nearest **static** collider along a ray, as `RayHitData { entity, distance, normal }` (avian3d 0.7.0, `spatial_query/ray_caster.rs`) | the right **transport**: the probe is exactly "from the position along an axis, `elev` long". Missing: dynamic targets (aircraft), the unnormalised normal, the chord distance, the class-type filter |
 | `cs_sim::weapons::WeaponState::sweep(segment, targets)` — `crates/cs_sim/src/weapons/guns.rs` | swept OBBs of **actors only**, as `SweptHit { time_of_impact, .. }` | cannot see the world, gives no surface normal, no owner node |
 | `crates/cs_app/src/physics/contacts.rs` (`shape_hits_callback` over the body's own collider), `crates/cs_app/src/world/crossings.rs` | which colliders the body's volume crossed this tick | reports pairs for damage, not a segment→surface query |
 | `crates/cs_app/src/playtest/scene.rs` (`PlaytestSea`, `PlaytestGround`) | markers on the bodies the scene spawns; no query of its own | it is the scene, not a query |
-| `cs_app::playtest_retail::CONTACT_SWEEP_NODE_FLAGS` = `0x14` — `world_draw.rs` | which scenery placements become trimesh colliders: the flag test this task measured | the right **predicate**; today only the water tiles get colliders (#1850 "Only water tiles") |
+| `cs_app::playtest_retail::CONTACT_SWEEP_NODE_FLAGS` = `0x14` — `world_draw.rs` | which scenery placements become trimesh colliders: the flag test this task measured, for **water tiles (`PlaytestSea`) and every other flagged node with a collision view (`WorldSceneryCollider`, #1814)** | the right **predicate**, and the static side is already covered; #1850's "only water tiles" is superseded |
 
 So the seam for #2210 is: a segment query over the Avian world (static **and**
 dynamic, excluding the prober), returning a normal, a point and an owner, with
@@ -355,9 +400,9 @@ convention of section 1 and the chord distance of section 2.
 | the sign convention of a retail face's record normal relative to the solid side (which winding a mesh stores) | whether `dot(back_axis, N) > 0` selects "the surface ahead" for a given mesh, i.e. whether the probe fires in a dive | `0x55d6c0` builds the normal from the face's edge order; the corner enumeration of `0x55d270`'s box faces was not decoded | read the box corner enumeration (`0x4cd9d0`/`0x4ce1b0`) and one retail mesh's winding, or a runtime capture of a low pass |
 | whether retail's hit faces are unit-sized (the `sqrt(|N|)` scale of the amount) | the magnitude of the torque and of the velocity alignment over water and terrain | `0x55d6d2`..`0x55d73a` writes the unnormalised cross product; no retail mesh was measured here | measure the M01 water tile and terrain quad edge lengths through the container reader |
 | the water-tile nodes' runtime class type (`node+0x34`) | nothing in the conclusion (only 2/3/4 are skipped), but the port's collider mapping | container `node_type` is the container kind, not the runtime class | read the loader that assigns `node+0x34` |
-| what writes `V+0xb4` | the unreachable `0.15` damping | only the reset (0) writes it | a wider scan (directive table, network snapshot) or leave it recorded as unreachable |
+| what writes `V+0xb4` | the unreachable `0.15` damping | the reset (0) and the `VehicleList` build/apply round-trip write it; no site assigns a non-zero value | a retail save/restore capture would show whether a restored state ever carries a non-zero deadline; otherwise leave it recorded as unreachable |
 | `[0x64f66e]`, the gate on writing `V+0x924` after the velocity alignment | whether the alignment reaches the velocity in a live session | writers `0x43db4d`, `0x464693`, `0x4654fa`; `2026-10-21` (d) leaves its meaning unestablished | trace the three writers |
-| `record+0x18` and `record+0x20` | nothing measured reads them for the ground blow | no writer found for `+0x18`; `+0x20` is zeroed by `0x55d270` | #2208 (the hit record's position field and the target contact geometry) |
+| `record+0x18` | nothing measured reads it for the ground blow | no writer found for `+0x18` | a wider writer scan if a consumer appears |
 
 ## Instruction bytes cited (re-read by the ignored test)
 
@@ -370,6 +415,7 @@ convention of section 1 and the chord distance of section 2.
 48c0ed: 895dec8d9f98010000895dc48b4dc48b55ecd901d80ad94104d84a04d94108d84a08d9c9dec2dec1d95d0cd9450cd81dc8326000dfe0f6c4410f85c50000008b45d08b1783c00c508bcfff1250e891c70a00d86d08d9450c8d45d4d9fa89450c895dd0dec9d87508d95d08  # probe.amount: 0x48bf60: dot(Z,record normal), >0 test, (elev-|point-pos|)/elev*sqrt(dot)
 48c158: 8b5dec8b4dd08b550cd903d9c0d84904d94304d9c0d84908d94308d9c0d809d9cdd84908d9cbd809d9cbdeedd84904d9cadeebd9c9dee9d9cad95a04d95a08d91a8d4dd451e8ee64f9ffddd8  # probe.blow: 0x48bf60: B = normalize(N x Z) * amount
 48c1a4: d945d48d55d4d84d0883c40c89550cd95dd4d945d8d84d08d95dd8d945dcd84d08d95ddc8b5d108b4d0c8b5510d903d801d94304d84104d94308d84108d9cad91ad95a04d95a088b45088945f0  # probe.accumulate: 0x48bf60: *out += B; return amount
+48c258: a1b8d175008b0dbcd175008b15c0d175008945e08d45d48dbe98010000894de48955e8894508897dfc8b5dfc8b4d088b038b53048b5b08350000008081f20000008081f30000008089018951048959088d4de0518d55d45256e8aafcffff  # caller.axis: 0x48c220: out = the zero BSS triple 0x75d1b8; axis = the negated V+0x198 row; call 0x48bf60
 48c2c5: 8d45e08945f88b4d0c8b55f8d901d80ad94104d84a04d94108d84a08d9c9dec2dec1d95dfcd945fcd945fcd81dc8326000dfe0f6c4017412ddd8c7450800000000d945fcd80dac366000d80d24c47100eb31  # caller.torque: 0x48c220 player: d = dot(accum,B); d<0 zeroes amount and scales d by 0x6036ac
 48c3a1: 8b96340900008d45c889550c8945f8897dfc8b5dfc8b4df88b038b53048b5b08350000008081f20000008081f3000000808901895104895908d905bc2b6200d84d08518d4dc88d55ecd91c245152e80c43fdff  # caller.velocity: 0x48c220: velocity pulled toward the probe axis at 0x622bbc*amount, speed restored
 4c8ec0: 8b44240c8b48088b50048b00558b6c240c568b74241856518b4d08528b5504508b4500518b4c2420525051e88000000083c420  # query.entry: 0x4c8ec0: unpack (world,p0,p1,out), call 0x4c8f70
@@ -400,12 +446,16 @@ convention of section 1 and the chord distance of section 2.
 48c241: d90570c47100d89eac000000dfe0f6c4010f850c020000  # veh.ac_skip: 0x48c220: a non-player's ground blow is skipped while now < +0xac
 48c317: d90528c47100d80d24c47100d90570c47100d89eb4000000dfe0f6c4017412d80da8366000d94508d80da8366000d95d08  # veh.b4_damp: 0x48c220: a non-player's ground blow is scaled by 0.15 while now < +0xb4
 4b057f: 899eac000000899eb0000000899eb4000000  # veh.b4_reset: 0x4b05xx: the reset clears +0xac, +0xb0 and +0xb4
+4729b0: 6a0068000001006a0a68902b470068202b47006814746200e813d31400  # veh.state_command: 0x4729b0: registers the VehicleList build 0x472b20 and apply 0x472b90
+4b3f9a: 8b86ac00000089473c8b8eb0000000894f408b96b4000000895744  # veh.state_build: 0x4b3ee0: V+0xac/+0xb0/+0xb4 into the record's +0x3c/+0x40/+0x44
+4b426d: 8b573c8996ac0000008b47408986b00000008b4f44898eb4000000  # veh.state_apply: 0x4b40c0: the record's +0x3c/+0x40/+0x44 back into V+0xac/+0xb0/+0xb4
 4cca5e: 8b4e348d41ff83f80977678b7c241033d28a9008cb4c00ff2495f8ca4c00  # lock.dispatch: 0x4cca30: node activation dispatch on node+0x34
 4ccab5: 83ff017509834e24045f33c05ec385ff7504836624fb5f33c05e  # lock.bit: 0x4cca30: arg 1 sets node+0x24 bit 2, arg 0 clears it
 6036a8: 9a99193ecdcc4cbd  # const.groundblow: 0x6036a8 = 0.15 and 0x6036ac = -0.05
 6032c8: 00000000  # const.zero: 0x6032c8 = 0.0 (the hit-dot threshold and the no-hit amount)
 6032dc: 0000803f  # const.one: 0x6032dc = 1.0 (the collision grace)
 622bbc: 00000040  # const.two: 0x622bbc = 2.0 (the velocity-alignment rate per unit amount)
+627414: 56656869636c654c697374  # message.vehicle_list: 0x627414: the state command's name
 62cb54: 556e7265636f676e697a6564206e6f646520636c61737320747970653a20206e6f6465203d20257320636c6173735f74  # message.class_type: 0x62cb54: the class types the query cannot intersect
 ```
 
@@ -416,8 +466,12 @@ Prefix `accept_groundblow_sweep_`, `crates/cs_content/tests/accept_groundblow_sw
 * `accept_groundblow_sweep_rows_match_the_finding_and_the_table` (no original
   data): the finding's `bytes` block and the committed
   `[[groundblow_sweep_fact]]` rows name the same addresses and the same bytes,
-  the constants the finding quotes decode from those bytes, and the two floats
-  `0.15` / `-0.05` are the cited dwords.
+  the constants the finding quotes decode from those bytes, the two floats
+  `0.15` / `-0.05` are the cited dwords, and the instruction patterns the
+  conclusions rest on are present (`add edx, 0x2c`, the `0x20` cap, `jne` after
+  `test cl,cl` for `V+0xcc`, the `0x6032c8` threshold, the 1.0-s grace, the
+  sign-bit flip that negates the probe axis, and the `VehicleList` state
+  round-trip's record offsets).
 * `accept_groundblow_sweep_bytes_match_the_engine_image` (ignored, needs
   `CS_ENGINE_IMAGE`): loads the image through the production loader
   (`cs_content::coordinates::load_engine_image`, which refuses a drifted digest)

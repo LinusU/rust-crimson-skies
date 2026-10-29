@@ -195,8 +195,15 @@ point that has any contact (`0x48da56..0x48da8b`) and skip the clip when
 * On a hit it builds a blow direction as a normalised cross product of the contact
   normal with that axis (`0x48c161..0x48c19d`), scaled by the strength
   `s = (elev - distance) / elev * |...|` (`0x48c13a..0x48c152`), and returns `s`.
-  A hit owner that is a vehicle with `[vehicle+0xcc] != 0` zeroes the term
-  (`0x48c0ac..0x48c0e6`, player only).
+  ~~A hit owner that is a vehicle with `[vehicle+0xcc] != 0` zeroes the term
+  (`0x48c0ac..0x48c0e6`, player only).~~
+  **Correction (#2209):** the sentence above was inverted. `0x48c0b2` is
+  `test cl, cl; jne 0x48c0e6`, so a **non-zero** `[vehicle+0xcc]` keeps the hit
+  and the fall-through zeroes the amount; `[vehicle+0xcc] == 0` discards it.
+  `[vehicle+0xcc]` is the loader's "the record carried a path" byte
+  (`0x47c568`). The same task also measured that `[vehicle+0xb4]` has no writer
+  that assigns a non-zero value (the reset and a `VehicleList` state round-trip
+  only). See `2026-10-29-groundblow-world-segment-sweep.md` sections 5 and 6.
 * **It applies to the player.** The `V == player` branch (`0x48c2c3`) takes
   `dot(accumulator, blow)`; a negative dot drops `s` to 0 and scales the dot by
   `0x6036ac`; the result is multiplied by `groundblow_mag` (`[0x71c424]`, retail

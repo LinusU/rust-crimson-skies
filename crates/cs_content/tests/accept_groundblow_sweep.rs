@@ -8,8 +8,9 @@
 //! original data: it checks that the finding and the committed table name the
 //! same addresses with the same bytes, and that the instructions those bytes
 //! hold still say what the finding claims (the record stride and cap, the
-//! `V+0xcc` polarity, the two constants). The second re-reads every row from
-//! the owner's image.
+//! `V+0xcc` polarity, the two constants, the negated probe axis and the
+//! `VehicleList` state round-trip of `V+0xac/+0xb0/+0xb4`). The second re-reads
+//! every row from the owner's image.
 //!
 //! Static measurement only; nothing here awards `verified_original`.
 
@@ -30,6 +31,7 @@ const REQUIRED: &[&str] = &[
     "probe.player_owner",
     "probe.amount",
     "probe.blow",
+    "caller.axis",
     "caller.torque",
     "caller.velocity",
     "query.entry",
@@ -58,12 +60,16 @@ const REQUIRED: &[&str] = &[
     "veh.ac_skip",
     "veh.b4_damp",
     "veh.b4_reset",
+    "veh.state_command",
+    "veh.state_build",
+    "veh.state_apply",
     "lock.dispatch",
     "lock.bit",
     "const.groundblow",
     "const.zero",
     "const.one",
     "const.two",
+    "message.vehicle_list",
     "message.class_type",
 ];
 
@@ -223,6 +229,44 @@ fn accept_groundblow_sweep_rows_match_the_finding_and_the_table() {
             &[0xd8, 0x05, 0xdc, 0x32, 0x60, 0x00]
         ),
         "`fadd [0x6032dc]` is the 1.0-second grace"
+    );
+    // The probe's axis is the negated third row: three `xor reg, 0x80000000`
+    // sign flips, and the row ends in the call into 0x48bf60.
+    assert!(
+        contains(
+            &row(&finding, "caller.axis").bytes,
+            &[
+                0x35, 0x00, 0x00, 0x00, 0x80, // xor eax, 0x80000000
+                0x81, 0xf2, 0x00, 0x00, 0x00, 0x80, // xor edx, 0x80000000
+                0x81, 0xf3, 0x00, 0x00, 0x00, 0x80, // xor ebx, 0x80000000
+            ]
+        ),
+        "the caller negates the V+0x198 row"
+    );
+    assert!(
+        row(&finding, "caller.axis")
+            .bytes
+            .ends_with(&[0xe8, 0xaa, 0xfc, 0xff, 0xff]),
+        "the window ends in `call 0x48bf60`"
+    );
+    // The VehicleList state pair round-trips +0xac/+0xb0/+0xb4: the build
+    // writes them into the record's +0x3c/+0x40/+0x44 and the apply writes
+    // that record block back.
+    assert!(
+        contains(&row(&finding, "veh.state_build").bytes, &[0x89, 0x47, 0x3c]),
+        "`mov [edi+0x3c], eax` stores the vehicle's +0xac"
+    );
+    assert!(
+        contains(
+            &row(&finding, "veh.state_apply").bytes,
+            &[0x89, 0x96, 0xac, 0x00, 0x00, 0x00]
+        ),
+        "`mov [esi+0xac], edx` restores the record's +0x3c"
+    );
+    assert_eq!(
+        std::str::from_utf8(&row(&finding, "message.vehicle_list").bytes).expect("ascii"),
+        "VehicleList",
+        "the state command's name"
     );
 
     // The constants the finding quotes are the cited dwords.
