@@ -246,7 +246,11 @@ fn spawn_subtitle_hud(mut commands: Commands) {
 type SubtitleWidgets<'w, 's> = Query<
     'w,
     's,
-    (&'static mut Text, &'static mut TextFont, &'static mut Visibility),
+    (
+        &'static mut Text,
+        &'static mut TextFont,
+        &'static mut Visibility,
+    ),
     (With<SubtitleText>, Without<FlashVeil>),
 >;
 type VeilWidgets<'w, 's> = Query<
