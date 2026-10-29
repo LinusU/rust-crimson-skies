@@ -916,7 +916,8 @@ fn accept_t452_tangler_flight_the_suppressed_scalar_claim_is_resolved() {
         kept.1
     );
     // The one part the measurement did not pin — the field's origin — is
-    // measured too (task #2203: the projectile's position at its burst), so no
+    // measured too (tasks #2203 and #2205: the point of contact of a swept
+    // hit, otherwise the projectile's tick-end position at its burst), so no
     // claim of the field stays named.
     assert!(
         !kept

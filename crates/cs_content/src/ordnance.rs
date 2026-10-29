@@ -5246,9 +5246,10 @@ pub const T452_R02_STATUS_INCAPACITATION: &str = "t452_r02.limit.status_incapaci
 /// and as the flight model's `FlightState::thrust_suppressed` plus a refused
 /// boost (task #2179, `docs/findings/2026-10-29-t452-tangler-flight-effect.md`).
 /// No measured record keeps this claim any more, and both parts the measurement
-/// once left unpinned are measured now: the field's origin is the projectile's
-/// position at its burst (task #2203) and the suppressed scalar is the force
-/// block's thrust magnitude (task #2179).
+/// once left unpinned are measured now: the field's origin is the point of
+/// contact of a swept hit, or the projectile's tick-end position for an end of
+/// flight that is not a contact (tasks #2203, #2205), and the suppressed scalar
+/// is the force block's thrust magnitude (task #2179).
 pub const T452_R02_TANGLER_EFFECT: &str = "t452_r02.limit.tangler_flight_effect";
 
 /// Claim (T452.R02, resolved by T452-REG-SMOKE-RADIUS): `SMOKE_SCREEN` has no

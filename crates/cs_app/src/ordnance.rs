@@ -5702,10 +5702,10 @@ pub fn original_kept_claim_context(claim: &str) -> Option<(&'static str, &'stati
         // `t452_reg.limit.tangler_force_scalar_meaning` is resolved (task #2179:
         // the scalar is the force block's thrust magnitude) and no record keeps
         // it any more, so it needs no kept-claim context.
-        // `t452_reg.limit.tangler_field_origin` is resolved too (task #2203: the
-        // field opens at the projectile's burst, centred on its position there,
-        // and the runtime now opens it there), so it needs no kept-claim
-        // context either.
+        // `t452_reg.limit.tangler_field_origin` is resolved too (tasks #2203
+        // and #2205: the field opens at the projectile's burst, centred on the
+        // point of contact for a swept hit and on the item's tick-end position
+        // otherwise), so it needs no kept-claim context either.
         T452_PER_BOX_WEIGHT_CLAIM => (
             "the flat per-enabled-box weight and cost this component's purchase charges, \
              which the runtime's per-unit mass has no field for",

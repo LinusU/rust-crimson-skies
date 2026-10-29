@@ -57,13 +57,36 @@ for an aircraft-scale target. Affected content: `wep_12`'s field centre, and
 therefore which actors the field catches near its 10 m edge, on a contact burst.
 The original collision shapes are unmeasured (the same limitation
 `SweepTarget` names as F27-D), so the resolving work is that measurement, not a
-further interpolation rule; this task opens no new claim and does not reopen
-`t452_reg.limit.tangler_field_origin`, which #2203 measured and closed.
+further interpolation rule; task #2208 ("Measure what fills the hit record
+position `[record+0xc]` and the target contact geometry") carries it. This task
+opens no new claim and does not reopen `t452_reg.limit.tangler_field_origin`,
+which #2203 measured and closed.
+
+A **proximity** fuse also ends the item away from its tick-end position, and this
+change deliberately does not interpolate it: `FuseTrigger::Proximity` carries a
+fraction of the tick, but under the measured `StartOfStepSample` sampling
+(`0x5b0970`'s start-of-step sample) that fraction is always `0.0`, and nothing
+measured says the proximity site `0x5ac2b1` (reached from `0x5b0970`) writes a
+contact position into `rocket+0x48` the way `0x5b05c0` does. Centring it on the
+item's tick-end position is the honest state, not a claim that the original does
+so; the affected content is any proximity-fused record's burst centre (`wep_12`
+is unguided — T452-R.02 measured the proximity path over `LOCK_ON` — so it does
+not take this path). Measuring it is part of #2208.
 
 Which of the five callers of `0x5ac7a0` a real `wep_12` contact takes remains
 unmeasured from `2026-10-29-t452-tangler-burst-open.md`; this change moves the
 centre for every contact site that does reach `0x5ac7a0`, and leaves each other
 path as it was.
+
+One more residual is visible from here and belongs to the session, not to this
+interpolation: `step_ordnance_session` hands the whole `OrdnanceStep::impacts`
+slice to every live item's fuse decision, and `fuse_decision` takes
+`impacts.first()` without checking `SweptHit::projectile`, so in a session with
+two live items one contact ends both — and, now, centres the other item's field
+at a fraction taken from a hit on a different segment. Task #2207 ("Filter swept
+contacts by projectile in `step_ordnance_session` before the fuse decision")
+resolves it; every test here keeps one live item, so this change neither
+introduces nor hides it.
 
 ## Tests
 
