@@ -601,8 +601,8 @@ fn accept_m01_aiv_layout_image_sites_match_the_committed_table() {
         "vehicle.zrd push",
     );
     // Field 40's parse read: `mov edx, dword [fields + 0x14c]` — `0x14c` is
-    // `0xc + 8*40`, the field-array slot the document's `+0x11c` is strdud
-    // from (#2215).
+    // `0xc + 8*40`, the field-array slot the document's `+0x11c` is strdup'd
+    // into from (#2215).
     check(
         layout.taxi_path_parse_va,
         &[0x8b, 0x90, 0x4c, 0x01, 0x00, 0x00],
