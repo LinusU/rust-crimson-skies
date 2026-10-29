@@ -280,8 +280,8 @@ fn game_dir() -> PathBuf {
 }
 
 /// One measured M01 row: name, netids, stored position and heading, team,
-/// group, enabled, primary target, title, asleep-at-spawn and the vehicle
-/// record the name dispatch selects.
+/// group, enabled, primary target, title, asleep-at-spawn, taxi path and
+/// the vehicle record the name dispatch selects.
 type MeasuredRow = (
     &'static str,
     Option<u32>,
@@ -293,6 +293,7 @@ type MeasuredRow = (
     Option<&'static str>,
     Option<&'static str>,
     bool,
+    Option<&'static str>,
     SpawnDispatch,
 );
 
@@ -315,6 +316,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             Some("MSG_PLAYER_NAME"),
             false,
+            None,
             SpawnDispatch::Player,
         ),
         (
@@ -328,6 +330,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             Some("player"),
             Some("MSG_BSWAN_NAME"),
             true,
+            None,
             SpawnDispatch::VehicleRecord("bsfury".to_owned()),
         ),
         (
@@ -341,6 +344,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             Some("MSG_TEX_NAME"),
             false,
+            None,
             SpawnDispatch::VehicleRecord("devastator".to_owned()),
         ),
         (
@@ -354,6 +358,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             Some("devastator_3"),
             Some("MSG_BUCK_NAME"),
             false,
+            None,
             SpawnDispatch::VehicleRecord("wingman".to_owned()),
         ),
         (
@@ -367,6 +372,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             Some("MSG_BJOHN_NAME"),
             false,
+            None,
             SpawnDispatch::VehicleRecord("devastator".to_owned()),
         ),
         (
@@ -380,6 +386,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             Some("devastator_2"),
             Some("MSG_BETTY_NAME"),
             false,
+            None,
             SpawnDispatch::VehicleRecord("wingman".to_owned()),
         ),
         (
@@ -393,6 +400,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             None,
             false,
+            None,
             SpawnDispatch::VehicleRecord("rusdevastator".to_owned()),
         ),
         (
@@ -406,6 +414,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             None,
             false,
+            None,
             SpawnDispatch::VehicleRecord("rusdevastator".to_owned()),
         ),
         (
@@ -419,6 +428,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             None,
             false,
+            None,
             SpawnDispatch::VehicleRecord("bsfury".to_owned()),
         ),
         (
@@ -432,6 +442,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             None,
             false,
+            None,
             SpawnDispatch::VehicleRecord("rusdevastator".to_owned()),
         ),
         (
@@ -445,6 +456,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             None,
             false,
+            None,
             SpawnDispatch::VehicleRecord("rusdevastator".to_owned()),
         ),
         (
@@ -458,6 +470,7 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             None,
             None,
             false,
+            None,
             SpawnDispatch::VehicleRecord("rusdevastator".to_owned()),
         ),
     ];
@@ -468,7 +481,20 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
     );
     for (
         aircraft,
-        (name, netids, position, heading, team, group, enabled, target, title, asleep, dispatch),
+        (
+            name,
+            netids,
+            position,
+            heading,
+            team,
+            group,
+            enabled,
+            target,
+            title,
+            asleep,
+            taxi_path,
+            dispatch,
+        ),
     ) in aircraft.iter().zip(&rows)
     {
         assert_eq!(aircraft.name.as_str(), *name);
@@ -497,6 +523,11 @@ fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
             Some(*asleep),
             "{name}: only bsfury_1 carries the non-zero deactivated field, and \
              it is the aircraft M06's WAKEUP_ENEMIES (OBJECTIVE13) wakes"
+        );
+        assert_eq!(
+            aircraft.taxi_path.as_deref(),
+            *taxi_path,
+            "{name}: the measured field-40 taxi path"
         );
         assert_eq!(&aircraft.dispatch, dispatch, "{name}: name dispatch");
         assert_eq!(
@@ -568,6 +599,28 @@ fn accept_m01_aiv_layout_image_sites_match_the_committed_table() {
         layout.vehicle_zrd_va,
         &[0x68, 0x18, 0x7b, 0x62, 0x00],
         "vehicle.zrd push",
+    );
+    // Field 40's parse read: `mov edx, dword [fields + 0x14c]` — `0x14c` is
+    // `0xc + 8*40`, the field-array slot the document's `+0x11c` is strdud
+    // from (#2215).
+    check(
+        layout.taxi_path_parse_va,
+        &[0x8b, 0x90, 0x4c, 0x01, 0x00, 0x00],
+        "taxi-path parse read",
+    );
+    // The loader's `+0x11c` read: `mov eax, dword [edi + 0x11c]` — the slot
+    // `0x437c0b`'s parse fills and the `0x4511b0` resolve call consumes.
+    check(
+        layout.taxi_path_va,
+        &[0x8b, 0x87, 0x1c, 0x01, 0x00, 0x00],
+        "taxi-path loader read",
+    );
+    // The vehicle flag the resolved path sets: `mov byte [eax + 0xcc], 1` —
+    // `+0xcc`, the ground blow's keep-a-parked-hit byte.
+    check(
+        layout.taxi_path_flag_va,
+        &[0xc6, 0x80, 0xcc, 0x00, 0x00, 0x00, 0x01],
+        "taxi-path flag store",
     );
     let string_va = u32::from_le_bytes(
         image[at(layout.vehicle_zrd_va) + 1..at(layout.vehicle_zrd_va) + 5]

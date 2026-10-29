@@ -237,6 +237,16 @@ pub struct AivLayoutFact {
     pub title_field: u32,
     /// Field 21: the deactivated flag (non-zero spawns the aircraft asleep).
     pub deactivated_field: u32,
+    /// Field 40: the taxi-path name (`#2215`).
+    pub taxi_path_field: u32,
+    /// The parse site that reads field 40 into the record document at
+    /// `+0x11c` (`0x437c0b`: `mov edx, [fields+0x14c]`).
+    pub taxi_path_parse_va: u64,
+    /// The loader's read of the record's `+0x11c` slot (`0x47c3a9`).
+    pub taxi_path_va: u64,
+    /// The byte store of the vehicle's `+0xcc` flag the resolved path sets
+    /// (`0x47c568`).
+    pub taxi_path_flag_va: u64,
 }
 
 /// One row of the executable's eleven-row airframe table.
@@ -628,6 +638,10 @@ fn aiv_layout_fact(
             "primary_target_field",
             "title_field",
             "deactivated_field",
+            "taxi_path_field",
+            "taxi_path_parse_va",
+            "taxi_path_va",
+            "taxi_path_flag_va",
         ],
         "aiv_layout",
     )?;
@@ -668,6 +682,10 @@ fn aiv_layout_fact(
         primary_target_field: field("primary_target_field")?,
         title_field: field("title_field")?,
         deactivated_field: field("deactivated_field")?,
+        taxi_path_field: field("taxi_path_field")?,
+        taxi_path_parse_va: scalar_va(table, "taxi_path_parse_va", image_va_base)?,
+        taxi_path_va: scalar_va(table, "taxi_path_va", image_va_base)?,
+        taxi_path_flag_va: scalar_va(table, "taxi_path_flag_va", image_va_base)?,
     };
     let distinct = [
         fact.netids_field,
@@ -679,6 +697,7 @@ fn aiv_layout_fact(
         fact.primary_target_field,
         fact.title_field,
         fact.deactivated_field,
+        fact.taxi_path_field,
     ];
     for (position, index) in distinct.iter().enumerate() {
         if distinct[..position].contains(index) {

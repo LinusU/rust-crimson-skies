@@ -94,6 +94,10 @@ enabled_field = 5
 primary_target_field = 6
 title_field = 20
 deactivated_field = 21
+taxi_path_field = 40
+taxi_path_parse_va = 0x437c0b
+taxi_path_va = 0x47c3a9
+taxi_path_flag_va = 0x47c568
 
 # The executable's airframe table (#715, finding
 # docs/findings/2026-10-06-m01-lc-player-airframe-source.md): eleven rows of
