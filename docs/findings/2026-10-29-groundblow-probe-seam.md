@@ -50,7 +50,7 @@ The decode says exactly that (§0.4 and §8 of the sweep finding):
 | the original's `0x4c8ec0` needs | the port's nearest query (`SpatialQuery::cast_ray_predicate`, Avian 0.7) |
 | --- | --- |
 | dynamic targets: an aircraft's node answers the sweep (§3) and is then filtered by the player's `V+0xcc` gate (§5) | the two existing call sites filter to **static** bodies (`turret_fire.rs::line_of_sight`, `targeting_input.rs`) |
-| the **unnormalised** face normal (magnitude = area) | Avian returns a **normalised** ray-hit normal, so `sqrt(dot)` would lose the `sqrt(area)` factor |
+| the **unnormalised** face normal (magnitude = area) | Avian returns a **normalised** ray-hit normal: this workspace's `parry3d` 0.31.1 builds it as `n.normalize()` in `src/query/ray/ray_triangle.rs`, so `sqrt(dot)` would lose the original's `sqrt(area)` factor |
 | the chord `|point - position|` from the record's contact point | the existing callers keep the along-ray distance and no point |
 | the class-type filter (`node+0x34` of 2/3/4 and outside 1..10 produce no contact, §3) | the port spawns a collider for **every** placement storing `0x14` (#1814: water tiles as `PlaytestSea`, the rest as `WorldSceneryCollider`), and the runtime `node+0x34` of even the water tiles is unmeasured (§7, §9) |
 
