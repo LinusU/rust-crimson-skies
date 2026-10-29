@@ -311,3 +311,37 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
     );
     std::fs::write(dir.join("playback.json"), record).expect("the playback record is written");
 }
+
+/// **Concurrent stagers of one container never see a half-written copy.**
+#[test]
+fn accept_m01_launch_sound_stage_race_concurrent_stagers_both_succeed() {
+    let scratch = Scratch::new("audio_stage_race");
+    let host = scratch.path().join("soundsh.zbd");
+    // Large enough that the copy takes a measurable time.
+    let bytes: Vec<u8> = (0..32_000_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&host, &bytes).expect("the host file is written");
+    let digest = cs_assets::install::sha256(&bytes);
+    for round in 0..4 {
+        let cache = scratch.path().join(format!("cache{round}"));
+        let launch = launch_sound(host.clone(), 25, digest);
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let stagers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        cs_app::mission_session::stage_container(&cache, &launch)
+                    })
+                })
+                .collect();
+            for stager in stagers {
+                let root = stager
+                    .join()
+                    .expect("the stager did not panic")
+                    .expect("a concurrent stage succeeds");
+                let staged = std::fs::read(root.join(LAUNCH_SOUND_CONTAINER)).expect("staged");
+                assert_eq!(cs_assets::install::sha256(&staged), digest);
+            }
+        });
+    }
+}

@@ -19,6 +19,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::app::App;
 use bevy::ecs::schedule::IntoScheduleConfigs;
@@ -493,8 +494,26 @@ pub fn stage_container(
         let parent = target.parent().unwrap_or(&root);
         std::fs::create_dir_all(parent)
             .map_err(|e| refuse(format!("cannot create {}: {e}", parent.display())))?;
-        std::fs::copy(&launch.host, &target)
-            .map_err(|e| refuse(format!("cannot stage {}: {e}", launch.host.display())))?;
+        // Copy beside the target under a name no other stager uses, then
+        // rename into place: rename is atomic within a directory, so a
+        // concurrent composition sees either no file or the complete one.
+        static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let partial = parent.join(format!(
+            ".{}.{}.{}.partial",
+            launch.container.rsplit('/').next().unwrap_or("container"),
+            std::process::id(),
+            STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let placed = std::fs::copy(&launch.host, &partial)
+            .map_err(|e| refuse(format!("cannot stage {}: {e}", launch.host.display())))
+            .and_then(|_| {
+                std::fs::rename(&partial, &target)
+                    .map_err(|e| refuse(format!("cannot place {}: {e}", target.display())))
+            });
+        if let Err(error) = placed {
+            let _ = std::fs::remove_file(&partial);
+            return Err(error);
+        }
         if digest_of(&target) != Some(launch.container_sha256) {
             return Err(refuse(format!(
                 "{} does not match the installation's digest {}",
