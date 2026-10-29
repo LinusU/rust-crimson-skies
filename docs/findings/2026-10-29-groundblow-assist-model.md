@@ -10,8 +10,13 @@ committed; sha-256
 offset + `0x400000` below VA `0x643000`) was disassembled with
 `llvm-objdump -d -M intel`. **The original executable was not run**: every
 original-game claim below is `static` (claim id `OWNER-STATIC-2026-10-29`),
-nothing is `verified_original`. Implementer: `deepseek-1`. No independent
-review yet.
+nothing is `verified_original`. Implementer: `deepseek-1`. Reviewed on
+2026-10-29 by `deepseek-1` in a fresh session on a rebased head: the reviewer
+re-disassembled `0x48c220`, `0x48bf60`, `0x460410`, `0x460700`, `0x53e2e0` and
+the `0x48cf7e` call site, measured the pre-#2107 flight on `38c0bf7f4`,
+re-pinned `m01_collision` after #2224 landed, and corrected this note's earlier
+before/after table, which had been copied from an older base. Same agent
+instance and model as the implementer, so this is **not** independent review.
 
 The cited bytes are the machine-readable block at the end. The task's test
 prefix is `accept_ground_blow_`; its tests live in
@@ -96,7 +101,8 @@ prefix is `accept_ground_blow_`; its tests live in
 | the f32 arithmetic | this law works in f64 with f32 at the atmosphere and `approx_sqrt` boundaries, as the rest of the module does | the amount differs in the last f32 digits only |
 | the `hold_attitude` dev tool | the whole rotation block, the ground blow included, is skipped there; the tool only measures a top speed (`0x491c60`) | no production flight leaves the flag on |
 | `V+0x358`/`+0xac`/`+0xb4` field writes | see the rows above | as stated |
-| **no AI probe** | #2214's `fill_groundblow_probes` casts only the **player's** record (it `continue`s on `!flight.is_player`) and `overlay_groundblow_probe` sets only the player's seat, while the original casts the probe for every vehicle | every AI aircraft's `segment_probe` is `None`, so the AI branch (`ai_groundblow * groundblow_mag`) is implemented and tested but never fires in a composed mission. Follow-up task filed from #2107 |
+| the fake-dynamics path's seat rule | this law applies the block in `rotation_increment` for every seat with the call site's `V+0x384` gate; whether the original's fake-dynamics update ever reaches `0x48c470` is unmeasured | no fake AI is probed in a mission, so nothing observable; recorded, not guessed |
+| the `exp` branch's own table | the port computes `exp(-x)` exactly, the original's `0x460410` else-branch reads a lazily filled table of `exp(-n/51)` steps (`0x53e2e0`, the fill at `0x75cd18`, `[0x60912c]` = `-1/51`, `[0x609128]` = `-51`) | above `x = 0.1` the decay differs by up to ~2 % (`exp(-0.2)` = 0.8193 against the table's `exp(-11/51)` = 0.8061). Not tuned; the alignment factor is `dt * 2 * amount` and is routinely above 0.1 in a dive |
 
 **A fidelity caveat that matters for M01.** The block is **quadratic in the
 hit's amount** (`T += B * (T . B) * mag`, and `B` already carries the amount),
@@ -130,25 +136,36 @@ hand-over pose's 400 m probe (#2214 section 1), so the fill hands the law
 nothing at the mission start. The one-frame difference is the run loop's own
 frame budget, not the flight (the tick count is the same).
 
+The reviewer re-ran it on the rebased head (with #2224's AI probes live) and got
+the same result: `81 checks, 0 failed, framebuffers 79`, `4128 frames, 8082
+ticks, failures: none`, exit 0, captures in
+`private/evidence/2107-review-smoke/` (not committed).
+
 **The composed no-input flight does change once the nose meets the island.**
 `crates/cs_app/tests/campaign/m01_collision.rs` flies it for 80 s from the
-hand-over pose and pinned the pre-#2107 trajectory:
+hand-over pose. Both columns were measured on that test on the reviewed tree;
+the "before" column on `38c0bf7f4` (the rebased base, #2224's AI probe filled
+but read by nothing), the "after" column with this branch:
 
 | | before | after |
 | --- | --- | --- |
-| first judged terrain contact | t=41 (second at t=42) | t=42 (both land in that second) |
-| speed at t=40 / t=42 | 100.1 / < 70 m/s | 98.3 / 93.8 m/s |
-| altitude t=40 / t=60 / t=80 | 150 / 150 / 150 m (before the impact) | 165 / 422 / 725 m |
-| hull spent by the two episodes | 455 of 1200 | 267 of 1200 |
+| first judged terrain contact | t=41 (second at t=42) | t=42 (second at t=43) |
+| speed at t=40 / t=42 | 100.0 m/s / after its t=41-42 contacts | 97.8 / 95.2 m/s |
+| altitude t=40 / t=60 / t=80 | 162 / 428 / 746 m | 157 / 411 / 693 m |
+| judged contacts and hull spent | 3 · 581 of 1200 | 2 · 267 of 1200 |
 
-From t≈38 the probe meets the hillside ahead, the ground blow lifts the
-aircraft and it clears the terrain it used to strike: the pin moved with it,
-as that test's own header says a landing cause task does ("A cause task that
-lands moves the pins with it"). This is *closer* to the measured original,
-which is thrown to 373.9 m at t=40 and 1925 m at t=70, but it is a pin of what
-main does, not evidence about the original. Follow-up work: re-derive
-`docs/findings/2026-10-23-m01-collision-comparison.md` with the term on, and
-settle retail's face size (section 2 above).
+From t≈38 the probe meets the hillside ahead and the term moves the contact a
+second later and halves the hull it spends; the post-impact climb is slightly
+lower than before, not higher. The pin moved with it, as that test's own header
+says a landing cause task does ("A cause task that lands moves the pins with
+it"), and the test's earlier 455 hull pin is superseded: it predated the
+props/objects colliders that landed before this branch's base, so the same
+flight was already judged three times and spent 581 on `38c0bf7f4` (measured;
+the ignored test does not run in CI, which is how the pin went stale). This is
+*not* closer to the measured original, which is thrown to 373.9 m at t=40 and
+1925 m at t=70; it is a pin of what main does, not evidence about the original.
+Follow-up work: re-derive `docs/findings/2026-10-23-m01-collision-comparison.md`
+with the term on, and settle retail's face size (section 2 above).
 
 ## 4. Tests
 

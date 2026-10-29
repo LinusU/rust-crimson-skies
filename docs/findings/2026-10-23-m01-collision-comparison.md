@@ -80,20 +80,27 @@ The ground-blow consumer landed (#2107,
 `2026-10-29-groundblow-assist-model.md`). The no-input flight above is
 unchanged for the first 37 s — the probe is along the nose and nothing is within
 its 400 m while the flight is level — and changes from t≈38, when the hillside
-ahead enters the probe. The pinned test's new numbers (same test, same 80 s):
+ahead enters the probe. Both columns below were measured on this test itself:
+the left on `38c0bf7f4` (#2224, the probe filled for every aircraft but read by
+nothing), the right on the reviewed #2107 head, same test, same 80 s.
 
 | t | ours before #2107 | ours after #2107 |
 | --- | --- | --- |
-| 40 | (-3982.3, 160.4, -4834.1) 100.1 | (-3977.9, 165.1, -4834.2) 98.3 |
-| first judged contact | t=41 | t=42 |
-| 42 | speed < 70 after the impact | 177.3 m, 93.8 m/s |
-| 60 | 1.1 m, 100.5 m/s, 4 judged · 400 hull | 422.1 m, 95.1 m/s, 2 judged · 267 hull |
-| 80 | 1.1 m, 59.3 m/s, 9 judged · 1049 hull | 725.0 m, 94.4 m/s, 2 judged · 267 hull |
+| 40 | 162.1 m, 100.0 m/s | 157.2 m, 97.8 m/s |
+| first judged contact | t=41 (second at t=42) | t=42 (second at t=43) |
+| 60 | 428.2 m, 89.3 m/s, 3 judged · 581 hull | 410.7 m, 95.4 m/s, 2 judged · 267 hull |
+| 80 | 745.6 m, 95.8 m/s, 3 judged · 581 hull | 693.2 m, 95.0 m/s, 2 judged · 267 hull |
 
-The blow lifts the aircraft over the hillside it used to strike, so the sea skim
-at t=55 and the nine contacts that spent 1049 of the designed hull no longer
-happen. This is closer to the measured original's post-impact climb (373.9 m at
-t=40, 1925 m at t=70) but it is still a pin of what main does. The divergence
-rows above that describe the skim and the later contacts describe the
-pre-#2107 flight and need re-deriving with the term on (follow-up task filed
-from #2107).
+The term moves the hillside contact one second later and spends 267 of the
+designed hull where the flight spent 581 over three judged contacts before; the
+post-impact climb is slightly lower (411 m at t=60 instead of 428 m, 693 m at
+t=80 instead of 746 m) and still far below the measured original's 1608.7 m at
+t=60 and 1707.9 m at t=80. It is a pin of what main does, closer on the contact
+count and hull only, not on the climb.
+
+The pin's earlier text (455 hull over two contacts at t=60/70/80) predates the
+props/objects colliders that landed before this branch's base and is superseded
+by the "before" column above: on `38c0bf7f4` the same flight is judged three
+times and spends 581. The divergence rows above that describe a sea skim and
+later contacts describe an older base and need re-deriving with the term on
+(follow-up task filed from #2107).
