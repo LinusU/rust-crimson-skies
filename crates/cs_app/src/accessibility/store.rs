@@ -2,7 +2,8 @@
 //! non-negotiable behavior 5).
 //!
 //! [`save_atomic`] writes a sibling temporary file, syncs it and renames it
-//! over the target, so a failed or interrupted save leaves the previous file
+//! over the target (creating the missing parent directory first, as on a
+//! first run), so a failed or interrupted save leaves the previous file
 //! whole. [`startup`] never fails: with the safe flag it ignores the file, and
 //! a missing, unreadable or invalid file falls back to the designed defaults
 //! with the reason reported. A bad file is left untouched on disk.
@@ -51,6 +52,13 @@ pub fn save_atomic(path: &Path, settings: &Settings) -> io::Result<()> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let temp = temporary(path);
     let written = (|| {
+        // A missing user-data directory is a normal first run, not a failure.
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
         let mut file = fs::File::create(&temp)?;
         file.write_all(settings.to_text().as_bytes())?;
         file.sync_all()?;
