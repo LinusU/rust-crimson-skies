@@ -558,7 +558,17 @@ impl SweepColliders<'_, '_> {
     /// Every collider the sweep tests.
     fn targets(&self, prober: Entity) -> impl Iterator<Item = SweepTarget<'_>> {
         self.colliders.iter().filter_map(
-            move |(entity, collider, position, rotation, layer, is_sea, is_scenery, actor, node)| {
+            move |(
+                entity,
+                collider,
+                position,
+                rotation,
+                layer,
+                is_sea,
+                is_scenery,
+                actor,
+                node,
+            )| {
                 let kind = ColliderKind {
                     layer: layer.0,
                     is_sea,

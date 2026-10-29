@@ -221,7 +221,7 @@ fn accept_groundblow_taxi_sweep_reports_the_actor_flag() {
     // `owner_of` takes the flag directly: the production query and the
     // read-only path share this rule.
     assert_eq!(
-        owner_of(false, false, CollisionLayer::Aircraft, false, true),
+        owner_of(false, false, false, CollisionLayer::Aircraft, false, true),
         Some(SegmentProbeOwner::Vehicle { on_path: true })
     );
 }
