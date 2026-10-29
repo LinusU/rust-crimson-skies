@@ -1965,7 +1965,10 @@ impl Plugin for TargetingSchedulePlugin {
 /// panic: a refused pass is recorded in the report with the views the entries
 /// themselves left behind (a failed consumer pass unbinds, a failed edge pass
 /// leaves the selection as the last successful edge left it).
-fn drive_targeting_schedule(world: &mut World) {
+///
+/// `pub` because ordering matters: the F52-W2-wire `emit_targeting_events`
+/// presents this frame's selection change and must be scheduled *after* it.
+pub fn drive_targeting_schedule(world: &mut World) {
     let mut report = world
         .remove_resource::<TargetingScheduleReport>()
         .unwrap_or_default();
