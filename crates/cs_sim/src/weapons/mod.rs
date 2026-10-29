@@ -52,6 +52,8 @@
 
 pub mod guns;
 
+pub mod incapacitation;
+
 pub mod ordnance;
 
 pub use ordnance::{

@@ -999,12 +999,21 @@ pub enum StatusEffectKind {
     Stall,
     /// A marker for other systems and the pilot; no damage, no loss.
     Marker,
+    /// The pilot is incapacitated: the actor's controls read zero until the
+    /// effect ends (the measured `SONIC`/`FLASH` exposure, see
+    /// [`crate::weapons::incapacitation`]).
+    Incapacitation,
 }
 
 impl StatusEffectKind {
     /// Every status effect kind, in a stable order.
-    pub const ALL: &'static [StatusEffectKind] =
-        &[Self::Damage, Self::Choke, Self::Stall, Self::Marker];
+    pub const ALL: &'static [StatusEffectKind] = &[
+        Self::Damage,
+        Self::Choke,
+        Self::Stall,
+        Self::Marker,
+        Self::Incapacitation,
+    ];
 
     /// The stable label used in reports.
     #[must_use]
@@ -1014,13 +1023,17 @@ impl StatusEffectKind {
             Self::Choke => "choke",
             Self::Stall => "stall",
             Self::Marker => "marker",
+            Self::Incapacitation => "incapacitation",
         }
     }
 
     /// Whether this kind degrades a capability rather than marking one.
     #[must_use]
     pub const fn is_degrading(self) -> bool {
-        matches!(self, Self::Damage | Self::Choke | Self::Stall)
+        matches!(
+            self,
+            Self::Damage | Self::Choke | Self::Stall | Self::Incapacitation
+        )
     }
 }
 
@@ -4530,6 +4543,19 @@ impl StatusEffectLedger {
             },
         );
         Ok(instance)
+    }
+
+    /// Ends every live effect of `kind` on this recipient at once, returning
+    /// how many it removed.
+    ///
+    /// A status whose original stores one deadline (the incapacitation's
+    /// `+0xc0`) is *replaced* by a second hit, not stacked; this is the
+    /// replacement half. It is not an expiry, so nothing is reported.
+    pub fn clear_kind(&mut self, target: &StatusEffectTarget, kind: StatusEffectKind) -> usize {
+        let before = self.live.len();
+        self.live
+            .retain(|_, effect| !(effect.kind == kind && effect.target.is_same_recipient(target)));
+        before - self.live.len()
     }
 
     /// Advances the ledger to `tick` and reports every effect that reached
