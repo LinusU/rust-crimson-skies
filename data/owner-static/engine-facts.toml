@@ -8599,7 +8599,7 @@ provenance = "static"
 name = "hit_record.class_dispatch"
 va = 0x004c9ac8
 bytes = "8b46348d48ff83f909550f87d7020000ff248de09d4c00"
-fact = "the per-node test 0x4c9a00 dispatches on the node's class byte [node+0x34]: lea ecx,[eax-1]; cmp ecx,9; ja reject; jmp [ecx*4+0x4c9de0]; class values 1..10 each take a jump-table target, anything else is skipped"
+fact = "the per-node test 0x4c9a00 dispatches on the node's class byte [node+0x34]: lea ecx,[eax-1]; cmp ecx,9; ja 0x4c9daf; jmp [ecx*4+0x4c9de0]; class values 1..10 each take a jump-table target, anything else lands on 0x4c9daf, the error-report handler (calls 0x415330, returns 3) classes 2/3/4 share, so no geometry test runs for them"
 
 [[hit_record_fact]]
 claim = "OWNER-STATIC-2026-10-29"
@@ -8607,7 +8607,7 @@ provenance = "static"
 name = "hit_record.jump_table"
 va = 0x004c9de0
 bytes = "899d4c00af9d4c00af9d4c00af9d4c00df9a4c00729c4c00129d4c00769d4c009c9d4c00d79d4c00"
-fact = "the ten class handlers of 0x4c9a00 (image data, little-endian targets 0x4c9d89, 0x4c9daf, 0x4c9daf, 0x4c9daf, 0x4c9adf, 0x4c9c72, 0x4c9d12, 0x4c9d76, 0x4c9d9c, 0x4c9dd7): classes 5/6/7 are containers that recurse into [node+0x5c] children; the leaf classes run the bound test and then a shape test on the node"
+fact = "the ten class handlers of 0x4c9a00 (image data, little-endian targets 0x4c9d89, 0x4c9daf, 0x4c9daf, 0x4c9daf, 0x4c9adf, 0x4c9c72, 0x4c9d12, 0x4c9d76, 0x4c9d9c, 0x4c9dd7): classes 2/3/4 share 0x4c9daf, the error-report handler; classes 5/6/7 are containers that recurse into [node+0x5c] children and may first test their own bound box via 0x4cc010 (flag 0x20 or depth > 1; class 5 also its own [node+0x3c] soup at 0x4c9bc9); the leaf classes run the bound test and then a shape test on the node"
 
 [[hit_record_fact]]
 claim = "OWNER-STATIC-2026-10-29"

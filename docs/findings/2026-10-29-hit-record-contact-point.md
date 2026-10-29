@@ -34,7 +34,7 @@ against can differ.
 
 The segment itself is the projectile's tick sweep. The per-frame update builds
 `rocket+0x54 = rocket+0x48 +` this tick's displacement (`0x5af854..0x5af889`)
-and calls `0x5b03f0(weapon, rocket, &rocket+0x54)` (`0x5af899`). `0x5b03f0`
+and calls `0x5b03f0(weapon, rocket, &rocket+0x54)` (`0x5af89a`). `0x5b03f0`
 runs the scene query `0x4c8ec0(db, &rocket+0x48, &rocket+0x54, &list)` at
 `0x5b0483`, and again for the stored-contact-queue path at `0x5b0554` — both
 sites sweep the identical `rocket+0x48 → rocket+0x54` segment.
@@ -49,9 +49,11 @@ consumes is therefore a `0x55d6c0`-written segment∩face point.
 
 ## The record and the pick
 
-`0x4c8ec0` → `0x4c8f70` walks the scene spatial grid and tests each admitted
-node with `0x4c9a00`, which dispatches on `[node+0x34]` through the ten-entry
-jump table at `0x4c9de0` (other classes are skipped). Each accepted node
+`0x4c8ec0` → `0x4c8f70` (`0x4c8eeb`) walks the scene spatial grid and tests
+each admitted node with `0x4c9a00`, which dispatches on `[node+0x34]` through
+the ten-entry jump table at `0x4c9de0`; classes 2/3/4 and any out-of-range
+value take the shared error-report handler `0x4c9daf` (`0x415330`, then
+`return 3`), so no geometry test runs for them. Each accepted node
 appends one 44-byte element at the query tail (`+0x2c` stride, `0x4c9e96`):
 
 | field | content | written by |
@@ -99,12 +101,19 @@ inside `0x4cc010`), then the exact contact surface is one of:
 So on an aircraft-scale target "the point of contact" is where the projectile's
 swept segment pierces **a per-part collision face**: either that part node's
 bound-box face (flag `0x20`) or a polygon of its collision soup — never the
-actor centre, and not one monolithic hull. Container classes (5/6/7) only route
-the traversal to their children. The query's own gates before that are the node
-flags (`[node+0x24] & 4 && & 0x10`), the `0x40000` mask (`0x5b0330` sets
-`[0x71e8b4]`), the node-type filter `0x56c430` on `[node+0x30]` (the round's
-own filter set is staged at `0xa070a8`), and the serial cutoff
-`[node+0xc4] > [0x71e8b0]` (set to `rocket+0x7c`, the self-exclusion).
+actor centre, and not one monolithic hull. Container classes (5/6/7) route the
+traversal to their children (`[node+0x56]` entries via `[node+0x5c]`; class 5
+at `0x4c9c30`, class 6 at `0x4c9cd9`, class 7 at `0x4c9d69`) — but a container
+can carry a contactable volume of its own: when it carries flag `0x20` (or the
+depth argument exceeds 1) its handler first runs `0x4cc010` on the container
+node itself (`0x4c9b01`, `0x4c9ca2`, `0x4c9d37`), class 5 additionally tests
+its own `[node+0x3c]` soup (`0x4c9bc9`), and a flagged container whose own
+bound misses prunes the children early (`0x4c7f50`). The query's own gates
+before that are the node flags (`[node+0x24] & 4 && & 0x10`), the `0x40000`
+mask (`0x5b0330` sets `[0x71e8b4]`), the node-type filter `0x56c430` on
+`[node+0x30]` (the round's own filter set is staged at `0xa070a8`), and the
+serial cutoff `[node+0xc4] > [0x71e8b0]` (set to `rocket+0x7c` by the
+`0x4c7600` call at `0x5b053a`, the self-exclusion).
 
 ## Shift vs the runtime's swept-segment point
 
