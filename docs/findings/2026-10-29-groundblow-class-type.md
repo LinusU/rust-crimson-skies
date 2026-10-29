@@ -201,8 +201,9 @@ entry's node, moving the found entry to the head. That is the lookup the plane p
 Every class-typed node a constructor builds therefore carries its own constant, and the
 allocator's other call sites are not class constructors: class 8 has no constructor among
 them at all (its copy entry exists, but the loader refuses it and no CS container stores
-it), the by-name reader below copies the record instead, and the two builders `0x4eda46`
-and `0x5bab8d` store the new node inside another object and write no class word themselves.
+it), the by-name reader of section 1 copies the record instead, and the two builders
+`0x4eda46` and `0x5bab8d` store the new node inside another object and write no class word
+themselves.
 
 ## 3. Aircraft: the plane's own node, copied
 
