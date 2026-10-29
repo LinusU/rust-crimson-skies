@@ -45,15 +45,17 @@ tests against `$CS_GAME_DIR`, and are values of this port, not of the original.
      the filter removes nothing today and a future population with a refused
      class has one place to say so.
 4. **The fill** is `fill_groundblow_probes`, a fixed-update system that casts
-   the player record's probe from the tick's pre-step `Position`/`Rotation`
+   the player record's probe from the tick's **pre-step** `Position`/`Rotation`
    (before the physics step and before the law steps) and stores the answer in
    the `GroundBlowProbes` resource. It is a system of its own because the
    flight driver holds `&mut Rotation` while the sweep reads it; Bevy refuses
    the two queries in one system. `OriginalFlightSet::{GroundBlowFill,
    OriginalFlight}` names the order for callers that need to insert a step
    between them.
-   `drive_original_flight` then sets `OriginalInput::segment_probe` for the
-   player's seat from that resource and counts the application in
+   `drive_original_flight` hands the record's input to the law through
+   `world_sweep::overlay_groundblow_probe`, the one place that reads
+   `GroundBlowProbes`: it sets `OriginalInput::segment_probe` for the player's
+   seat (and only that seat), and the driver counts the application in
    `PlaytestState::groundblow_probes`. `PlaytestOriginalFlight::input()` still
    states `None` — it has no world — and says where the driver overlays it.
 5. **Nothing consumes the probe yet**, so M01 must fly exactly as before: the
@@ -70,9 +72,12 @@ tests against `$CS_GAME_DIR`, and are values of this port, not of the original.
   x ∈ [-15360, -2048], z ∈ [-14336, -2048], while the hand-over pose is
   (-1426, 150, -1813). A 400 m probe from that pose meets nothing in any
   direction, and even a 4 000 m probe straight down meets nothing: the port has
-  no collider there at all. The flat water tiles the mission does carry are
-  flat `y = 0` quads elsewhere, and a 30-degree dive from 150 m above one hits
-  at the expected 300 m chord.
+  no collider there at all. The retail test now asserts the first half of that
+  from the colliders' own world bounds (no swept collider lies within the probe's
+  400 m) and that the fill cast at the hand-over pose is empty. The flat water
+  tiles the mission does carry are flat `y = 0` quads elsewhere: the reviewed
+  test dives 60 degrees from 150 m above the widest one and asserts the
+  answering collider is that tile (a 173 m chord).
   This is recorded rather than "fixed": it is the collider population the port
   spawns for M01's world selection, the original's world database has no sea
   plane either (sweep finding §7), and whether the original's backdrop dome or
@@ -92,7 +97,7 @@ Each of these is visible to #2107 and is recorded rather than approximated:
 | --- | --- | --- |
 | the stored polygon's two-sided bit (`(vertex_info >> 10) & 1`, pushed as the face test's `flag` at `0x55cc73`) | the port's collision view is a triangle soup and drops the stored flag word | a two-sided stored outline hit from its back side is reported here as no contact where the original keeps it. C3's measured water and island polygons are one-sided; no count for the rest is committed |
 | a quad's parallelogram area | the same popup: the port has triangles, the original takes the stored polygon's first three corners | on a stored quad the port reports `2 * triangle area` where the original reports the quad's parallelogram: `sqrt(1/2)` on the probe's `sqrt(dot)` for those faces |
-| an aircraft's mesh | the port's aircraft body carries the designed 12 x 2 x 10 m box, not the airframe's mesh nodes | an aircraft hit follows the measured box rule, not the mesh's triangles |
+| an aircraft's mesh | the port's player aircraft body carries the designed 12 x 2 x 10 m box (an AI aircraft 12 x 4 x 12), not the airframe's mesh nodes | an aircraft hit follows the measured box rule, not the mesh's triangles |
 | the vehicle's `+0xcc` taxi-path byte | the plane record's `+0x11c` path branch (`0x47c568`) is not imported, and no component carries it | every port vehicle states `on_path: false`; a parked aircraft the original would count as ground is discarded by the player's gate |
 | props, turrets, ground targets | they are not `PlaytestSea`/`WorldSceneryCollider`; the owner's scope for this stage is the scenery and the live aircraft | the original sweeps those nodes too (its polygon census names `gun`, `turret` and `hull` faces), so a dive at a turret finds nothing here |
 | the layer filter `0x56c430(node+0x30)` and the query thresholds `0x71e8ac`/`0x71e8b0` | runtime state whose value at ground-blow time is unmeasured (#2213 §6) | the port applies none of them |
@@ -121,20 +126,30 @@ Prefix `accept_groundblow_fill_`,
 * `accept_groundblow_fill_sweep_resolves_a_box_to_its_vehicle_and_skips_the_prober`
   — the same box record through `nearest_contact`, with `owner_of`'s refusals
   for debris and for a sea-marked prober.
+* `accept_groundblow_fill_overlays_the_players_probe_only` — the driver's
+  overlay: the player's input carries the sweep's hit (replacing any stale
+  probe, changing no command), a tick with no contact stays `None`, another
+  record's hit is not used, and a non-player's input is not overlaid.
 * `accept_groundblow_fill_degenerate_segment_answers_nothing`.
 * `accept_groundblow_fill_m01_fills_the_probe_from_the_production_world`
   (ignored, needs `CS_GAME_DIR`) — M01 composed headless: on every tick the
   stored fill equals the query's own answer for the same pre-step pose
   (compared in-tick, after the fill and before the driver), the elevation is
   400 m, and over M01's mapped flat sea the probe answers with the
-  unnormalised normal and the chord distance.
+  unnormalised normal and the chord distance. The aircraft is placed **from the
+  tile's own world pose** (its `Position`/`Rotation` around the shape's local
+  box — the local box alone is not a world place), 150 m above the widest flat
+  tile and backed off by the 60-degree dive's own 87 m horizontal reach, and the
+  test asserts the answering collider is that `PlaytestSea` tile.
 * `accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on`
   (ignored, needs `CS_GAME_DIR`) — two composed M01s in lockstep, both placed
-  over the flat sea on a 30-degree dive, one with the fill's answer withheld
-  from the driver by a test system between `OriginalFlightSet::GroundBlowFill`
-  and `OriginalFlightSet::OriginalFlight`: every tick's `Position`, `Rotation`
-  and `LinearVelocity` is identical, over a run where the sweep answers on at
-  least 100 of 120 ticks.
+  over the same flat sea tile on the same 60-degree dive, one with the fill's
+  answer withheld from the driver by a test system between
+  `OriginalFlightSet::GroundBlowFill` and `OriginalFlightSet::OriginalFlight`:
+  every tick's `Position`, `Rotation` and `LinearVelocity` is identical, over a
+  run where the sweep answers on at least 100 of 120 ticks, and both runs
+  count the driver's overlay on every stepped tick
+  (`PlaytestState::groundblow_probes`).
 
 The two retail tests take a mutex: composing M01 stages the launch-sound
 container into one private cache path, and two compositions in parallel were

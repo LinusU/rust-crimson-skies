@@ -81,8 +81,9 @@
 //!   that halves `|N|` for the quads (a `sqrt(1/2)` on the probe's `sqrt(dot)`).
 //!   The task's own contract is "the hit triangle's edge cross product",
 //!   which is what is produced.
-//! * **An aircraft is a box, not its mesh.** The port's aircraft body carries
-//!   the designed 12 x 2 x 10 m box collider; the original reaches the
+//! * **An aircraft is a box, not its mesh.** The port's player aircraft body
+//!   carries the designed 12 x 2 x 10 m box collider (an AI aircraft the
+//!   designed 12 x 4 x 12 m one); the original reaches the
 //!   aircraft's own mesh-bearing nodes instead. A hit on an aircraft therefore
 //!   follows the engine's *measured* box-face rule (`0x55d270`: the face's
 //!   outward normal scaled by the face's area) rather than the aircraft mesh's
@@ -105,7 +106,7 @@ use bevy::ecs::entity::Entity;
 use bevy::ecs::system::{Query, ResMut, SystemParam};
 use bevy::prelude::{Has, Quat, Resource, Vec3, World};
 use cs_sim::collision::CollisionLayer;
-use cs_sim::flight::original::{SegmentProbeHit, SegmentProbeOwner, nose_direction};
+use cs_sim::flight::original::{OriginalInput, SegmentProbeHit, SegmentProbeOwner, nose_direction};
 use cs_types::space::Quaternion;
 
 use super::scene::{PlaytestOriginalFlight, PlaytestSea};
@@ -625,6 +626,29 @@ pub fn fill_groundblow_probes(
         probes.cast_this_tick += 1;
     }
     probes.cast_total += probes.cast_this_tick;
+}
+
+/// The input one flying record's law steps with: `input` with the ground blow's
+/// world-sweep answer overlaid for the player's seat (task #2214).
+///
+/// [`fill_groundblow_probes`] casts the probe earlier in the same tick and
+/// [`GroundBlowProbes`] carries its answer; this is the one place that hands it
+/// to the law, so a caller (the flight driver, or a test using the same pose)
+/// cannot disagree about which records get it. A non-player record's input is
+/// returned unchanged — the port fills the player's probe only — and a record
+/// whose sweep found no contact stays `None`, which is the original's zero
+/// amount rather than a record.
+#[must_use]
+pub fn overlay_groundblow_probe(
+    mut input: OriginalInput,
+    is_player: bool,
+    entity: Entity,
+    probes: &GroundBlowProbes,
+) -> OriginalInput {
+    if is_player {
+        input.segment_probe = probes.hit(entity);
+    }
+    input
 }
 
 /// The ground-blow probe for a body at `position` with attitude `rotation`,

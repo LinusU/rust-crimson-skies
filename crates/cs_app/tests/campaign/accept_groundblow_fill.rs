@@ -21,17 +21,17 @@ use std::path::PathBuf;
 use avian3d::prelude::{Collider, LinearVelocity, Position, Rotation};
 use bevy::prelude::*;
 use cs_app::mission_launch::plan_mission_launch;
-use cs_app::mission_session::{LaunchCinematic, build_headless, stage_for};
+use cs_app::mission_session::{LaunchCinematic, WorldSceneryCollider, build_headless, stage_for};
 use cs_app::physics::BodyLayer;
 use cs_app::playtest::scene::{PlaytestAircraft, PlaytestOriginalFlight, PlaytestSea};
 use cs_app::playtest::world_sweep::{
     GroundBlowProbes, GroundBlowSegment, INTERSECTED_CLASS_TYPES, OBJECT3D_CLASS_TYPE,
     REFUSED_CLASS_TYPES, SweepColliders, SweepTarget, class_type_intersects, ground_blow_segment,
-    nearest_contact, probe_in_world,
+    nearest_contact, overlay_groundblow_probe, probe_in_world,
 };
-use cs_app::playtest::{OriginalFlightSet, to_quaternion};
+use cs_app::playtest::{OriginalFlightSet, PlaytestState, to_quaternion};
 use cs_sim::collision::CollisionLayer;
-use cs_sim::flight::original::SegmentProbeOwner;
+use cs_sim::flight::original::{OriginalInput, SegmentProbeHit, SegmentProbeOwner};
 
 use crate::campaign::common::label;
 
@@ -292,7 +292,66 @@ fn accept_groundblow_fill_population_is_the_marked_colliders() {
     .expect("the sea still answers beneath it");
     assert_eq!(own.owner, SegmentProbeOwner::World);
     assert_ne!(own.entity, aircraft);
-    let _ = sea;
+    assert_eq!(own.entity, sea, "the marked sea tile is what answered");
+}
+
+/// The driver's overlay is the one place the fill reaches the law: the player's
+/// input carries the sweep's hit, a record with no hit keeps `None`, and a
+/// non-player's input is untouched (the port fills the player's probe only).
+#[test]
+fn accept_groundblow_fill_overlays_the_players_probe_only() {
+    let player = Entity::from_raw_u32(21).expect("an entity id");
+    let other = Entity::from_raw_u32(22).expect("an entity id");
+    let hit = SegmentProbeHit {
+        distance_m: 12.5,
+        normal: [0.0, 40_000.0, 0.0],
+        owner: SegmentProbeOwner::World,
+    };
+    let probes = GroundBlowProbes {
+        hits: vec![(player, hit)],
+        cast_this_tick: 1,
+        cast_total: 1,
+    };
+    let input = OriginalInput::full_throttle(true);
+    assert_eq!(input.segment_probe, None);
+
+    let filled = overlay_groundblow_probe(input, true, player, &probes);
+    assert_eq!(filled.segment_probe, Some(hit));
+    // The overlay adds the probe and changes no command.
+    assert_eq!(filled.throttle, input.throttle);
+    assert_eq!(filled.roll, input.roll);
+    assert_eq!(filled.pitch, input.pitch);
+    assert_eq!(filled.yaw, input.yaw);
+    assert!(filled.is_player);
+    // An `OriginalInput` that already carries a probe of its own is replaced by
+    // this tick's, never merged with a stale one.
+    let stale = OriginalInput {
+        segment_probe: Some(SegmentProbeHit {
+            distance_m: 1.0,
+            normal: [0.0, 1.0, 0.0],
+            owner: SegmentProbeOwner::Vehicle { on_path: true },
+        }),
+        ..input
+    };
+    assert_eq!(
+        overlay_groundblow_probe(stale, true, player, &probes).segment_probe,
+        Some(hit)
+    );
+
+    // A tick whose sweep found no contact is `None`, not a guessed hit.
+    assert_eq!(
+        overlay_groundblow_probe(input, true, player, &GroundBlowProbes::default()).segment_probe,
+        None
+    );
+    // Another record's hit is not the player's.
+    assert_eq!(
+        overlay_groundblow_probe(input, true, other, &probes).segment_probe,
+        None
+    );
+    // A non-player record is not overlaid at all.
+    let ai = overlay_groundblow_probe(OriginalInput::full_throttle(false), false, player, &probes);
+    assert_eq!(ai.segment_probe, None);
+    assert!(!ai.is_player);
 }
 
 /// A `cs_types` orientation from an Avian rotation, as the playtest's own
@@ -341,28 +400,121 @@ fn elev(app: &App, player: Entity) -> f64 {
         .groundblow_elev_m
 }
 
-/// A pose 150 m above M01's **mapped** flat sea: the centre of the first sea
-/// collider whose own bounding box is flat in `y`. M01's hand-over pose sits
-/// outside the world container's water tiles (recorded in the task's finding),
-/// so a 400 m probe there meets nothing; this puts the aircraft over water the
-/// world really carries.
-fn above_the_flat_sea(app: &mut App) -> Vec3 {
+/// The world-space bounds of a collider entity: its shape's own bounding box at
+/// the pose Avian gives the collider (`Position`/`Rotation`).
+///
+/// The shape is read through [`Collider::shape_scaled`], so the entity's scale
+/// is already in it; the box is local, and only the pose turns it into a world
+/// place. Reading the local box alone would put an aircraft at the mesh's own
+/// origin instead of over the tile.
+fn collider_world_bounds(app: &App, entity: Entity) -> Option<(Vec3, Vec3)> {
+    let collider = app.world().get::<Collider>(entity)?;
+    let position = app.world().get::<Position>(entity)?.0;
+    let rotation = app.world().get::<Rotation>(entity)?.0;
+    let local = collider.shape_scaled().compute_local_aabb();
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for corner in 0..8 {
+        let point = Vec3::new(
+            if corner & 1 == 0 {
+                local.mins.x
+            } else {
+                local.maxs.x
+            },
+            if corner & 2 == 0 {
+                local.mins.y
+            } else {
+                local.maxs.y
+            },
+            if corner & 4 == 0 {
+                local.mins.z
+            } else {
+                local.maxs.z
+            },
+        );
+        let world = position + rotation * point;
+        lo = lo.min(world);
+        hi = hi.max(world);
+    }
+    Some((lo, hi))
+}
+
+/// The distance from `point` to the nearest world-space box among the colliders
+/// the sweep tests (`PlaytestSea` and `WorldSceneryCollider`), in metres.
+fn nearest_swept_collider_m(app: &mut App, point: Vec3) -> f32 {
+    let mut entities: Vec<Entity> = app
+        .world_mut()
+        .query_filtered::<Entity, With<PlaytestSea>>()
+        .iter(app.world())
+        .collect();
+    entities.extend(
+        app.world_mut()
+            .query_filtered::<Entity, With<WorldSceneryCollider>>()
+            .iter(app.world()),
+    );
+    let mut nearest = f32::INFINITY;
+    for entity in entities {
+        let Some((lo, hi)) = collider_world_bounds(app, entity) else {
+            continue;
+        };
+        nearest = nearest.min(point.clamp(lo, hi).distance(point));
+    }
+    nearest
+}
+
+/// The widest **mapped** flat sea tile: its entity, the world middle of its
+/// flat surface, and that surface's height.
+///
+/// M01's hand-over pose sits outside the world container's water tiles
+/// (recorded in the task's finding), so a 400 m probe there meets nothing; this
+/// puts the aircraft over water the world really carries.
+fn above_the_flat_sea(app: &mut App) -> (Entity, Vec3, f32) {
     let colliders: Vec<Entity> = app
         .world_mut()
         .query_filtered::<Entity, With<PlaytestSea>>()
         .iter(app.world())
         .collect();
+    let mut best: Option<(f32, Entity, Vec3, f32)> = None;
     for entity in colliders {
-        let Some(collider) = app.world().get::<Collider>(entity) else {
+        let Some((lo, hi)) = collider_world_bounds(app, entity) else {
             continue;
         };
-        let aabb = collider.shape_scaled().compute_local_aabb();
-        if (aabb.maxs.y - aabb.mins.y).abs() < 0.01 {
-            let centre = (aabb.mins + aabb.maxs) * 0.5;
-            return Vec3::new(centre.x, aabb.maxs.y + 150.0, centre.z);
+        if (hi.y - lo.y).abs() >= 0.01 {
+            continue;
+        }
+        let span = (hi.x - lo.x).min(hi.z - lo.z);
+        if best.is_none_or(|(widest, _, _, _)| span > widest) {
+            best = Some((
+                span,
+                entity,
+                Vec3::new((lo.x + hi.x) * 0.5, 0.0, (lo.z + hi.z) * 0.5),
+                hi.y,
+            ));
         }
     }
-    panic!("M01's world carries no flat sea collider");
+    let (span, entity, centre, top) = best.expect("M01's world carries a flat sea collider");
+    assert!(
+        span >= 120.0,
+        "the widest flat sea tile is only {span} m across: the dive would leave it"
+    );
+    (entity, centre, top)
+}
+
+/// Where the dive starts: [`DIVE_ALTITUDE_M`] above the surface, and
+/// [`PROBE_BACKOFF_M`] back along `+Z` from the tile's middle.
+///
+/// The dive runs along `-Z` ([`dive_nose`]), so backing off by the probe's own
+/// horizontal reach (`altitude / tan(60 deg)` = 87 m) keeps every contact
+/// within ±(the run's drift) of the tile's middle: the run stays over the one
+/// tile instead of leaving it.
+const DIVE_ALTITUDE_M: f32 = 150.0;
+const PROBE_BACKOFF_M: f32 = 86.602_54;
+
+/// The dive's nose: 60 degrees below the horizon along `-Z`, so a 150 m drop is
+/// a 173 m chord — well inside the 400 m probe — and the run's horizontal drift
+/// stays small.
+fn dive_nose() -> Vec3 {
+    Quat::from_rotation_x(-60_f32.to_radians()) * Vec3::NEG_Z
 }
 
 /// Puts `player` at `position` flying `nose` (the unit nose direction) at
@@ -457,16 +609,29 @@ fn accept_groundblow_fill_m01_fills_the_probe_from_the_production_world() {
         "one player record casts one probe per fixed tick"
     );
 
-    // Over M01's mapped flat sea, nose 30 degrees down: the probe meets water
-    // within its own length, so the check below is not a run of `None`s.
-    let above = above_the_flat_sea(&mut app);
-    place(
-        &mut app,
-        player,
-        above,
-        Quat::from_rotation_x(-30_f32.to_radians()) * Vec3::NEG_Z,
-        60.0,
+    // The hand-over pose is outside the port's world geometry: no swept
+    // collider lies within the probe's own 400 m (recorded in the task's
+    // finding), so the probe there answers nothing and **#2107 must not assume
+    // a hit near the mission start**.
+    let (handover, _) = pose(&app, player);
+    let nearest = nearest_swept_collider_m(&mut app, handover);
+    assert!(
+        nearest > elevation as f32,
+        "the hand-over pose is only {nearest} m from a swept collider"
     );
+    assert!(
+        app.world()
+            .resource::<GroundBlowProbes>()
+            .hit(player)
+            .is_none(),
+        "the probe cast at the hand-over pose already met something"
+    );
+
+    // Over M01's mapped flat sea, nose 60 degrees down: the probe meets water
+    // within its own length, so the check below is not a run of `None`s.
+    let (sea, centre, top) = above_the_flat_sea(&mut app);
+    let start = Vec3::new(centre.x, top + DIVE_ALTITUDE_M, centre.z + PROBE_BACKOFF_M);
+    place(&mut app, player, start, dive_nose(), 60.0);
     for _ in 0..4 {
         app.update();
     }
@@ -482,11 +647,15 @@ fn accept_groundblow_fill_m01_fills_the_probe_from_the_production_world() {
     );
 
     // The record's own unnormalised normal and chord distance, from the same
-    // query over the same world.
+    // query over the same world, on the tile the dive was placed over.
     let (position, rotation) = pose(&app, player);
     let dive = probe_in_world(app.world(), position, rotation, elevation, player)
         .expect("the sea answers beneath the placed aircraft");
     assert_eq!(dive.owner, SegmentProbeOwner::World);
+    assert_eq!(
+        dive.entity, sea,
+        "the dive answered from the sea tile it was placed over"
+    );
     assert!(
         (0.0..=elevation).contains(&dive.distance_m),
         "{dive:?} must lie on the 400 m segment"
@@ -534,13 +703,14 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
     assert!(withheld.world().get::<PlaytestOriginalFlight>(b).is_some());
 
     // Both aircraft start from the same pose over M01's mapped flat sea, nose
-    // 30 degrees down at 60 m/s, so the 400 m probe meets water within its own
+    // 60 degrees down at 60 m/s, so the 400 m probe meets water within its own
     // length on the first tick: the comparison must run over ticks where the
     // sweep really answers.
-    let above = above_the_flat_sea(&mut filled);
-    let nose = Quat::from_rotation_x(-30_f32.to_radians()) * Vec3::NEG_Z;
-    place(&mut filled, a, above, nose, 60.0);
-    place(&mut withheld, b, above, nose, 60.0);
+    let (_, centre, top) = above_the_flat_sea(&mut filled);
+    let start = Vec3::new(centre.x, top + DIVE_ALTITUDE_M, centre.z + PROBE_BACKOFF_M);
+    let nose = dive_nose();
+    place(&mut filled, a, start, nose, 60.0);
+    place(&mut withheld, b, start, nose, 60.0);
 
     let mut answers = 0;
     for tick in 0..120 {
@@ -579,6 +749,21 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
         "the sweep answered on only {answers} of 120 ticks: the comparison is \
          vacuous without a hit"
     );
+    // The driver overlay really ran on the production step: every tick the
+    // player's law stepped is counted, in both runs.
+    let filled_applied = filled.world().resource::<PlaytestState>().groundblow_probes;
+    let withheld_applied = withheld
+        .world()
+        .resource::<PlaytestState>()
+        .groundblow_probes;
+    assert!(
+        filled_applied >= 120,
+        "the driver overlaid the probe on only {filled_applied} ticks"
+    );
+    assert_eq!(
+        filled_applied, withheld_applied,
+        "both runs step the player's law on the same ticks"
+    );
     // The withhold step ran and the fill still cast every tick: the runs differ
     // only in what the driver was handed.
     assert_eq!(
@@ -590,8 +775,8 @@ fn accept_groundblow_fill_m01_trajectory_is_identical_with_the_fill_on() {
     );
 }
 
-/// The 2200-line marker keeps `GroundBlowSegment` in this file's imports honest:
-/// a segment built with no length is no contact.
+/// A segment with no length is no contact: the query never guesses a face for
+/// a probe the original would not cast (`groundblow_elev` is 400 m).
 #[test]
 fn accept_groundblow_fill_degenerate_segment_answers_nothing() {
     let collider = sea_quad();

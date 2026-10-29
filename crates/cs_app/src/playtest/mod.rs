@@ -647,12 +647,16 @@ fn drive_original_flight(
         ];
         flight.state.orientation = to_quaternion(rotation.0);
         flight.state.velocity_mps = velocity.0.to_array().map(f64::from);
-        let mut input = flight.input();
+        // The ground blow's world sweep (#2214): the probe the fill cast from
+        // this tick's pre-step pose, overlaid on the player's input. Nothing in
+        // the law reads it yet (#2107 does), so the trajectory is unchanged.
+        let input = world_sweep::overlay_groundblow_probe(
+            flight.input(),
+            flight.is_player,
+            entity,
+            &probes,
+        );
         if flight.is_player {
-            // The ground blow's world sweep (#2214): the probe the fill cast
-            // from this tick's pre-step pose. Nothing in the law reads it yet
-            // (#2107 does), so the trajectory is unchanged.
-            input.segment_probe = probes.hit(entity);
             state.groundblow_probes += 1;
         }
         let step = {
