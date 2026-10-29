@@ -269,6 +269,7 @@ mod accept_crash_d_03_wing_fire;
 mod accept_groundblow_ai;
 mod accept_groundblow_face;
 mod accept_groundblow_fill;
+mod accept_groundblow_object;
 mod accept_groundblow_props;
 mod accept_m01_c3_player_config;
 mod c4_m01_fu;
