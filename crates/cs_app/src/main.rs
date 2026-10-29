@@ -37,10 +37,15 @@ fn main() -> ExitCode {
             return ExitCode::from(cli::EXIT_INVALID_INPUT);
         }
     }
+    let mut profile_base = None;
     let profile = match cs_app::user_data::take_flag(&mut args) {
         Ok(None) => None,
         Ok(Some(value)) => match cs_app::user_data::open_profile_dir(&value) {
-            Ok(session) => Some(session),
+            Ok(session) => {
+                // The same validated directory, for the run's other private files.
+                profile_base = cs_app::user_data::resolve_profile_dir(&value).ok();
+                Some(session)
+            }
             Err(error @ cs_app::user_data::ProfileDirError::Refused(_)) => {
                 eprintln!("cs: {error}");
                 return ExitCode::from(cli::EXIT_INVALID_INPUT);
@@ -55,7 +60,7 @@ fn main() -> ExitCode {
             return ExitCode::from(cli::EXIT_INVALID_INPUT);
         }
     };
-    let code = dispatch(args);
+    let code = dispatch(args, profile_base.as_deref());
     if let Some(session) = profile {
         // The session held the private population for the whole run; its
         // teardown report says where that was and whether anything was lost.
@@ -70,7 +75,7 @@ fn main() -> ExitCode {
     code
 }
 
-fn dispatch(args: Vec<String>) -> ExitCode {
+fn dispatch(args: Vec<String>, profile_base: Option<&std::path::Path>) -> ExitCode {
     match cli::parse(args) {
         CliRequest::Help => {
             print!("{}", cli::HELP_TEXT);
@@ -100,13 +105,8 @@ fn dispatch(args: Vec<String>) -> ExitCode {
                 ExitCode::from(error.exit_code())
             }
         },
-        CliRequest::Playtest(request) => match playtest::run_playtest(&request) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("cs: {error}");
-                ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
-            }
-        },
+        CliRequest::Playtest(request) => run_playtest_with_settings(&request, profile_base),
+
         CliRequest::Mission(request) => match cs_app::mission_launch::launch_mission(&request) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -148,6 +148,41 @@ fn dispatch(args: Vec<String>) -> ExitCode {
             ExitCode::from(cli::EXIT_INVALID_INPUT)
         }
     }
+}
+
+/// Opens the accessibility settings session (F52-W1), reports where its
+/// settings came from, runs the playtest and flushes the session at teardown.
+/// Nothing in the playtest consumes the session yet (F52-W2/W3 wire the
+/// presenters and the control profile), so it is held for the run and closed.
+fn run_playtest_with_settings(
+    request: &playtest::PlaytestRequest,
+    profile_base: Option<&std::path::Path>,
+) -> ExitCode {
+    let mut settings = match cli::open_accessibility_session(
+        request.safe_settings,
+        profile_base,
+        cs_app::user_data::Platform::host(),
+        &cs_app::user_data::Environment::from_process(),
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("cs: {error}");
+            return ExitCode::from(cli::EXIT_RUNTIME_FAILURE);
+        }
+    };
+    eprintln!("{}", cli::settings_origin_message(&settings));
+    let mut code = match playtest::run_playtest(request) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("cs: {error}");
+            ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
+        }
+    };
+    if let Err(error) = settings.teardown() {
+        eprintln!("cs: accessibility settings: {error}");
+        code = ExitCode::from(cli::EXIT_RUNTIME_FAILURE);
+    }
+    code
 }
 
 /// Reports a finished run on stdout: the provenance marker, how far the world

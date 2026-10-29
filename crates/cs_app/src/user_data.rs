@@ -35,6 +35,11 @@ use crate::profile::{ProfileSession, SessionError};
 /// The flag that selects a private profile base.
 pub const PROFILE_DIR_FLAG: &str = "--profile-dir";
 
+/// File name of the accessibility settings (F52-W1). The contents are the
+/// `cs_content::settings` text `accessibility::store` reads and writes; the
+/// extension names this application's format and implies no original file.
+pub const ACCESSIBILITY_SETTINGS_FILE: &str = "accessibility.settings";
+
 /// Directory name of the base under the platform's data location.
 const APP_DIR: &str = "CrimsonSkies";
 /// The same, for platforms whose convention is lowercase.
@@ -147,6 +152,16 @@ pub fn default_base(platform: Platform, env: &Environment) -> Result<PathBuf, Ba
                 .join(APP_DIR_LOWER))
         }
     }
+}
+
+/// The accessibility settings file under `base`: per user, directly under the
+/// user-data base, never per profile (owner decision, Rally #780, 2026-10-29:
+/// accessibility applies from the first front-end frame before any profile is
+/// chosen, and it is the player's comfort setting on this machine, not save
+/// state). Under `--profile-dir <dir>` the base is `<dir>`, so an automated
+/// run never touches the player's real file.
+pub fn accessibility_settings_path(base: &Path) -> PathBuf {
+    base.join(ACCESSIBILITY_SETTINGS_FILE)
 }
 
 /// Why a `--profile-dir` value was refused.
@@ -295,6 +310,18 @@ impl fmt::Display for ProfileDirError {
 
 impl std::error::Error for ProfileDirError {}
 
+/// Validates `value` against the real host base and returns the private base
+/// directory it names. Nothing is created.
+///
+/// # Errors
+///
+/// [`ProfileDirRefusal`] naming why the value is unusable.
+pub fn resolve_profile_dir(value: &str) -> Result<PathBuf, ProfileDirRefusal> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let real = default_base(Platform::host(), &Environment::from_process()).ok();
+    check_profile_dir(value, &cwd, real.as_deref())
+}
+
 /// Validates `value` against the real host base and opens the sandbox session
 /// under it.
 ///
@@ -303,8 +330,20 @@ impl std::error::Error for ProfileDirError {}
 /// [`ProfileDirError::Refused`] before anything is touched, or
 /// [`ProfileDirError::Session`] when the synthetic population cannot be opened.
 pub fn open_profile_dir(value: &str) -> Result<ProfileSession, ProfileDirError> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let real = default_base(Platform::host(), &Environment::from_process()).ok();
-    let dir = check_profile_dir(value, &cwd, real.as_deref()).map_err(ProfileDirError::Refused)?;
+    let dir = resolve_profile_dir(value).map_err(ProfileDirError::Refused)?;
     ProfileSession::open_sandbox(&dir, &SettingCatalog::empty()).map_err(ProfileDirError::Session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accessibility_settings_path_is_the_fixed_file_under_the_base() {
+        let base = Path::new("/data/crimson-skies");
+        assert_eq!(
+            accessibility_settings_path(base),
+            PathBuf::from("/data/crimson-skies/accessibility.settings")
+        );
+    }
 }

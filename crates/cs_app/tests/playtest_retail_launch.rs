@@ -112,6 +112,7 @@ fn accept_playtest_retail_launch_cli_routes_the_exact_command_to_original_assets
         CliRequest::Playtest(PlaytestRequest {
             smoke: None,
             retail: Some(retail),
+            safe_settings: false,
         }) => {
             assert_eq!(retail.cs_path, PathBuf::from("/some/install"));
             assert_eq!(retail.world, "c1c");
@@ -151,6 +152,7 @@ fn accept_playtest_retail_launch_an_explicit_bad_path_fails_and_never_falls_back
     let request = PlaytestRequest {
         smoke: None,
         retail: Some(retail),
+        safe_settings: false,
     };
     let error = run_playtest(&request).expect_err("a missing installation must fail");
     assert!(matches!(error, PlaytestError::Retail { .. }), "{error}");

@@ -98,6 +98,9 @@ pub struct PlaytestRequest {
     /// `Some` flies over original assets read from the named installation
     /// (task #649) instead of the synthetic scene.
     pub retail: Option<RetailRequest>,
+    /// `--safe-settings` (F52-W1): open the accessibility settings from the
+    /// designed defaults without reading the settings file.
+    pub safe_settings: bool,
 }
 
 /// The finite smoke run (`--smoke-seconds <n> --capture-dir <dir>`).

@@ -235,6 +235,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut view: Option<ViewRig> = None;
     let mut settings: Option<ComparisonSettings> = None;
     let mut playtest = false;
+    let mut safe_settings = false;
     let mut smoke_seconds: Option<u32> = None;
     let mut capture_dir: Option<PathBuf> = None;
     let mut cs_path: Option<PathBuf> = None;
@@ -272,6 +273,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--synthetic" => synthetic = true,
             "--headless" => headless = true,
             "--playtest" => playtest = true,
+            "--safe-settings" => safe_settings = true,
             "--smoke-no-teleport" => smoke_no_teleport = true,
             "--dev-overlay" => dev_overlay = true,
             "--dev-keys" => dev_keys = true,
@@ -532,6 +534,17 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
 
     if unknown {
         return CliRequest::Unsupported { args };
+    }
+    // F52-W1: the safe-defaults startup belongs to the run that opens the
+    // accessibility settings, which is the windowed playtest; the synthetic
+    // runs read none, so the flag must not look accepted there.
+    if safe_settings && !playtest {
+        return CliRequest::Invalid {
+            reason: "--safe-settings starts the accessibility settings from the designed \
+ defaults without reading the settings file; it belongs to --playtest, the run that opens \
+ them, and combines with no other run mode"
+                .to_string(),
+        };
     }
     // F21-E: any of the capture's own flags selects the deterministic
     // capture run — `--mission` joins it only under `--synthetic`, so it is
@@ -1046,7 +1059,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             }),
             None => None,
         };
-        return CliRequest::Playtest(PlaytestRequest { smoke, retail });
+        return CliRequest::Playtest(PlaytestRequest {
+            smoke,
+            retail,
+            safe_settings,
+        });
     }
     if let Some(cs_path) = &cs_path
         && world.is_none()
@@ -1255,6 +1272,13 @@ WINDOWED PLAYTEST (development, not original)
         ORIGINAL FLIGHT LAW (OWNER-STATIC-2026-10-08, UNCALIBRATED AGAINST AN
         ORIGINAL RUN #358). A missing or unusable <dir> exits
         non-zero; it never falls back to the synthetic scene
+    --playtest --safe-settings
+        Start with the designed accessibility settings and do not read the
+        settings file (<user-data>/accessibility.settings, or
+        <dir>/accessibility.settings under --profile-dir); use it when a
+        saved setting makes the application unusable. Only --playtest takes it
+        (any other run mode exits 2). Without it an unusable file is reported
+        on stderr and left on disk untouched
     --playtest --smoke-seconds <n> [--capture-dir <dir>]
         Run the scripted, deterministic smoke (n >= 20 simulated seconds) in
         the same window path: it injects keys through the real input path,
@@ -1433,4 +1457,52 @@ pub fn unsupported_message(args: &[String]) -> String {
 /// stderr. The reason names the offending flag.
 pub fn invalid_message(reason: &str) -> String {
     format!("cs: {reason}")
+}
+
+/// Opens the accessibility settings session for a run (F52-W1).
+///
+/// The file is `accessibility.settings` directly under `profile_base` (the
+/// validated `--profile-dir`) or, without one, under the player's user-data
+/// base chosen from `platform` and `env`. Never reads the process environment
+/// itself, and the session never fails: an unusable file is reported by the
+/// returned session's [`recovery`](crate::accessibility::session::SettingsSession::recovery).
+///
+/// # Errors
+///
+/// [`BaseError`](crate::user_data::BaseError) when no `profile_base` was given
+/// and the player's base cannot be chosen.
+pub fn open_accessibility_session(
+    safe_settings: bool,
+    profile_base: Option<&std::path::Path>,
+    platform: crate::user_data::Platform,
+    env: &crate::user_data::Environment,
+) -> Result<crate::accessibility::session::SettingsSession, crate::user_data::BaseError> {
+    let base = match profile_base {
+        Some(base) => base.to_path_buf(),
+        None => crate::user_data::default_base(platform, env)?,
+    };
+    Ok(crate::accessibility::session::SettingsSession::open(
+        crate::user_data::accessibility_settings_path(&base),
+        safe_settings,
+    ))
+}
+
+/// The line reporting where a session's startup settings came from. A
+/// recovered file names the reason it was not used, so it is never swallowed.
+pub fn settings_origin_message(session: &crate::accessibility::session::SettingsSession) -> String {
+    use crate::accessibility::store::StartupOrigin;
+    let path = session.path().display();
+    match session.origin() {
+        StartupOrigin::Loaded => format!("cs: accessibility settings loaded from {path}"),
+        StartupOrigin::NoFile => {
+            format!("cs: no accessibility settings file at {path}; using the designed defaults")
+        }
+        StartupOrigin::SafeFlag => format!(
+            "cs: --safe-settings: using the designed accessibility defaults; {path} was not read"
+        ),
+        StartupOrigin::Recovered(error) => format!(
+            "cs: accessibility settings file {path} is unusable ({error}); using the designed \
+ defaults and leaving the file untouched"
+        ),
+    }
 }
