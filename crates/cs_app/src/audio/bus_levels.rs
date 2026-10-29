@@ -1,15 +1,22 @@
 //! The per-bus levels of the accessibility settings, applied to the mix (F52-W2).
 //!
-//! [`mix_session`](super::mixer::mix_session) multiplies each placed emitter's
-//! gain by its bus's [`Presentation::bus_level`](cs_content::settings::Presentation)
-//! read from the live session, so a level the player sets applies on the next
-//! pass. Only the emitter loops pass through that function today; the radio,
-//! music, one-shot and UI paths are named as a limit in
-//! `docs/findings/2026-10-27-f52-w2-presentation-output.md`.
+//! [`mix_session`](super::mixer::mix_session) hands its device calls a
+//! [`BusLevelDevice`] wrapped around the output — loop, radio, music and
+//! one-shot voices alike — and every direct device call site in a live world
+//! goes through [`with_live_device`](super::mixer::with_live_device), which
+//! wraps the same way, so a level the player sets applies on the next voice
+//! command on every bus. The front-end `MenuAudio` and the cinematic probe
+//! drivers own separate devices outside the live session; they are named as
+//! limits in `docs/findings/2026-10-27-f52-w2-presentation-output.md`.
+
+use std::collections::BTreeMap;
 
 use cs_content::audio::{AudioBus as SettingsBus, MAX_AUDIO_GAIN};
 use cs_content::settings::Presentation;
-use cs_sim::audio_events::{AudioBus, VoiceLevel};
+use cs_sim::audio_events::{
+    AudioBus, AudioDevice, DeviceError, DeviceVoiceId, VoiceLevel, VoiceStart, VoiceStop,
+    VoiceUpdate,
+};
 
 /// The settings vocabulary's name for a runtime bus.
 #[must_use]
@@ -39,5 +46,99 @@ pub fn apply_bus_level(
     VoiceLevel {
         gain: (level.gain * factor).min(MAX_AUDIO_GAIN),
         pitch: level.pitch,
+    }
+}
+
+/// An [`AudioDevice`] that scales every voice command by the live session's
+/// bus levels (F52-W2-wire).
+///
+/// A voice start carries its [`AudioBus`], so the wrapper scales the gain it
+/// forwards and records the voice's bus in `opened`: a [`VoiceUpdate`] carries
+/// no bus of its own, so the bus a voice started on is the only place its
+/// update's level can come from. The presentation itself is a copy the caller
+/// made for this one pass — the session stays the settings' one owner, and
+/// the next call reads it again rather than mixing on a stale snapshot.
+///
+/// The wrapper exists for one call: the world's [`AudioOutput`] keeps `opened`
+/// and lends the device, so a bus table survives across passes while the
+/// settings never do.
+///
+/// [`AudioOutput`]: super::mixer::AudioOutput
+#[derive(Debug)]
+pub struct BusLevelDevice<'a> {
+    inner: &'a mut dyn AudioDevice,
+    presentation: Presentation,
+    opened: &'a mut BTreeMap<DeviceVoiceId, AudioBus>,
+}
+
+impl<'a> BusLevelDevice<'a> {
+    /// Wraps `inner`, scaling every command by `presentation`'s bus levels and
+    /// keeping the voice→bus record in `opened`.
+    #[must_use]
+    pub fn new(
+        inner: &'a mut dyn AudioDevice,
+        presentation: Presentation,
+        opened: &'a mut BTreeMap<DeviceVoiceId, AudioBus>,
+    ) -> Self {
+        Self {
+            inner,
+            presentation,
+            opened,
+        }
+    }
+
+    /// `gain` scaled by `bus`'s level under the pass's presentation.
+    fn level(&self, bus: AudioBus, gain: f64) -> f64 {
+        apply_bus_level(&self.presentation, bus, VoiceLevel { gain, pitch: 1.0 }).gain
+    }
+}
+
+impl AudioDevice for BusLevelDevice<'_> {
+    fn is_open(&self) -> bool {
+        self.inner.is_open()
+    }
+
+    fn open(&mut self) -> Result<(), DeviceError> {
+        self.inner.open()
+    }
+
+    fn close(&mut self) {
+        self.opened.clear();
+        self.inner.close();
+    }
+
+    fn start_voice(&mut self, mut start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
+        let bus = start.bus;
+        start.gain = self.level(bus, start.gain);
+        let voice = self.inner.start_voice(start)?;
+        self.opened.insert(voice, bus);
+        Ok(voice)
+    }
+
+    fn stop_voice(&mut self, stop: VoiceStop) -> Result<(), DeviceError> {
+        self.inner.stop_voice(stop)?;
+        self.opened.remove(&stop.voice);
+        Ok(())
+    }
+
+    fn update_voice(
+        &mut self,
+        voice: DeviceVoiceId,
+        mut update: VoiceUpdate,
+    ) -> Result<(), DeviceError> {
+        if let Some(bus) = self.opened.get(&voice) {
+            update.gain = self.level(*bus, update.gain);
+        }
+        self.inner.update_voice(voice, update)
+    }
+
+    fn start_one_shot(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
+        // `start_voice` on this wrapper already scales and records the bus;
+        // the only difference is which inner entry the command reaches.
+        let bus = start.bus;
+        let gain = self.level(bus, start.gain);
+        let voice = self.inner.start_one_shot(VoiceStart { gain, ..start })?;
+        self.opened.insert(voice, bus);
+        Ok(voice)
     }
 }

@@ -31,14 +31,17 @@
 //! contract: the device may refuse every command, and the session, the radio
 //! queue's tick timing and mission progression behave exactly as before.
 
+use std::collections::BTreeMap;
+
 use bevy::ecs::query::Has;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Res, ResMut};
 use bevy::ecs::world::World;
 use bevy::prelude::{GlobalTransform, Query};
+use cs_content::settings::Presentation;
 use cs_sim::audio_events::{
-    AudioDevice, AudioMixer, DeviceError, EmitterMix, Listener, MixerReport, MusicCue,
-    MusicMixReport, RadioMixReport, RecordingAudioDevice, SpatialPolicy,
+    AudioBus, AudioDevice, AudioMixer, DeviceError, DeviceVoiceId, EmitterMix, Listener,
+    MixerReport, MusicCue, MusicMixReport, RadioMixReport, RecordingAudioDevice, SpatialPolicy,
 };
 use cs_types::content::ContentId;
 use cs_types::net::SessionId;
@@ -65,6 +68,10 @@ use super::spawn::NonPositionalEmitter;
 pub struct AudioOutput {
     device: Box<dyn AudioDevice>,
     tap: OneShotTap,
+    /// The bus each open voice started on, kept for the leveled wrapper: a
+    /// `VoiceUpdate` carries no bus, so an update's bus level comes from this
+    /// record and nowhere else (F52-W2-wire).
+    opened_buses: BTreeMap<DeviceVoiceId, AudioBus>,
 }
 
 impl Default for AudioOutput {
@@ -83,6 +90,7 @@ impl AudioOutput {
         Self {
             device: Box::new(TappingDevice::new(device, tap.clone())),
             tap,
+            opened_buses: BTreeMap::new(),
         }
     }
 
@@ -102,6 +110,51 @@ impl AudioOutput {
     pub fn device_mut(&mut self) -> &mut dyn AudioDevice {
         self.device.as_mut()
     }
+
+    /// The output's device with `presentation`'s bus levels applied to every
+    /// voice this wrapper starts, updates or stops (F52-W2-wire): radio,
+    /// music, one-shot and UI voices pass through
+    /// [`super::bus_levels::apply_bus_level`] at this boundary exactly like
+    /// the placed emitter loops. The settings are a copy for this one call;
+    /// the voice→bus record stays with the output.
+    pub fn leveled(&mut self, presentation: Presentation) -> super::bus_levels::BusLevelDevice<'_> {
+        super::bus_levels::BusLevelDevice::new(
+            self.device.as_mut(),
+            presentation,
+            &mut self.opened_buses,
+        )
+    }
+
+    /// Forgets every voice→bus record the leveled wrapper kept: a wholesale
+    /// stop (device lost, session release) ended the voices it describes, and
+    /// a later update must not scale against a dead voice's bus.
+    pub fn clear_voice_buses(&mut self) {
+        self.opened_buses.clear();
+    }
+}
+
+/// Runs `call` on this world's output device with the live session's bus
+/// levels applied (F52-W2-wire). `None` when the world has no [`AudioOutput`].
+///
+/// The presentation is read off [`LivePresentation`] for this one call — the
+/// session remains the settings' one owner, never copied into the device. A
+/// world with no `LivePresentation` mixes at the designed defaults: unity
+/// levels, the same gains the unscaled path produced, so a session appearing
+/// or leaving mid-run changes only the numbers.
+///
+/// [`LivePresentation`]: crate::render::presentation::LivePresentation
+pub fn with_live_device<R>(
+    world: &mut World,
+    call: impl FnOnce(&mut dyn AudioDevice) -> R,
+) -> Option<R> {
+    let presentation = world
+        .get_resource::<crate::render::presentation::LivePresentation>()
+        .map_or_else(Presentation::designed, |live| live.presentation().clone());
+    Some(call(
+        &mut world
+            .get_resource_mut::<AudioOutput>()?
+            .leveled(presentation),
+    ))
 }
 
 /// Resource: the mixer's own state.
@@ -285,17 +338,10 @@ pub fn mix_session(
             continue;
         };
         let position_m = transform.translation().as_dvec3().to_array();
-        // The live accessibility session's bus level, read this pass (F52-W2).
-        let level = presentation.as_deref().map_or_else(
-            || voices.level(&binding.emitter),
-            |live| {
-                super::bus_levels::apply_bus_level(
-                    live.presentation(),
-                    binding.bus,
-                    voices.level(&binding.emitter),
-                )
-            },
-        );
+        // The emitter's own level here; the live session's bus level lands at
+        // the device boundary below, so loops, radio, music and one-shots all
+        // mix under the same settings (F52-W2-wire).
+        let level = voices.level(&binding.emitter);
         match measured_terms.filter(|_| is_measured) {
             Some((law, pose)) => {
                 let mix = super::measured_voice::measured_mix(
@@ -329,13 +375,23 @@ pub fn mix_session(
     // borrowed for the pass: the mixer reads the router the *end* of this frame
     // holds, which is the loops `sync_emitter_loops` just bound.
     let outcomes = session.drain_outcomes();
+    // The one device the whole pass hands commands to: the live session's bus
+    // levels are applied at this boundary, so loop, radio, music and one-shot
+    // voices all scale under the same settings (F52-W2-wire). A session-less
+    // world mixes at the designed defaults — unity levels, the same gains the
+    // unscaled path produced.
+    let mut leveled = output.leveled(
+        presentation
+            .as_deref()
+            .map_or_else(Presentation::designed, |live| live.presentation().clone()),
+    );
     report.last = mixing.mixer_mut().mix(
         &session.router,
         &outcomes,
         &placed,
         &spatial.listener,
         &spatial.policy,
-        output.device_mut(),
+        &mut leveled,
     );
     if !measured_states.is_empty() {
         // The measured emitters place under their own policy: the projected
@@ -350,7 +406,7 @@ pub fn mix_session(
             &measured_states,
             &spatial.listener,
             &super::measured_voice::projection_policy(),
-            output.device_mut(),
+            &mut leveled,
         );
         report.last.updated.extend(second.updated);
         report.last.refusals.extend(second.refusals);
@@ -361,13 +417,9 @@ pub fn mix_session(
     // after the loop pass for the same reason the outcomes are: they are what
     // `advance_radio` produced this frame.
     let lines = session.drain_radio();
-    report.radio = mixing
-        .mixer_mut()
-        .mix_radio(&lines, Some(output.device_mut()));
+    report.radio = mixing.mixer_mut().mix_radio(&lines, Some(&mut leveled));
     let music = session.drain_music();
-    report.music = mixing
-        .mixer_mut()
-        .mix_music(&music, Some(output.device_mut()));
+    report.music = mixing.mixer_mut().mix_music(&music, Some(&mut leveled));
     report.passes += 1;
     report.unplaced = unplaced;
     report.non_positional = non_positional;
@@ -431,6 +483,11 @@ pub fn device_lost(world: &mut World) {
         }
         _ => None,
     };
+    if let Some(output) = output.as_mut() {
+        // The voices are gone: the leveled wrapper's bus table must not scale
+        // a later update against a dead voice (F52-W2-wire).
+        output.clear_voice_buses();
+    }
     if let Some(mixing) = mixing {
         world.insert_resource(mixing);
     }

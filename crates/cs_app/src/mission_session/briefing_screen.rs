@@ -352,7 +352,12 @@ impl BriefingVoice {
     }
 
     /// Starts the voice-over from its beginning, replacing a sounding one.
-    pub fn start(&mut self) {
+    ///
+    /// `presentation` is the live session's presentation settings, read for
+    /// this start: the voice rides the Radio bus, so the session's Radio
+    /// level scales the gain the device is asked for (F52-W2-wire). `None`
+    /// starts at the record's own `vol`, as before.
+    pub fn start(&mut self, presentation: Option<&cs_content::settings::Presentation>) {
         self.stop();
         if self.device.is_none() {
             match open_audible_device(
@@ -372,9 +377,20 @@ impl BriefingVoice {
         let started = device.start_one_shot(VoiceStart {
             asset: self.asset.content.clone(),
             // The original's bus for the briefing voice is unread (F41); the
-            // device applies no bus fader.
+            // device applies no bus fader of its own — the session's Radio
+            // level is what scales this gain.
             bus: AudioBus::Radio,
-            gain: self.volume,
+            gain: presentation.map_or(self.volume, |presentation| {
+                crate::audio::bus_levels::apply_bus_level(
+                    presentation,
+                    AudioBus::Radio,
+                    cs_sim::audio_events::VoiceLevel {
+                        gain: self.volume,
+                        pitch: 1.0,
+                    },
+                )
+                .gain
+            }),
             pan: 0.0,
             pitch: 1.0,
         });
@@ -826,6 +842,7 @@ fn drive_briefing(
     mut voice: ResMut<BriefingVoice>,
     driver: Res<BriefingDriver>,
     time: Res<Time<Real>>,
+    presentation: Option<Res<crate::render::presentation::LivePresentation>>,
 ) {
     if phase.stage() != PreMissionStage::Briefing {
         if voice.device.is_some() {
@@ -842,7 +859,7 @@ fn drive_briefing(
     let generation = briefing.playback().restarts();
     if voice.generation != Some(generation) {
         voice.generation = Some(generation);
-        voice.start();
+        voice.start(presentation.as_deref().map(|live| live.presentation()));
     }
     let followed = if driver.follow_voice {
         voice.played_seconds().filter(|seconds| *seconds > 0.0)

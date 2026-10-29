@@ -323,6 +323,9 @@ pub fn insert_audio_session(world: &mut World) {
         && let Some(mut output) = world.remove_resource::<AudioOutput>()
     {
         released = mixing.mixer_mut().release(output.device_mut()).stopped;
+        // The released voices are gone: the leveled wrapper's bus table must
+        // not scale a later update against a dead voice (F52-W2-wire).
+        output.clear_voice_buses();
         world.insert_resource(output);
         world.insert_resource(mixing);
     }

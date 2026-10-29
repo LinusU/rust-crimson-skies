@@ -446,9 +446,9 @@ pub fn drive_launch_voices(world: &mut World) {
             pan: 0.0,
             pitch: 1.0,
         };
-        let outcome = world
-            .get_resource_mut::<super::AudioOutput>()
-            .map(|mut output| output.device_mut().start_one_shot(start));
+        // The live session's Environment level lands at the device boundary
+        // (F52-W2-wire).
+        let outcome = super::mixer::with_live_device(world, |device| device.start_one_shot(start));
         // The held record's life is the member's decoded length: read it
         // from the device library that the load's own population pass
         // filled — never a guessed duration.

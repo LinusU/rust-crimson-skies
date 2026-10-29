@@ -309,25 +309,22 @@ fn start_voice(
         pan,
         pitch,
     };
-    world
-        .get_resource_mut::<super::AudioOutput>()
+    // The live session's Impacts level lands at the device boundary
+    // (F52-W2-wire).
+    super::mixer::with_live_device(world, |device| device.start_voice(start))
         .ok_or_else(|| "no audio device installed".to_owned())?
-        .device_mut()
-        .start_voice(start)
         .map_err(|error| error.to_string())
 }
 
 fn stop_voice(world: &mut World, voice: DeviceVoiceId) {
-    if let Some(mut output) = world.get_resource_mut::<super::AudioOutput>() {
-        let _ = output.device_mut().stop_voice(VoiceStop {
+    let _ = super::mixer::with_live_device(world, |device| {
+        device.stop_voice(VoiceStop {
             voice,
             reason: None,
-        });
-    }
+        })
+    });
 }
 
 fn update_voice(world: &mut World, voice: DeviceVoiceId, update: VoiceUpdate) {
-    if let Some(mut output) = world.get_resource_mut::<super::AudioOutput>() {
-        let _ = output.device_mut().update_voice(voice, update);
-    }
+    let _ = super::mixer::with_live_device(world, |device| device.update_voice(voice, update));
 }
