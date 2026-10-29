@@ -414,45 +414,59 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
     use cs_app::mission_launch::{MissionLaunchError, launch_mission};
     let dir = std::env::temp_dir().join("vs_m01_runtime_empty_install_launch");
     std::fs::create_dir_all(&dir).expect("the probe directory is created");
-    let undeclared = launch_mission(&MissionRequest {
-        cs_path: dir.clone(),
-        mission: "M99".to_owned(),
-        smoke: None,
-        smoke_no_teleport: false,
-        dev_overlay: false,
-        dev_keys: false,
-        smoke_engagement: false,
-        smoke_failure: false,
-        smoke_crash: false,
-        smoke_trucks: false,
-        smoke_convoy_kill: false,
-        smoke_success: false,
-        from_start_flow: false,
-        joystick: Default::default(),
-        smoke_start_flow: false,
-    })
+    // The launch takes the run's accessibility session (F52-W2-wire); the
+    // refusals this test judges happen before it is installed.
+    let session = || {
+        cs_app::accessibility::session::SettingsSession::open(
+            dir.join("accessibility.settings"),
+            true,
+        )
+    };
+    let undeclared = launch_mission(
+        &MissionRequest {
+            cs_path: dir.clone(),
+            mission: "M99".to_owned(),
+            smoke: None,
+            smoke_no_teleport: false,
+            dev_overlay: false,
+            dev_keys: false,
+            smoke_engagement: false,
+            smoke_failure: false,
+            smoke_crash: false,
+            smoke_trucks: false,
+            smoke_convoy_kill: false,
+            smoke_success: false,
+            from_start_flow: false,
+            joystick: Default::default(),
+            smoke_start_flow: false,
+        },
+        session(),
+    )
     .expect_err("M99 declares no identity");
     assert!(matches!(
         undeclared,
         MissionLaunchError::UndeclaredMission(_)
     ));
-    let empty = launch_mission(&MissionRequest {
-        cs_path: dir,
-        mission: "M01".to_owned(),
-        smoke: None,
-        smoke_no_teleport: false,
-        dev_overlay: false,
-        dev_keys: false,
-        smoke_engagement: false,
-        smoke_failure: false,
-        smoke_crash: false,
-        smoke_trucks: false,
-        smoke_convoy_kill: false,
-        smoke_success: false,
-        from_start_flow: false,
-        joystick: Default::default(),
-        smoke_start_flow: false,
-    })
+    let empty = launch_mission(
+        &MissionRequest {
+            cs_path: dir.clone(),
+            mission: "M01".to_owned(),
+            smoke: None,
+            smoke_no_teleport: false,
+            dev_overlay: false,
+            dev_keys: false,
+            smoke_engagement: false,
+            smoke_failure: false,
+            smoke_crash: false,
+            smoke_trucks: false,
+            smoke_convoy_kill: false,
+            smoke_success: false,
+            from_start_flow: false,
+            joystick: Default::default(),
+            smoke_start_flow: false,
+        },
+        session(),
+    )
     .expect_err("an empty installation cannot launch");
     assert!(matches!(empty, MissionLaunchError::Plan(_)), "{empty}");
 }

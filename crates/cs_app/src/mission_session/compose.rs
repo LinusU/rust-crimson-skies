@@ -469,6 +469,9 @@ pub enum MissionCompositionError {
     PreferencesOverlay(super::preferences_overlay::PreferencesOverlayError),
     /// The journal's debrief screen could not be read from the installation.
     Debrief(super::debrief_screen::DebriefReadError),
+    /// The run's live accessibility session could not be flushed at teardown:
+    /// the change is live but unsaved, and the error says why (F52-W2-wire).
+    Settings(crate::accessibility::session::ApplyError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -527,6 +530,7 @@ impl fmt::Display for MissionCompositionError {
             Self::PauseMap(error) => write!(f, "{error}"),
             Self::PreferencesOverlay(error) => write!(f, "{error}"),
             Self::Debrief(error) => write!(f, "{error}"),
+            Self::Settings(error) => write!(f, "accessibility settings: {error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -1272,6 +1276,9 @@ fn add_composition(
         // on screen; the text is the installation's own.
         app.insert_resource(stage.messages.clone());
         app.add_plugins(crate::ui::hud::ObjectiveHudPlugin);
+        // The radio subtitle line and the presented flash veil
+        // (F52-W2-wire), drawn under the live accessibility session.
+        app.add_plugins(crate::ui::hud::presentation::SubtitleHudPlugin);
         // The weapon refusal line (M01-WINDOW-FIRE, #1536): a rocket the
         // publisher refused by name is shown on screen for its lifetime
         // instead of the mission silently doing nothing. Windowed only, like
@@ -2190,6 +2197,12 @@ pub fn apply_developer_keys(app: &mut App) {
 /// the load fails before interactivity, the world will not load, or the
 /// window exits with an error — each carrying the refusing stage's own
 /// message, so the caller's nonzero exit is never without diagnostics.
+/// `session` is the run's live accessibility session, opened by the caller
+/// (F52-W1) and installed as [`crate::render::presentation::LivePresentation`]
+/// before the window runs so every presenter reads the file's settings
+/// (F52-W2-wire). It is handed back to this composition's teardown: a change
+/// applied mid-run is flushed there, and a failed flush is the error this
+/// returns rather than a run that "succeeded" losing it.
 #[allow(clippy::too_many_arguments)]
 pub fn run_windowed(
     install_root: &Path,
@@ -2200,6 +2213,7 @@ pub fn run_windowed(
     dev_keys: bool,
     from_start_flow: bool,
     joystick: &crate::input::hid::HostJoystickOptions,
+    session: crate::accessibility::session::SettingsSession,
 ) -> Result<Option<super::MissionEnd>, MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
@@ -2406,6 +2420,11 @@ pub fn run_windowed(
     // its handle (#1832).
     let left_cell = super::MissionLeftCell::default();
     app.insert_resource(left_cell.clone());
+    // The live accessibility session, installed before the first frame so
+    // every presenter — effects, subtitles, colour filter, bus levels — reads
+    // the file's settings (F52-W2-wire). Inserted after the fallible build so
+    // an early refusal never holds it; it comes back out at teardown below.
+    crate::render::presentation::install_live_presentation(&mut app, session);
     let exit = app.run();
     let smoked: Result<(), MissionCompositionError> = match (&smoke_handle, smoke) {
         (Some(handle), Some(request)) => {
@@ -2443,8 +2462,20 @@ pub fn run_windowed(
     });
     let left = left_cell.take();
     teardown(&mut app);
+    // The session comes back out of the world for its own end before any `?`
+    // below can return early: `teardown` flushes a staged change and only a
+    // successful one closes it, so the flush runs — and its error is named —
+    // on every path past this point (F52-W2-wire).
+    let flushed = app
+        .world_mut()
+        .remove_resource::<crate::render::presentation::LivePresentation>()
+        .expect("the run's live presentation session stays installed until teardown")
+        .0
+        .teardown()
+        .map_err(MissionCompositionError::Settings);
     captured.map_err(MissionCompositionError::Capture)?;
     smoked?;
+    flushed?;
     match exit {
         AppExit::Success => Ok(left),
         AppExit::Error(code) => Err(MissionCompositionError::Exit(format!("exit code {code}"))),

@@ -154,7 +154,14 @@ fn accept_playtest_retail_launch_an_explicit_bad_path_fails_and_never_falls_back
         retail: Some(retail),
         safe_settings: false,
     };
-    let error = run_playtest(&request).expect_err("a missing installation must fail");
+    let error = run_playtest(
+        &request,
+        cs_app::accessibility::session::SettingsSession::open(
+            missing.join("accessibility.settings"),
+            true,
+        ),
+    )
+    .expect_err("a missing installation must fail");
     assert!(matches!(error, PlaytestError::Retail { .. }), "{error}");
     let text = error.to_string();
     assert!(text.contains(&missing.display().to_string()), "{text}");

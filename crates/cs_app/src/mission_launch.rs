@@ -587,7 +587,14 @@ pub const fn declared_missions() -> &'static [(&'static str, &'static str)] {
 /// Plans the requested mission and, when the closure is satisfied, runs it in
 /// the windowed composition (#1215). A plan with any unsatisfied surface is
 /// refused with its diagnostics: nothing is spawned, drawn or played.
-pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), MissionLaunchError> {
+///
+/// `session` is the run's live accessibility session (F52-W1), opened by the
+/// caller and handed to the composition, which flushes it at teardown
+/// (F52-W2-wire).
+pub fn launch_mission(
+    request: &crate::cli::MissionRequest,
+    session: crate::accessibility::session::SettingsSession,
+) -> Result<(), MissionLaunchError> {
     let (label, title) = DECLARED_MISSIONS
         .iter()
         .find(|(label, _)| label.eq_ignore_ascii_case(&request.mission))
@@ -628,6 +635,7 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
         request.dev_keys,
         request.from_start_flow,
         &request.joystick,
+        session,
     )
     .map_err(MissionLaunchError::Composition)?;
     // The player left for the cabin: the world is torn down, so the front end

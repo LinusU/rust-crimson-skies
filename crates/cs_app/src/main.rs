@@ -107,13 +107,7 @@ fn dispatch(args: Vec<String>, profile_base: Option<&std::path::Path>) -> ExitCo
         },
         CliRequest::Playtest(request) => run_playtest_with_settings(&request, profile_base),
 
-        CliRequest::Mission(request) => match cs_app::mission_launch::launch_mission(&request) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("cs: {error}");
-                ExitCode::from(error.exit_code())
-            }
-        },
+        CliRequest::Mission(request) => run_mission_with_settings(&request, profile_base),
         CliRequest::FrontEnd(request) => match cs_app::ui::front_end::run_front_end(&request) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -151,38 +145,67 @@ fn dispatch(args: Vec<String>, profile_base: Option<&std::path::Path>) -> ExitCo
 }
 
 /// Opens the accessibility settings session (F52-W1), reports where its
-/// settings came from, runs the playtest and flushes the session at teardown.
-/// Nothing in the playtest consumes the session yet (F52-W2/W3 wire the
-/// presenters and the control profile), so it is held for the run and closed.
+/// settings came from and runs the playtest with it installed as the live
+/// presentation (F52-W2-wire); `run_playtest` itself flushes the session at
+/// teardown and names a failed flush.
 fn run_playtest_with_settings(
     request: &playtest::PlaytestRequest,
     profile_base: Option<&std::path::Path>,
 ) -> ExitCode {
-    let mut settings = match cli::open_accessibility_session(
-        request.safe_settings,
-        profile_base,
-        cs_app::user_data::Platform::host(),
-        &cs_app::user_data::Environment::from_process(),
-    ) {
+    let settings = match open_run_session(request.safe_settings, profile_base) {
         Ok(session) => session,
-        Err(error) => {
-            eprintln!("cs: {error}");
-            return ExitCode::from(cli::EXIT_RUNTIME_FAILURE);
-        }
+        Err(code) => return code,
     };
-    eprintln!("{}", cli::settings_origin_message(&settings));
-    let mut code = match playtest::run_playtest(request) {
+    match playtest::run_playtest(request, settings) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("cs: {error}");
             ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
         }
-    };
-    if let Err(error) = settings.teardown() {
-        eprintln!("cs: accessibility settings: {error}");
-        code = ExitCode::from(cli::EXIT_RUNTIME_FAILURE);
     }
-    code
+}
+
+/// Opens the accessibility settings session for a run and reports where its
+/// settings came from (F52-W1/F52-W2-wire).
+fn open_run_session(
+    safe_settings: bool,
+    profile_base: Option<&std::path::Path>,
+) -> Result<cs_app::accessibility::session::SettingsSession, ExitCode> {
+    match cli::open_accessibility_session(
+        safe_settings,
+        profile_base,
+        cs_app::user_data::Platform::host(),
+        &cs_app::user_data::Environment::from_process(),
+    ) {
+        Ok(session) => {
+            eprintln!("{}", cli::settings_origin_message(&session));
+            Ok(session)
+        }
+        Err(error) => {
+            eprintln!("cs: {error}");
+            Err(ExitCode::from(cli::EXIT_RUNTIME_FAILURE))
+        }
+    }
+}
+
+/// The mission run's session lifecycle is the playtest's own (F52-W2-wire):
+/// `--safe-settings` is a playtest flag (the parser refuses it elsewhere), so
+/// the mission opens the file as-is.
+fn run_mission_with_settings(
+    request: &cli::MissionRequest,
+    profile_base: Option<&std::path::Path>,
+) -> ExitCode {
+    let settings = match open_run_session(false, profile_base) {
+        Ok(session) => session,
+        Err(code) => return code,
+    };
+    match cs_app::mission_launch::launch_mission(request, settings) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("cs: {error}");
+            ExitCode::from(error.exit_code())
+        }
+    }
 }
 
 /// Reports a finished run on stdout: the provenance marker, how far the world

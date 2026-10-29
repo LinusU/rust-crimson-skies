@@ -143,6 +143,9 @@ pub enum PlaytestError {
     },
     /// The smoke run finished but its own checks failed.
     SmokeFailed(Vec<String>),
+    /// The run's live accessibility session could not be flushed at teardown:
+    /// the change is live but unsaved, and the error says why (F52-W2-wire).
+    Settings(crate::accessibility::session::ApplyError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -166,6 +169,7 @@ impl std::fmt::Display for PlaytestError {
             Self::SmokeFailed(failures) => {
                 write!(f, "playtest smoke failed: {}", failures.join("; "))
             }
+            Self::Settings(error) => write!(f, "accessibility settings: {error}"),
             Self::Exit(reason) => write!(f, "playtest exited with an error: {reason}"),
         }
     }
@@ -422,7 +426,35 @@ impl Plugin for PlaytestPlugin {
                     follow_camera,
                 )
                     .chain(),
-            );
+            )
+            // F52-W2-wire: the frame's gameplay events are presented under the
+            // live session after the targeting schedule has recorded this
+            // frame's selection, and the HUD presentation pass reads the
+            // presented frame right after — all in the same `Update` chain so
+            // one rendered frame presents one frame's events.
+            .add_systems(
+                Update,
+                (
+                    crate::camera::effects::emit_targeting_events
+                        .after(crate::targeting::drive_targeting_schedule),
+                    crate::camera::effects::present_game_events,
+                    crate::ui::hud::presentation::drive_hud_presentation,
+                    // After `follow_camera`: the offset lands on the pose the
+                    // session computed this frame, not the previous frame's.
+                    apply_presented_shake.after(follow_camera),
+                )
+                    .chain(),
+            )
+            // After `record_collisions`: a contact that began this tick is a
+            // report the emitter presents in the same tick, not the next one.
+            .add_systems(
+                FixedLast,
+                crate::camera::effects::emit_combat_events.after(record_collisions),
+            )
+            .init_resource::<crate::camera::effects::GameEventQueue>()
+            .init_resource::<crate::camera::effects::PresentedEffects>()
+            .init_resource::<crate::ui::hud::presentation::PresentedHud>()
+            .init_resource::<crate::render::presentation::FrameFilterReport>();
     }
 }
 
@@ -833,6 +865,40 @@ fn follow_camera(
     }
 }
 
+/// The world-space amplitude a presented shake of full intensity moves the
+/// camera by (designed, metres): the F52-W2 amplitude is a screen fraction,
+/// so the chase camera turns it into a short offset rather than a projection
+/// walk.
+const SHAKE_METERS: f32 = 0.5;
+
+/// Applies the frame's presented camera shake to the playtest camera
+/// (F52-W2-wire). Scheduled after `follow_camera`, so the offset lands on the
+/// pose the camera session computed this frame; a frame whose presented
+/// shake is `0.0` — reduced motion on, no session or nothing shaken — leaves
+/// the pose untouched.
+fn apply_presented_shake(
+    presented: Res<crate::camera::effects::PresentedEffects>,
+    camera: Res<PlaytestCamera>,
+    mut cameras: Query<&mut Transform, With<PlaytestCameraMarker>>,
+) {
+    let shake = presented
+        .frame
+        .as_ref()
+        .map_or(0.0, crate::camera::effects::EffectFrame::shake);
+    if shake == 0.0 {
+        return;
+    }
+    // Deterministic direction from the rendered-frame count: one frame is one
+    // offset, a replayed frame shakes identically, and no rng is involved.
+    let phase = camera.frames as f32 * 2.399_963;
+    let offset =
+        Vec3::new(phase.cos(), phase.sin() * 0.6, (phase * 1.7).sin()) * (shake * SHAKE_METERS);
+    for mut transform in &mut cameras {
+        let offset = transform.rotation * offset;
+        transform.translation += offset;
+    }
+}
+
 /// Builds the windowed app: the real window, renderer and wall-clock fixed
 /// loop, with the playtest on top.
 ///
@@ -870,6 +936,9 @@ pub fn windowed_app(
     }
     app.add_plugins(PlaytestPlugin);
     app.add_plugins(visuals::PlaytestVisualsPlugin);
+    // The F52-W2 subtitle line and flash veil (F52-W2-wire); the headless
+    // face drives the same presentation through `PresentedHud` only.
+    app.add_plugins(crate::ui::hud::presentation::SubtitleHudPlugin);
     if retail.is_some() {
         // The original-assets scene draws a sky, a sea and fog (#1434
         // `M01-PLAY-SKY`) and, under it, a labelled cloud deck
@@ -897,12 +966,24 @@ pub fn windowed_app(
 /// Runs `cs --playtest`: opens the window and blocks until it closes (or the
 /// smoke run ends).
 ///
+/// `session` is the run's live accessibility session, opened by the caller
+/// (F52-W1) and installed as [`crate::render::presentation::LivePresentation`]
+/// before the first frame so every presenter reads the file's settings
+/// (F52-W2-wire). It is handed back to this run's teardown: a change the
+/// player applied mid-run is flushed there, and a failed flush is the error
+/// this returns rather than a run that "succeeded" losing it.
+///
 /// # Errors
 ///
 /// [`PlaytestError`] when the smoke run fails its own checks or cannot write
-/// its artifacts, or the app exits with an error.
-pub fn run_playtest(request: &PlaytestRequest) -> Result<(), PlaytestError> {
+/// its artifacts, the session cannot be flushed at teardown, or the app
+/// exits with an error.
+pub fn run_playtest(
+    request: &PlaytestRequest,
+    session: crate::accessibility::session::SettingsSession,
+) -> Result<(), PlaytestError> {
     let (mut app, handle) = windowed_app(request.smoke.as_ref(), request.retail.as_ref())?;
+    crate::render::presentation::install_live_presentation(&mut app, session);
     if let Some(content) = app.world().get_resource::<RetailContent>() {
         println!("playtest sources: {}", content.manifest_json());
     }
@@ -910,9 +991,19 @@ pub fn run_playtest(request: &PlaytestRequest) -> Result<(), PlaytestError> {
         println!("playtest flight: {}", flight.json());
     }
     let exit = app.run();
+    // The session comes back out of the world for its own end before any `?`
+    // below can return early: `teardown` flushes a staged change and only a
+    // successful one closes it, so the flush runs — and its error is named —
+    // on every path past this point.
+    let mut live = app
+        .world_mut()
+        .remove_resource::<crate::render::presentation::LivePresentation>()
+        .expect("the run's live presentation session stays installed until teardown");
+    let flushed = live.0.teardown().map_err(PlaytestError::Settings);
     if let (Some(handle), Some(smoke_request)) = (&handle, &request.smoke) {
         smoke::finish(handle, smoke_request)?;
     }
+    flushed?;
     match exit {
         AppExit::Success => Ok(()),
         AppExit::Error(code) => Err(PlaytestError::Exit(format!("exit code {code}"))),
