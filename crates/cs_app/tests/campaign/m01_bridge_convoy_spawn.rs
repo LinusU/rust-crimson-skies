@@ -350,6 +350,7 @@ fn accept_m01_bridge_convoy_spawn_rows_and_damage_node_are_production() {
         position_m: [-5459.328, 118.62919, -5339.184],
         target_point_m: [-5459.328, 118.62919, -5339.184],
         target_half_extents_m: [0.0; 3],
+        contact_box_m: None,
         healthy: Some("healthy".to_owned()),
         destroyed: Some("destroyed".to_owned()),
         intact_slots: Vec::new(),

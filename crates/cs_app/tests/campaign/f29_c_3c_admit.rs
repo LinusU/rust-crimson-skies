@@ -55,6 +55,7 @@ fn stage_with_target(scratch: &Scratch) -> MissionStage {
             position_m: TARGET_POSITION_M,
             target_point_m: TARGET_POSITION_M,
             target_half_extents_m: [0.0; 3],
+            contact_box_m: None,
             healthy: None,
             destroyed: None,
             intact_slots: Vec::new(),

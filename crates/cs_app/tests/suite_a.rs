@@ -50,6 +50,7 @@ mod campaign {
     mod m01_lc_fc_d;
     mod m01_objective_target_points;
     mod m01_outcome_b;
+    mod m01_part_volume;
     mod m01_play_actors;
     mod m01_play_ai;
     mod m01_play_ai_arm_order;

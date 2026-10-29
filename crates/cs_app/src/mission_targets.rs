@@ -248,6 +248,15 @@ pub struct BoundTarget {
     /// Zero on every axis when the node stores no box. Its centre is
     /// [`Self::target_point_m`].
     pub target_half_extents_m: [f64; 3],
+    /// The world-axis box `[centre, half extents]`, in metres, of the intact
+    /// subtree's collidable leaf parts: the union of each leaf part's own stored
+    /// bound (`docs/findings/2026-10-29-m01-target-part-collision-volumes.md`).
+    /// The image's contact test only reaches a leaf's polygon soup, never its
+    /// grouping ancestor's box, so this is the narrowest measured volume a
+    /// swept round can enter. `None` when no leaf carries a bound (or the
+    /// target's extents were dropped by [`drop_container_boxes`]); the sweep
+    /// then uses [`Self::target_point_m`] and [`Self::target_half_extents_m`].
+    pub contact_box_m: Option<([f64; 3], [f64; 3])>,
     /// The node's child named `healthy`, when it has one.
     pub healthy: Option<String>,
     /// The node's child named `destroyed`, when it has one.
@@ -962,11 +971,78 @@ fn bind_mission_targets_from(
         target.destroyed_slots = destroyed.into_iter().collect();
     }
 
+    for target in &mut targets {
+        if target.target_half_extents_m.iter().any(|half| *half != 0.0) {
+            target.contact_box_m = leaf_contact_box(&graph, &nodes, &target.intact_slots);
+        }
+    }
+
     MissionTargetBinding {
         targets,
         declared,
         refusals,
     }
+}
+
+/// Whether the image's contact query can reach this node's collision volume:
+/// the query gates on node flags `0x4` and `0x10` (`0x4c9a00`), and a node with
+/// a mesh and flag `0x20` clear is tested against its polygon soup
+/// (`0x4c9ba2` → `0x55c9c0`) while flag `0x20` is the bound-reject box
+/// (`0x4cc1be`).
+const NODE_FLAG_QUERY_GATES: u32 = 0x4 | 0x10;
+
+/// The union, as `[centre, half extents]` in the world axes, of the stored bound
+/// of every collidable leaf part among `slots`.
+///
+/// A leaf part is a node with a mesh (`mesh_index >= 0`) and both
+/// [`NODE_FLAG_QUERY_GATES`] flags set; its bound is [`stored_box`] carried
+/// through the node's composed world transform. `None` when no slot qualifies.
+fn leaf_contact_box(
+    graph: &SceneGraph,
+    nodes: &GameZNodes,
+    slots: &[u32],
+) -> Option<([f64; 3], [f64; 3])> {
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for slot in slots {
+        let Some(raw) = nodes.get(*slot) else {
+            continue;
+        };
+        let info = &raw.info;
+        if info.mesh_index < 0
+            || info.flags & NODE_FLAG_QUERY_GATES != NODE_FLAG_QUERY_GATES
+            || info.flags & 0x20 != 0
+        {
+            continue;
+        }
+        let Some([min, max]) = stored_box(raw) else {
+            continue;
+        };
+        let Some(node) = graph.nodes().iter().find(|node| node.index() == *slot) else {
+            continue;
+        };
+        let transform = node.world_transform();
+        for corner in 0..8 {
+            let local: [f64; 3] = std::array::from_fn(|axis| {
+                if corner >> axis & 1 == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            });
+            let world = transform.apply(local);
+            for axis in 0..3 {
+                low[axis] = low[axis].min(world[axis]);
+                high[axis] = high[axis].max(world[axis]);
+            }
+        }
+    }
+    low.iter().all(|value| value.is_finite()).then(|| {
+        (
+            std::array::from_fn(|axis| (low[axis] + high[axis]) / 2.0),
+            std::array::from_fn(|axis| (high[axis] - low[axis]) / 2.0),
+        )
+    })
 }
 
 /// Zeroes the extents of every target whose stored box encloses another bound
@@ -1191,6 +1267,7 @@ fn merge_target(
         position_m: node.world_transform().translation(),
         target_point_m: node.world_transform().translation(),
         target_half_extents_m: [0.0; 3],
+        contact_box_m: None,
         healthy,
         destroyed,
         intact_slots: Vec::new(),

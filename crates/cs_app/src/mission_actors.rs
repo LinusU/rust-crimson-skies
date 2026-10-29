@@ -435,6 +435,9 @@ pub fn reseat_under_zeppelin(
         let mut moved = target.clone();
         moved.position_m = placed.position_m;
         moved.target_point_m = placed.target_point_m;
+        // The leaf box is a static-container world box; the re-seated pose
+        // moves it, so the sweep falls back to the re-seated stored box.
+        moved.contact_box_m = None;
         // A container-enclosure fallback zeroed the extents on purpose
         // (`drop_container_boxes`); keep that.
         if moved.target_half_extents_m.iter().any(|half| *half != 0.0) {
@@ -1572,11 +1575,14 @@ fn spawn_mission_actors_under(
         }
         let (roster, allegiance_open) = ground_target_roster(target, player_team_of_player);
         let [x, y, z] = target.position_m;
+        let (sweep_centre, sweep_half) = target
+            .contact_box_m
+            .unwrap_or((target.target_point_m, target.target_half_extents_m));
         let (sweep_bundle, _centre) = ground_target_sweep(
             actor,
             target_node_key.clone(),
-            target.target_point_m,
-            target.target_half_extents_m,
+            sweep_centre,
+            sweep_half,
             target.position_m,
         );
         let entity = world

@@ -217,9 +217,13 @@ fn accept_m01_convoy_destruction_restart_restores_the_trucks() {
             .get::<MissionGroundTarget>(bound.entity)
             .unwrap_or_else(|| panic!("{node} is a ground target"))
             .target_half_extents_m;
-        assert_eq!(
-            swept.half_extents_m, stored,
-            "{node}: the fresh box takes the node's stored extents"
+        assert!(
+            (0..3).all(|axis| {
+                swept.half_extents_m[axis] > 0.0
+                    && swept.half_extents_m[axis] <= stored[axis] + 1e-6
+            }),
+            "{node}: the fresh box {:?} lies inside the node's stored extents {stored:?}",
+            swept.half_extents_m
         );
     }
 

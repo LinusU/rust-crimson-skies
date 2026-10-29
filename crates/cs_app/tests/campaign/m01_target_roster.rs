@@ -51,6 +51,7 @@ fn target_with(allegiance: AllegianceBinding, objective: bool) -> BoundTarget {
         position_m: [1.0, 2.0, 3.0],
         target_point_m: [1.0, 2.0, 3.0],
         target_half_extents_m: [0.0; 3],
+        contact_box_m: None,
         healthy: None,
         destroyed: None,
         intact_slots: Vec::new(),

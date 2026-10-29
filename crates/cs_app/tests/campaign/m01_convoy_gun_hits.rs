@@ -293,7 +293,12 @@ fn accept_m01_convoy_gun_hits_retail_trucks_are_destroyed_by_the_fire_key() {
             .get::<MissionGroundTarget>()
             .expect("bound ground target")
             .target_half_extents_m;
-        assert_eq!(half, stored, "{node}: the sweep carries the stored extents");
+        // The sweep carries the union of the leaf parts' bounds, which lies
+        // inside the grouping node's stored box (#2211).
+        assert!(
+            (0..3).all(|axis| half[axis] > 0.0 && half[axis] <= stored[axis] + 1e-6),
+            "{node}: the sweep {half:?} lies inside the stored extents {stored:?}"
+        );
         assert!(
             stored.iter().all(|h| (0.5..=12.0).contains(h)),
             "{node}: stored half extents {stored:?}"
@@ -368,6 +373,7 @@ fn box_target(node: &str, index: u32, point: [f64; 3], half: [f64; 3]) -> BoundT
         position_m: point,
         target_point_m: point,
         target_half_extents_m: half,
+        contact_box_m: None,
         healthy: None,
         destroyed: None,
         intact_slots: Vec::new(),
