@@ -45,14 +45,58 @@ Static claims only, not `verified_original`; the bytes are the ones above
   and both carry a `PlaytestOriginalFlight`, writes
   `session_time_s(report.tick) + COLLISION_GRACE_S (1.0)` on **both**.
   Sensor overlaps and contacts with anything else write nothing. "Class 0/4
-  vehicle" is read as the port's aircraft records; the finding does not say
-  whether a player-into-AI contact takes the same branch as AI-into-AI (the
-  `0x48d375` text says the grace is set on the non-player path), and the port
-  writes it for every aircraft pair.
+  vehicle" is read as the port's aircraft records; the port writes it for
+  every aircraft pair (see "Settled by #2255" for what the bytes say about the
+  player).
 * `drive_original_flight` states `sim_time_s` (fixed ticks times the fixed
   timestep, converted once) and the record's deadline in every record's
   `OriginalInput`; the law alone decides who is gated, so a player stays
   ungated by construction.
+
+## Settled by #2255 (which pairs reach the `V+0xac` writes)
+
+Static claims only (`OWNER-STATIC-2026-10-29`), not `verified_original`; the
+byte windows are pinned by `accept_groundblow_grace_pair_*`
+(`crates/cs_app/tests/campaign/accept_groundblow_grace_pair.rs`, ignored
+without `CS_ENGINE_IMAGE`). The function is `0x48d2c0`, `this` = `esi` = the
+stepping vehicle `V`, argument = that vehicle's own sweep result `H`.
+
+* `0x48d2ed 3b3598c27100` `cmp esi,[0x71c298]` (the player); `0x48d2fb
+  0f84a9000000` `je 0x48d3aa`. **When `V` is the player the whole block
+  `0x48d301`..`0x48d39b` is skipped: the player's own step writes no grace.**
+* Otherwise `ebx = H.object` (`[H+0x24]`, `0` skips); `0x48d31e f7432800000040`
+  `test [ebx+0x28],0x40000000` (clear skips); the object is looked up in the
+  vehicle registry `0x71dab8` (`call 0x4afee0`: first node whose `[node+8]->[+0xc]`
+  equals the key), walking `[ebx+0x58]` children while it misses. A miss skips.
+* `0x48d360 8b887c060000 85c9 7405 83f904 752c`: the **other** vehicle `O`
+  (`eax`) needs `[O+0x67c]` = 0 or 4, else skip. There is **no class test on
+  `V`** and **no player test on `O`** in the window.
+* `0x48d36f..0x48d395`: `[esi+0xac] = [0x71c470] + [0x6032dc]` and
+  `[eax+0xac] = [0x71c470] + [0x6032dc]` (`now + 1.0`), both unconditionally
+  once the checks above pass; `[ebp-0xe]` is set to 1 and `[ebp-0xd]` to 0.
+* The two callers (`0x48ed8b`, `0x490b08`) are both `mov ecx,edi; call
+  0x48d2c0` with `H` a stack local of the stepping vehicle: **each vehicle
+  runs the response for its own sweep hits.**
+
+Answer:
+
+* **AI/AI**: any step of either AI whose own hit resolves to the other (class
+  0/4) writes both. Port rule matches.
+* **Player-into-AI**: the player's step (`V` = player) writes nothing. The AI
+  gets `V+0xac` only from the AI's own step, when its own sweep hit resolves to
+  the player (the player is a valid `O`: no player test on `O`, and the player
+  is a class 0/4 vehicle). The AI side alone is written by that step (the
+  write to the player's `+0xac` is dead, the law never gates the player).
+* So a player/AI contact takes the branch exactly when the AI's own sweep
+  reports it. The port's single symmetric contact report writes the AI for
+  every such contact, so **no code changed**.
+
+Unresolved (not settled by this window, so not guessed): whether the AI's own
+sweep reports a contact the player's sweep made. That is the sweep's
+symmetry (`0x45e470` hit search), outside `0x48d31e..0x48d395`. If the AI
+does not see player-initiated hits, the port gives the AI a grace the
+original does not. Affects the 1.0 s ground-blow gate of an AI rammed by the
+player; resolving task: the follow-up filed from #2255.
 
 ## Wired by #2252 (`V+0x358`)
 

@@ -19,6 +19,7 @@ mod campaign {
     mod accept_crash_c_crash_flow;
     mod accept_crash_e_smoke;
     mod accept_groundblow_grace;
+    mod accept_groundblow_grace_pair;
     mod accept_groundblow_taxi;
     mod accept_m01_b_wake;
     mod accept_m01_smoke_success_a;
