@@ -275,6 +275,23 @@ over) and `MissingFacing` (a `FLASH` victim with no forward axis).
   the recipient producer for a retail loadout belongs with the F28-D binding
   that gives a mission a record carrying the bit.
 
+### Test sensitivity (measured)
+
+Three mutations were applied to the tree one at a time and the
+`accept_incap_hitpath_` selection re-run (5 unignored tests; the file was
+restored byte-identically each time):
+
+| mutation | result | caught by |
+| --- | --- | --- |
+| `from_hit` dots the raw offset instead of the unit one | 1 failed | `accept_incap_hitpath_flash_scales_by_the_normalised_facing` (intensity 1.0 where the measured `0.5` is) |
+| the status word is left at `0` instead of the ledger's mode | 1 failed | `accept_incap_hitpath_a_sonic_hit_incapacitates_an_ai_until_the_measured_deadline` |
+| the blast path applies no exposure at all | 5 failed | every unignored test in the selection |
+
+The two ignored tests are the second half: the retail one re-reads the owner's
+`weapons.zrd` through the production table reader and fails if `wep_08` is not
+`Sonic` or `wep_09`/`wep_15` are not `Flash`, and the image one fails if any of
+the six byte windows or the three constants above moves.
+
 ### Files
 
 - `crates/cs_sim/src/weapons/incapacitation.rs`: the normalisation statement,
