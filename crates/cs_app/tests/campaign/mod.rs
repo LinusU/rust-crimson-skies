@@ -296,6 +296,7 @@ mod m01_examine_objective;
 mod m01_fog_update_static;
 mod m01_force_block_reread;
 mod m01_free_flight;
+mod m01_release_groundblow;
 mod m01_handover_dynamics_step;
 mod m01_handover_velocity_trace;
 mod m01_lc_campaign_airframe_pose;
