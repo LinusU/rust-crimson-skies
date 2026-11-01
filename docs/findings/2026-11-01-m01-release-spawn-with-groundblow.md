@@ -55,8 +55,7 @@ No input, and pitch command 0.2: first contact: none within 10 s.
 | 300 | 150.0 / 100.1 / 0.0 / 0.0 | 245.0 / 77.1 / 41.4 / 41.2 |
 | 600 | 150.0 / 100.5 / 0.0 / 0.0 | 492.3 / 54.4 / 51.3 / 79.4 |
 
-The probe never hit and the amount was 0 in either flight (the nose stays at or above the horizon, the sea is 150 m
-below and the probe is shorter than that along a level nose). Smoke: 81 checks, failures none, 4129 frames, 8082
+The probe never hit and the amount was 0 in either flight (the nose stays level or above the horizon, so the segment along it never meets the sea). Smoke: 81 checks, failures none, 4129 frames, 8082
 ticks, exit 0 (`private/evidence/2246-main/`, 77 framebuffers; not committed).
 
 ## Release-state spawn (velocity 0, actual throttle 0, command 0.75) on current main
@@ -83,7 +82,7 @@ No input:
   degrees). The pitch column is the body's -Z axis: this is a tumble, not a controlled recovery. The blow is the
   large unnormalised-normal term the older findings describe (`approach.sqrt()` scales by the face area), not a
   gentle assist. I did not separate how much of the tumble is the blow's torque and how much is the law's own
-  low-speed attitude: the older finding has the body already at -18 deg pitch at tick 30, before the first hit.
+  low-speed attitude: the trace has the body already at -18 deg at tick 30, before the first hit at tick 36.
 * First (and only) terrain-or-sea contact: **tick 273, altitude 6.9 m** where the body stops (speed 0 afterwards),
   `judged` goes 0 -> 1 and a hull crash follows. `ground` and `obstacle` contact counters stay 0: the contact
   arrives through the judged fatal-contact path alone.
@@ -102,7 +101,7 @@ Pitch command 0.2 from tick 0:
 Lowest altitude **90.0 m at tick 251**; no contact within 10 s. The probe hits in 25 ticks (ticks 36-102, max
 amount 102.1) and then stops once the nose is above the sea. Gentle here means 0.2 of full deflection held from
 the hand-over; a later pull-up (the player reacting after a second or two) was not measured, and the fall is
-only 11.3 m/s at tick 30 but 21.6 m/s at tick 60, so the margin shrinks the longer the player waits. 0.2 was
+only 10.7 m/s at tick 30 but 21.8 m/s at tick 60, so the margin shrinks the longer the player waits. 0.2 was
 chosen once, not swept.
 
 Owner-command smoke with the same spawn: **fails**, exit 1, 28 of 80 checks (actors_project_and_cover,
