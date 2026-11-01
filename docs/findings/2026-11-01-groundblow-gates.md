@@ -34,7 +34,31 @@ Until they do, an AI within 1 s of an aircraft-into-aircraft contact, and a
 stunned aircraft, still run their ground blow. The `+0xb4` damping stays
 unmodelled (no site assigns it a non-zero value). No constant was tuned.
 
+## Wired by #2251 (`V+0xac`)
+
+Static claims only, not `verified_original`; the bytes are the ones above
+(`0x48d31e`..`0x48d395`, `now + 1.0`, both vehicles), no new image read.
+
+* `crates/cs_app/src/playtest/collision_grace.rs` keeps the deadline in the
+  app's own `CollisionGrace` component (absent means `0.0`, never gates).
+  `write_collision_grace` runs in `FixedLast` and, for every solid contact
+  report of the tick whose two bodies are both on `CollisionLayer::Aircraft`
+  and both carry a `PlaytestOriginalFlight`, writes
+  `session_time_s(report.tick) + COLLISION_GRACE_S (1.0)` on **both**.
+  Sensor overlaps and contacts with anything else write nothing. "Class 0/4
+  vehicle" is read as the port's aircraft records; the finding does not say
+  whether a player-into-AI contact takes the same branch as AI-into-AI (the
+  `0x48d375` text says the grace is set on the non-player path), and the port
+  writes it for every aircraft pair.
+* `drive_original_flight` states `sim_time_s` (fixed ticks times the fixed
+  timestep, converted once) and the record's deadline in every record's
+  `OriginalInput`; the law alone decides who is gated, so a player stays
+  ungated by construction.
+* `V+0x358 = 4` (`status_word`) is still not written by anything (#2172).
+
 ## Tests
 
-`accept_ground_blow_gate_*` in `crates/cs_sim/src/flight/original.rs`, calling
+`accept_groundblow_grace_*` in `crates/cs_app/tests/campaign/accept_groundblow_grace.rs`
+(two synthetic aircraft in contact through the production headless app, lockstep
+against an unprobed run); `accept_ground_blow_gate_*` in `crates/cs_sim/src/flight/original.rs`, calling
 `OriginalFlightModel::step`; the existing `accept_ground_blow_` suite passes.

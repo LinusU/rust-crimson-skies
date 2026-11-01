@@ -34,6 +34,7 @@
 //! adds the meshes, lights, window camera and HUD; [`smoke`] adds the finite
 //! deterministic run. [`run_playtest`] is what `cs --playtest` calls.
 
+pub mod collision_grace;
 pub mod command;
 pub mod fatal_contact;
 pub mod propeller;
@@ -439,7 +440,11 @@ impl Plugin for PlaytestPlugin {
             .add_message::<fatal_contact::TerrainContactJudged>()
             .add_systems(
                 FixedLast,
-                (record_collisions, fatal_contact::judge_terrain_contacts),
+                (
+                    record_collisions,
+                    fatal_contact::judge_terrain_contacts,
+                    collision_grace::write_collision_grace,
+                ),
             )
             .add_systems(
                 Update,
@@ -598,6 +603,7 @@ type FlyingRecord = (
     &'static LinearVelocity,
     &'static mut AngularVelocity,
     Option<&'static fatal_contact::FatalContactRule>,
+    Option<&'static collision_grace::CollisionGrace>,
 );
 
 /// One fixed tick of the original law that flies the retail playtest (task
@@ -632,10 +638,14 @@ fn drive_original_flight(
     mut state: ResMut<PlaytestState>,
     mut aircraft: Query<FlyingRecord>,
     probes: Res<world_sweep::GroundBlowProbes>,
+    ledger: Option<Res<PhysicsTickLedger>>,
     mut feel: Option<ResMut<crate::force_feedback::PlayerFlightFeel>>,
 ) {
     let dt_s = time.timestep().as_secs_f64();
-    for (entity, mut flight, position, mut rotation, velocity, mut angular, rule) in &mut aircraft {
+    let now_s = collision_grace::session_time_s(ledger.map_or(0, |ledger| ledger.ticks), dt_s);
+    for (entity, mut flight, position, mut rotation, velocity, mut angular, rule, grace) in
+        &mut aircraft
+    {
         if rule.is_some_and(|rule| rule.crash.is_some()) {
             continue;
         }
@@ -649,6 +659,8 @@ fn drive_original_flight(
         // The ground blow's world sweep (#2214): the probe the fill cast from
         // this tick's pre-step pose, overlaid on every record's input.
         let input = world_sweep::overlay_groundblow_probe(flight.input(), entity, &probes);
+        // The collision grace (#2251): the clock and this vehicle's `V+0xac`.
+        let input = collision_grace::overlay_collision_grace(input, grace, now_s);
         state.groundblow_probes += 1;
         let step = {
             let record = &mut *flight;
