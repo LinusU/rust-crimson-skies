@@ -78,3 +78,48 @@ fn accept_groundblow_grace_pair_callers_pass_the_stepping_vehicle() {
         assert_eq!(before, [0x8b, 0xcf], "mov ecx,edi before {call:#x}");
     }
 }
+
+/// #2256 (`GROUNDBLOW-GRACE-SWEEP`): the hit search the sweep (`0x48d7f0`)
+/// calls is the same code for every seat. The sweep's own player test is one
+/// `cmp esi,[0x71c298]` after the search, and the search routines
+/// (`0x4c8f70`..`0x4cca30`, containing `0x4ca320`) never name the player
+/// pointer, so nothing in the bytes makes the AI's sweep blind to the player.
+/// Whether the player's scene node is *flagged* into the search is data, not
+/// code, and stays open (see the finding).
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_groundblow_grace_sweep_search_is_seat_agnostic() {
+    let path = std::env::var("CS_ENGINE_IMAGE").expect("CS_ENGINE_IMAGE must name the image");
+    let image = std::fs::read(path).expect("read the engine image");
+    let at = |va: usize, len: usize| &image[va - IMAGE_BASE..va - IMAGE_BASE + len];
+    let rel_target = |call: usize| {
+        let rel = i32::from_le_bytes(at(call + 1, 4).try_into().unwrap());
+        assert_eq!(image[call - IMAGE_BASE], 0xe8, "call at {call:#x}");
+        (call as i64 + 5 + i64::from(rel)) as usize
+    };
+    // The sweep: the stepping vehicle's own `[V+0xac]` against the clock is
+    // the first thing it does (a vehicle inside its grace sweeps nothing).
+    assert_eq!(
+        at(0x48d7fd, 0x1e),
+        hex("d90570c4710053568bf1d89eac0000005789b578ffffffdfe0f6c401740f")
+    );
+    // Its two searches, both with the world `[0x71c2ac]` and the vehicle's
+    // own box: no vehicle or seat argument.
+    assert_eq!(rel_target(0x48da06), 0x4c8f70);
+    assert_eq!(rel_target(0x48da25), 0x4ca320);
+    // The one player test after the searches (`esi` is the stepping vehicle).
+    assert_eq!(at(0x48da3e, 0x10), hex("a198c2710083c4083bf00f84bb010000"));
+    // The caller of the sweep hands back the stepping vehicle's own `H`.
+    assert_eq!(rel_target(0x48ea17), 0x48d7f0);
+    // The sweep names the player pointer exactly once...
+    let needle = hex("98c27100");
+    let count = |from: usize, to: usize| {
+        image[from - IMAGE_BASE..to - IMAGE_BASE]
+            .windows(4)
+            .filter(|w| *w == needle.as_slice())
+            .count()
+    };
+    assert_eq!(count(0x48d7f0, 0x48e540), 1, "player pointer in the sweep");
+    // ...and the search routines not at all.
+    assert_eq!(count(0x4c8f70, 0x4cca30), 0, "player pointer in the search");
+}

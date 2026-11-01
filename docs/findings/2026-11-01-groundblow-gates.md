@@ -91,12 +91,45 @@ Answer:
   reports it. The port's single symmetric contact report writes the AI for
   every such contact, so **no code changed**.
 
-Unresolved (not settled by this window, so not guessed): whether the AI's own
-sweep reports a contact the player's sweep made. That is the sweep's
-symmetry (`0x45e470` hit search), outside `0x48d31e..0x48d395`. If the AI
-does not see player-initiated hits, the port gives the AI a grace the
-original does not. Affects the 1.0 s ground-blow gate of an AI rammed by the
-player; resolving task: the follow-up filed from #2255.
+## Settled by #2256 (is the AI's own sweep blind to the player?)
+
+Static claims only (`OWNER-STATIC-2026-10-29`), not `verified_original`; the
+bytes are pinned by `accept_groundblow_grace_sweep_*` (same file as the #2255
+pins, ignored without `CS_ENGINE_IMAGE`). `0x45e470` named in #2255 is not a
+hit search (it is a lookup in the map at `0x71b1e8`); the sweep is
+`0x48d7f0`, called as `mov ecx,edi; call 0x48d7f0` from the stepping
+vehicle's own step (`0x48ea17`), and its result is the `H` of `0x48d2c0`.
+
+* `0x48d7fd d90570c471 00 .. d89eac000000 .. dfe0 f6c401 740f`: the sweep's
+  first act is `now` against the stepping vehicle's own `[V+0xac]`; inside
+  the grace it returns without searching. This is symmetric (no seat test),
+  and it makes the `[eax+0xac]` write of `0x48d395` live for a player `O`: the
+  player's own sweep is skipped for that second. The law's gate stays
+  non-player only (`0x48c241`); this is a separate effect of the same write.
+* `0x48da06 e8 65b50300` (`0x4c8f70`) and `0x48da25 e8 f6c80300`
+  (`0x4ca320`): the searches take the world `[0x71c2ac]`, the vehicle's
+  sweep box and an output buffer; no vehicle or seat argument.
+* `0x48da3e a198c2710083c4083bf00f84bb010000`: the only player test in the
+  whole sweep (`0x48d7f0`..`0x48e540`), after both searches. `esi` is the
+  stepping vehicle; it picks which result post-processing runs, not whether
+  a result exists.
+* The search routines `0x4c8f70`..`0x4cca30` (containing `0x4ca320`, which
+  walks sector nodes filtering on node flags `[n+0x24]&4`, `&0x10`) contain
+  no reference to `0x71c298`.
+
+Answer: the bytes show **no asymmetry** in the hit search. The AI's sweep
+reports whichever scene nodes are flagged into the search, by the same code
+the player's sweep uses, so a player/AI contact reaches the AI's `0x48d2c0`
+exactly when the player's node is flagged in. Whether it is (a per-node flag,
+data set elsewhere) is not decided by this window and is **not guessed**; the
+port keeps the symmetric write, so **no code changed**. Affects the 1.0 s
+gate of an AI rammed by the player only if the player's node is unflagged,
+which would need a runtime or owner capture to see.
+
+Not wired (affected content: the player after an AI-initiated aircraft hit;
+no resolving task yet): the port does not skip a vehicle's own contact
+reaction while its `V+0xac` is live (`0x48d807`); it only feeds the law's
+ground-blow gate.
 
 ## Wired by #2252 (`V+0x358`)
 
