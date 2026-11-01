@@ -643,6 +643,10 @@ type FlyingRecord = (
 ///
 /// A refused step (a non-finite state) is counted in
 /// [`PlaytestState::original_step_errors`] instead of being flown.
+// The parameter list is a Bevy system's queries and resources, not a call
+// signature: each one is a distinct world access the driver needs (#797,
+// #2214, #2251, #2252).
+#[allow(clippy::too_many_arguments)]
 fn drive_original_flight(
     time: Res<Time<Fixed>>,
     mut requests: ResMut<ForceRequests>,
