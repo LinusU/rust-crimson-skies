@@ -43,8 +43,9 @@ distance between the two positions at that second.
 | 70 | (-5698.1, 549.4, -7100.1) 95.2 | (-3899.5, 1925.0, -6902.7) 111.2 | 2273 | 2 · 267 |
 | 80 | (-6258.0, 693.1, -7855.4) 95.0 | (-3634.7, 1707.9, -8014.6) 123.2 | 2817 | 2 · 267 |
 
-Per-second (not in the table): main flies level at 150.0 m and 100.5 m/s
-(`vy` 0) from t=0 through t=37 — the nose probe meets nothing within its 400 m.
+Per-second (not in the table): main flies level at 150.0 m (`vy` 0) from
+t=0 through t=37 — the 55.5 m/s spawn speed settles into the 100.5 m/s
+cruise by t=8 and the nose probe meets nothing within its 400 m.
 From t=38 the probe meets the hillside ahead and the ground blow lifts the
 nose: `vy` +1.6 at t=38, +3.3 at t=39, +4.9 at t=40, +6.6 at t=41, while the
 speed bleeds 99.2 -> 97.1 m/s. The hillside itself is touched at t≈41.2 and
