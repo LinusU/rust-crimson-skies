@@ -79,10 +79,11 @@ pub use model::{
     InstrumentState,
 };
 pub use original::{
-    AIRFRAME_FIELDS, Atmosphere, DynamicsKind, GLOBAL_FIELDS, OriginalAirframe,
-    OriginalFlightModel, OriginalGlobals, OriginalInput, OriginalParamsError, OriginalState,
-    OriginalStep, OriginalStepError, SegmentProbeHit, SegmentProbeOwner, atmosphere, authority,
-    drag_coefficient, lift_target, max_lift_coefficient, nose_direction, thrust_coefficient,
+    AIRFRAME_FIELDS, Atmosphere, DynamicsKind, GLOBAL_FIELDS, INCAPACITATED_STATUS,
+    OriginalAirframe, OriginalFlightModel, OriginalGlobals, OriginalInput, OriginalParamsError,
+    OriginalState, OriginalStep, OriginalStepError, SegmentProbeHit, SegmentProbeOwner, atmosphere,
+    authority, drag_coefficient, lift_target, max_lift_coefficient, nose_direction,
+    thrust_coefficient,
 };
 pub use synthetic::{
     SyntheticCase, SyntheticEnvelope, SyntheticEnvelopeError, SyntheticManeuver, SyntheticProbe,

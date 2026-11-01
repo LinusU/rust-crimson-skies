@@ -214,6 +214,11 @@ impl PlaytestOriginalFlight {
             // The driver overlays the ground blow's world sweep (#2214); a
             // caller with no world states no probe rather than a guessed hit.
             segment_probe: None,
+            // No contact response or status effect writes `V+0xac` or
+            // `V+0x358` in the playtest scene yet, so neither gate is armed.
+            sim_time_s: 0.0,
+            collision_grace_until_s: 0.0,
+            status_word: 0,
         }
     }
 }

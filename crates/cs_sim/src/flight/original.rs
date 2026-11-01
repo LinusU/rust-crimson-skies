@@ -726,7 +726,25 @@ pub struct OriginalInput {
     /// non-player and for the player while fake dynamics are off, the hit adds
     /// the original's torque term and may turn the velocity toward the nose.
     pub segment_probe: Option<SegmentProbeHit>,
+    /// The caller's sim clock (`[0x71c470]`), seconds, the `now` the ground
+    /// blow's collision-grace gate compares against
+    /// [`Self::collision_grace_until_s`] (`0x48c241`). The law keeps no clock
+    /// of its own.
+    pub sim_time_s: f64,
+    /// `V+0xac`: the deadline before which a **non-player's** ground blow is
+    /// skipped. The contact response sets it to `now + 1.0` on both aircraft
+    /// of a class 0/4 pair (`0x48d31e`..`0x48d395`); the player is never
+    /// gated by it. `0.0` (the vehicle's initial value) never gates.
+    pub collision_grace_until_s: f64,
+    /// `V+0x358`, the behaviour/status word. [`INCAPACITATED_STATUS`] (pilot
+    /// incapacitation) runs no ground blow for either seat (`0x48c22b`).
+    pub status_word: u32,
 }
+
+/// `V+0x358 == 4`: pilot incapacitation, the value at which the ground blow
+/// returns at once (`0x48c22b`;
+/// `docs/findings/2026-10-28-t452-r05-slot-map-and-incapacitation.md`).
+pub const INCAPACITATED_STATUS: u32 = 4;
 
 impl Default for OriginalInput {
     fn default() -> Self {
@@ -740,6 +758,9 @@ impl Default for OriginalInput {
             is_player: true,
             hold_attitude: false,
             segment_probe: None,
+            sim_time_s: 0.0,
+            collision_grace_until_s: 0.0,
+            status_word: 0,
         }
     }
 }
@@ -1537,7 +1558,11 @@ impl OriginalFlightModel {
         if !input.is_player || !fake {
             let (blow, aligned) = self.ground_blow(
                 input.is_player,
-                input.segment_probe,
+                if ground_blow_gated(&input) {
+                    None
+                } else {
+                    input.segment_probe
+                },
                 back,
                 nose,
                 increment,
@@ -1595,11 +1620,9 @@ impl OriginalFlightModel {
     ///   `1 - f(dt * 2 * amount)`, `f` = [`decay_factor`], and rescales the
     ///   result by the pre-alignment speed (`0x48c3a1`..`0x48c434`).
     ///
-    /// Not modelled, because this law has no state for them and no caller of
-    /// this crate can set them: `V+0x358 == 4` (pilot incapacitation,
-    /// `0x48c22b`) returns at once; a **non-player's** blow is skipped while
-    /// the clock is before `V+0xac`, the 1.0 s collision-grace deadline the
-    /// contact response writes (`0x48c241`); and the same vehicle's `0.15`
+    /// The two per-vehicle early returns (`V+0x358 == 4`, and a
+    /// **non-player's** `now < V+0xac`) are [`ground_blow_gated`], applied by
+    /// the caller before this runs. Not modelled: the same vehicle's `0.15`
     /// damping while the clock is before `V+0xb4` (`0x48c317`) is unreachable:
     /// no site in the image gives `+0xb4` a non-zero value
     /// (`2026-10-29-groundblow-world-segment-sweep.md` section 6). The
@@ -1672,6 +1695,14 @@ impl OriginalFlightModel {
 
         (scale(blow, factor), aligned)
     }
+}
+
+/// The ground blow's two per-vehicle early returns: `V+0x358 == 4` for either
+/// seat (`0x48c22b`), and, for a non-player only, the clock still before the
+/// collision-grace deadline `V+0xac` (`0x48c241`).
+fn ground_blow_gated(input: &OriginalInput) -> bool {
+    input.status_word == INCAPACITATED_STATUS
+        || (!input.is_player && input.sim_time_s < input.collision_grace_until_s)
 }
 
 // ------------------------------------------------------------- utilities ---
@@ -2883,6 +2914,68 @@ mod tests {
         let (_, ai_bare) = stepped(&model, &state, ai_plain);
         let (_, ai_step) = stepped(&model, &state, ai_probed);
         assert!(ai_step.world_torque[0] > ai_bare.world_torque[0] + 700.0);
+    }
+
+    /// The probed step of one seat with `edit` applied, against the same seat
+    /// unprobed: `true` when the ground blow changed the torque or the velocity.
+    fn blow_runs(is_player: bool, edit: impl Fn(&mut OriginalInput)) -> bool {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let state = probing_state([60.0, 0.0, -80.0]);
+        let mut plain = OriginalInput {
+            is_player,
+            ..OriginalInput::default()
+        };
+        edit(&mut plain);
+        let probed = OriginalInput {
+            segment_probe: Some(surf_hit()),
+            ..plain
+        };
+        let (bare_state, bare) = stepped(&model, &state, plain);
+        let (blown_state, step) = stepped(&model, &state, probed);
+        // A player with no accumulated torque gets no torque term, but the
+        // velocity is still steered toward the nose.
+        step.world_torque != bare.world_torque
+            || blown_state.velocity_mps != bare_state.velocity_mps
+    }
+
+    /// `0x48c241`: a non-player's blow is skipped exactly while the clock is
+    /// before `V+0xac`; the deadline itself and later run it.
+    #[test]
+    fn accept_ground_blow_gate_ai_is_skipped_exactly_while_the_grace_runs() {
+        let at = |now: f64, until: f64| {
+            blow_runs(false, |input| {
+                input.sim_time_s = now;
+                input.collision_grace_until_s = until;
+            })
+        };
+        assert!(!at(10.0, 11.0));
+        assert!(!at(10.999, 11.0));
+        assert!(at(11.0, 11.0));
+        assert!(at(12.0, 11.0));
+        // An unset deadline (`V+0xac == 0`) never gates.
+        assert!(at(0.0, 0.0));
+    }
+
+    /// The grace is the non-player's alone: a player's blow runs inside it.
+    #[test]
+    fn accept_ground_blow_gate_player_ignores_the_collision_grace() {
+        assert!(blow_runs(true, |input| {
+            input.sim_time_s = 10.0;
+            input.collision_grace_until_s = 11.0;
+        }));
+    }
+
+    /// `0x48c22b`: `V+0x358 == 4` runs no blow for either seat; any other word
+    /// does.
+    #[test]
+    fn accept_ground_blow_gate_incapacitation_skips_both_seats() {
+        for is_player in [true, false] {
+            assert!(!blow_runs(is_player, |input| {
+                input.status_word = INCAPACITATED_STATUS;
+            }));
+            assert!(blow_runs(is_player, |input| input.status_word = 3));
+            assert!(blow_runs(is_player, |input| input.status_word = 5));
+        }
     }
 
     /// A non-player's term is `B * ai_groundblow * groundblow_mag` with no
