@@ -595,6 +595,10 @@ fn apply_flight_command(
 
 /// The pose and law of one aircraft the original flight law steps. A crashed
 /// aircraft's flight is over (PARITY4-CRASH-B), so the query excludes it.
+///
+/// `DamageActorBinding` is the entity's session-qualified actor: the ordnance
+/// status ledger that feeds the measured incapacitation is keyed by it (task
+/// #2252), and an entity with no binding has no ledger entry to read.
 type FlyingRecord = (
     Entity,
     &'static mut PlaytestOriginalFlight,
@@ -604,6 +608,7 @@ type FlyingRecord = (
     &'static mut AngularVelocity,
     Option<&'static fatal_contact::FatalContactRule>,
     Option<&'static collision_grace::CollisionGrace>,
+    Option<&'static crate::damage::DamageActorBinding>,
 );
 
 /// One fixed tick of the original law that flies the retail playtest (task
@@ -629,6 +634,12 @@ type FlyingRecord = (
 ///   the world sweep [`world_sweep::fill_groundblow_probes`] cast earlier in
 ///   this same tick (tasks #2214, #2224); each application is counted in
 ///   [`PlaytestState::groundblow_probes`].
+/// * **overlay the measured pilot incapacitation** on every record's input
+///   from the mission's ordnance ledger (task #2252): a record whose actor is
+///   under the status effects' `Incapacitation` kind reads `V+0x358 == 4` and
+///   zero control words, so its ground blow and its controls are suppressed
+///   until the measured deadline tick. A playtest with no ordnance session
+///   (the synthetic and free-flight scenes) overlays nothing.
 ///
 /// A refused step (a non-finite state) is counted in
 /// [`PlaytestState::original_step_errors`] instead of being flown.
@@ -639,11 +650,12 @@ fn drive_original_flight(
     mut aircraft: Query<FlyingRecord>,
     probes: Res<world_sweep::GroundBlowProbes>,
     ledger: Option<Res<PhysicsTickLedger>>,
+    ordnance: Option<Res<crate::mission_session::MissionOrdnanceSession>>,
     mut feel: Option<ResMut<crate::force_feedback::PlayerFlightFeel>>,
 ) {
     let dt_s = time.timestep().as_secs_f64();
     let now_s = collision_grace::session_time_s(ledger.map_or(0, |ledger| ledger.ticks), dt_s);
-    for (entity, mut flight, position, mut rotation, velocity, mut angular, rule, grace) in
+    for (entity, mut flight, position, mut rotation, velocity, mut angular, rule, grace, binding) in
         &mut aircraft
     {
         if rule.is_some_and(|rule| rule.crash.is_some()) {
@@ -660,8 +672,18 @@ fn drive_original_flight(
         // this tick's pre-step pose, overlaid on every record's input.
         let input = world_sweep::overlay_groundblow_probe(flight.input(), entity, &probes);
         // The collision grace (#2251): the clock and this vehicle's `V+0xac`.
-        let input = collision_grace::overlay_collision_grace(input, grace, now_s);
+        let mut input = collision_grace::overlay_collision_grace(input, grace, now_s);
         state.groundblow_probes += 1;
+        // The measured incapacitation (#2252): the actor's own status ledger
+        // decides `V+0x358` and whether its control words are zeroed.
+        if let (Some(session), Some(binding)) = (ordnance.as_deref(), binding) {
+            input = scene::overlay_incapacitation(
+                input,
+                flight.is_player,
+                session.0.runtime().status(),
+                binding.actor,
+            );
+        }
         let step = {
             let record = &mut *flight;
             record.model.step(&mut record.state, input, dt_s)

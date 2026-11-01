@@ -678,6 +678,11 @@ pub fn open_mission_weapons_with(
     ordnance
         .register(player, std::slice::from_ref(&rocket))
         .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+    // The measured `SONIC`/`FLASH` exposure hands the player a screen/audio
+    // effect and no control loss (`0x4ba5bf`), so the session is told which
+    // actor is `0x71c298` rather than leaving the exposure path to guess it
+    // (task #2252).
+    let ordnance = ordnance.with_player(player);
 
     let rules = designed_target_rules();
     let lowered =

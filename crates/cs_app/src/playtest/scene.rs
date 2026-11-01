@@ -12,10 +12,13 @@
 use avian3d::prelude::{CoefficientCombine, Friction, NoAutoMass, Restitution, Rotation};
 use bevy::prelude::{Component, Entity, Visibility, World};
 use cs_sim::collision::CollisionLayer;
+use cs_sim::damage::ActorId;
 use cs_sim::flight::{
     EngineState, FlightInput, FlightModel, OriginalFlightModel, OriginalInput, OriginalState,
     synthetic_fixed_wing,
 };
+use cs_sim::weapons::StatusEffectLedger;
+use cs_sim::weapons::incapacitation::{effective_controls, incapacitated_mode};
 use cs_types::space::Quaternion;
 
 use super::command::CRUISE_THROTTLE;
@@ -214,12 +217,66 @@ impl PlaytestOriginalFlight {
             // The driver overlays the ground blow's world sweep (#2214); a
             // caller with no world states no probe rather than a guessed hit.
             segment_probe: None,
-            // No contact response or status effect writes `V+0xac` or
-            // `V+0x358` in the playtest scene yet, so neither gate is armed.
+            // No contact response writes `V+0xac` in the playtest scene yet,
+            // so the collision grace is disarmed here. `V+0x358` is fed from
+            // the session's status ledger by [`overlay_incapacitation`] (task
+            // #2252); the bare record states the disarmed word.
             sim_time_s: 0.0,
             collision_grace_until_s: 0.0,
             status_word: 0,
         }
+    }
+}
+
+/// Applies the measured pilot-incapacitation gate to one record's input (task
+/// #2252).
+///
+/// While [`incapacitated_mode`] reports the mode for `actor`, the original's
+/// `V+0x358` reads [`INCAPACITATED_STATUS`] (`4`) and its six control words
+/// read zero (`0x4200d0`); otherwise the word is `0` and the record's own
+/// controls stand. The control words go through
+/// [`effective_controls`], the sim's one statement of the gate, mapped onto
+/// this record's own six commands in the order the law reads them: roll, pitch,
+/// yaw, throttle, boost and engine-out.
+///
+/// **The player seat never reads an incapacitated mode.** The measured exposure
+/// hands `0x71c298` a screen/audio effect and rejoins the shared tail
+/// (`0x4ba5bf` -> `0x4ba5c7` -> `0x4ba625`) instead of calling `0x4200d0`, so
+/// its word stays `0` and its controls are never zeroed, whatever the ledger
+/// holds. That branch is the whole of the player's exposure here: the screen
+/// and the sound are a presentation consumer this task does not build.
+#[must_use]
+pub fn overlay_incapacitation(
+    input: OriginalInput,
+    is_player: bool,
+    ledger: &StatusEffectLedger,
+    actor: ActorId,
+) -> OriginalInput {
+    if is_player {
+        return OriginalInput {
+            status_word: 0,
+            ..input
+        };
+    }
+    let requested = [
+        input.roll,
+        input.pitch,
+        input.yaw,
+        input.throttle,
+        if input.nitro { 1.0 } else { 0.0 },
+        if input.engine_out { 1.0 } else { 0.0 },
+    ];
+    let [roll, pitch, yaw, throttle, nitro, engine_out] =
+        effective_controls(ledger, actor, requested);
+    OriginalInput {
+        roll,
+        pitch,
+        yaw,
+        throttle,
+        nitro: nitro > 0.0,
+        engine_out: engine_out > 0.0,
+        status_word: incapacitated_mode(ledger, actor).unwrap_or(0),
+        ..input
     }
 }
 

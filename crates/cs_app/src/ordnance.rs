@@ -63,6 +63,9 @@ use cs_content::ordnance::{
     DeclaredStatusEffect, OriginalComponentLaunch, TangleStatus, TanglerFieldDeclaration,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
+use cs_sim::weapons::incapacitation::{
+    ExposureBit, ExposureGeometry, ExposureOutcome, IncapacitationError, IncapacitationVictim,
+};
 use cs_sim::weapons::{
     AreaEffect, ArmingRule, BlastRecipient, CatalogueError, CatalogueUnknown, CataloguedArming,
     CataloguedFuse, CataloguedGuidance, CataloguedMount, CataloguedOrdnance, CompatibilityVerdict,
@@ -928,6 +931,133 @@ fn open_burst_tangler(
     }
 }
 
+/// What one blast gives the measured exposure: the item, its record, where it
+/// burst and the recipients the step supplied.
+struct BlastExposureSources<'a> {
+    /// The item that struck.
+    projectile: ProjectileId,
+    /// The component it was: the session's exposure table is keyed by it.
+    ordnance: &'a OrdnanceId,
+    /// Where the burst happened: the point of contact for a swept hit, the
+    /// item's tick-end position otherwise.
+    source: WorldPosition,
+    /// The record's `IMPACT_PROXIMITY`, when it declares one.
+    radius_m: Option<f64>,
+    /// The recipients the caller supplied, `None` when it supplied none.
+    recipients: Option<&'a [BlastRecipient]>,
+}
+
+/// Applies one blast's measured `SONIC`/`FLASH` exposure to the actors it
+/// reached (task #2252).
+///
+/// The measured per-hit routine `0x42e840` runs once per hit, for the actor the
+/// shot struck, over the ratio `(distance / IMPACT_PROXIMITY)²`
+/// (`0x4ba590`..`0x4ba5a6`), the `FLASH` facing term (`0x42e8ed`..`0x42e966`)
+/// and the deadline `intensity * 5.0` s (`0x42e9b1`). This path measures it for
+/// every recipient the step supplied: the exposure's own ratio is zero at and
+/// beyond the record's radius, so a recipient inside it is exactly one the
+/// measured falloff reaches at a non-zero intensity.
+///
+/// The player takes the screen/audio record only: [`OrdnanceSession::player`]
+/// is what tells the routine which victim is `0x71c298`, and the ledger is
+/// never given an incapacitation for it (`0x4ba5bf` -> `0x4ba5c7`).
+///
+/// Nothing is guessed: no radius, no facing axis and no recipients mean a named
+/// [`BlastExposureRefusal`] rather than an exposure measured over an invented
+/// value.
+fn apply_blast_exposure(
+    session: &mut OrdnanceSession,
+    tick: &mut OrdnanceSessionTick,
+    at: Tick,
+    blast: &BlastExposureSources<'_>,
+) {
+    let BlastExposureSources {
+        projectile,
+        ordnance,
+        source,
+        radius_m,
+        recipients,
+    } = *blast;
+    let Some(bit) = session.exposure_for(ordnance) else {
+        return;
+    };
+    let Some(recipients) = recipients else {
+        tick.exposures_refused
+            .push(BlastExposureRefusal::MissingRecipients { projectile });
+        return;
+    };
+    let Some(radius_m) = radius_m else {
+        tick.exposures_refused
+            .push(BlastExposureRefusal::MissingRadius { projectile });
+        return;
+    };
+    let player = session.player;
+    for recipient in recipients {
+        let target = recipient.target();
+        let facing = match recipient.facing() {
+            Some(facing) => facing,
+            // `SONIC` is the unfaced bit: the routine's facing flag is the
+            // `FLASH` bit itself (`shl`-right eleven, mask one at `0x4ba576`),
+            // so an unfaced hit never reads the axis.
+            None if bit == ExposureBit::Sonic => [0.0; 3],
+            None => {
+                tick.exposures_refused
+                    .push(BlastExposureRefusal::MissingFacing { projectile, target });
+                continue;
+            }
+        };
+        let geometry = ExposureGeometry::from_hit(source, recipient.position(), facing, radius_m);
+        // `+0x91d`, `+0xf8` and `+0x67c` are not modelled by this runtime, so
+        // the gate is stated with the values a session's actors actually
+        // carry: not exempt, not busy, state word zero. The player is the one
+        // victim the measured gate excludes, and it is a session fact here.
+        let victim = IncapacitationVictim {
+            is_player: player == Some(target),
+            exempt: false,
+            busy: false,
+            state_word: 0,
+        };
+        match session.runtime.apply_exposure(
+            session.session_id,
+            at,
+            ordnance,
+            bit,
+            &geometry,
+            &victim,
+            target,
+        ) {
+            Ok(outcome) => {
+                if let ExposureOutcome::Incapacitated { expires_at, .. } = outcome {
+                    let event = push_network_event(
+                        &mut session.events,
+                        &mut session.next_event_sequence,
+                        session.session_id,
+                        at,
+                        session.producer,
+                        OrdnanceEventKind::StatusApplied {
+                            target: StatusEffectTarget::whole_actor(target),
+                            kind: StatusEffectKind::Incapacitation,
+                            expires_at,
+                        },
+                    );
+                    tick.events.push(event);
+                }
+                tick.exposures.push(BlastExposure {
+                    projectile,
+                    target,
+                    bit,
+                    outcome,
+                });
+            }
+            Err(source) => tick.exposures_refused.push(BlastExposureRefusal::Refused {
+                projectile,
+                target,
+                source,
+            }),
+        }
+    }
+}
+
 /// Appends one event to the log and returns it for the per-tick report.
 fn push_network_event(
     log: &mut Vec<OrdnanceNetworkEvent>,
@@ -1214,6 +1344,93 @@ pub struct OrdnanceGuidanceBlast {
     pub area_refused: Option<OrdnanceRuntimeError>,
 }
 
+/// One `SONIC`/`FLASH` exposure a blast applied (task #2252).
+///
+/// The measured per-hit routine `0x42e840` is not a declared status: its
+/// strength and deadline come from the hit's geometry, so the outcome is
+/// reported here with the exposure that was measured and the deadline the
+/// ledger will clear it on, rather than as an [`OrdnanceStatusEffect`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlastExposure {
+    /// The item that struck.
+    pub projectile: ProjectileId,
+    /// The actor that was struck.
+    pub target: ActorId,
+    /// The measured bit the component carries.
+    pub bit: ExposureBit,
+    /// What the exposure did: the player's screen/audio record, a
+    /// non-player's ledger entry, or one of the measured no-effect outcomes.
+    pub outcome: ExposureOutcome,
+}
+
+/// Why a `SONIC`/`FLASH` blast could not be measured.
+///
+/// Each variant names the content the exposure needed and did not get, so a
+/// record whose exposure cannot be flown is reported rather than silently
+/// skipped or applied with an invented value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlastExposureRefusal {
+    /// The blast reached no supplied recipients, so there was no victim
+    /// position to measure the ratio or the facing term against.
+    MissingRecipients {
+        /// The item that struck.
+        projectile: ProjectileId,
+    },
+    /// The record declares no `IMPACT_PROXIMITY`, the radius `0x4ba590`
+    /// squares into the ratio's denominator.
+    MissingRadius {
+        /// The item that struck.
+        projectile: ProjectileId,
+    },
+    /// A `FLASH` victim arrived with no forward axis, so its facing term has
+    /// no measured value.
+    MissingFacing {
+        /// The item that struck.
+        projectile: ProjectileId,
+        /// The victim whose axis was missing.
+        target: ActorId,
+    },
+    /// The exposure routine refused the geometry or the ledger refused the
+    /// status.
+    Refused {
+        /// The item that struck.
+        projectile: ProjectileId,
+        /// The victim the hit was measured against.
+        target: ActorId,
+        /// The refusal.
+        source: IncapacitationError,
+    },
+}
+
+impl std::fmt::Display for BlastExposureRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRecipients { projectile } => write!(
+                f,
+                "item {projectile} applies an exposure but the step supplied no blast recipients"
+            ),
+            Self::MissingRadius { projectile } => write!(
+                f,
+                "item {projectile} applies an exposure but declares no IMPACT_PROXIMITY radius"
+            ),
+            Self::MissingFacing { projectile, target } => write!(
+                f,
+                "item {projectile} is a FLASH exposure but victim {target} has no forward axis"
+            ),
+            Self::Refused {
+                projectile,
+                target,
+                source,
+            } => write!(
+                f,
+                "item {projectile}'s exposure on {target} was refused: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BlastExposureRefusal {}
+
 /// Why a triggered item's effects could not be routed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OrdnanceRoutingRefusal {
@@ -1328,6 +1545,12 @@ pub struct OrdnanceSessionTick {
     pub status_expired: Vec<ExpiredStatusEffect>,
     /// The status advance was refused whole.
     pub status_refused: Option<OrdnanceRuntimeError>,
+    /// The `SONIC`/`FLASH` exposures this tick's blasts applied, in blast order
+    /// and within a blast in recipient order (task #2252).
+    pub exposures: Vec<BlastExposure>,
+    /// Exposures a blast carried but could not measure, each naming its item
+    /// and victim.
+    pub exposures_refused: Vec<BlastExposureRefusal>,
     /// Areas that reached their expiry boundary this tick.
     pub areas_expired: Vec<ExpiredArea>,
     /// The area advance was refused whole.
@@ -1448,6 +1671,18 @@ pub struct OrdnanceSession {
     /// item's tick-end position otherwise (task #2205); an id with no entry
     /// opens none.
     tangler_fields: BTreeMap<OrdnanceId, TanglerFieldDeclaration>,
+    /// The measured `SONIC`/`FLASH` exposure bit each registered component
+    /// carries (task #2252), keyed by the component's id — the same producer
+    /// shape [`tangler_fields`](Self::tangler_fields) has, because the bit is a
+    /// measured property of the record that the runtime's lowered component
+    /// does not express as a status: the exposure's strength and deadline come
+    /// from the hit's geometry, not from a declared duration. An id with no
+    /// entry applies no exposure.
+    exposures: BTreeMap<OrdnanceId, ExposureBit>,
+    /// The session's player actor, when it has one. The measured exposure hands
+    /// the player a screen/audio effect and **no** control loss (`0x4ba5bf`),
+    /// so the ledger never holds an incapacitation on this actor.
+    player: Option<ActorId>,
     resolved_through: Option<Tick>,
     closed: bool,
 }
@@ -1496,6 +1731,8 @@ impl OrdnanceSession {
             events: Vec::new(),
             tangler: TanglerLedger::new(session_id, tick, rate),
             tangler_fields: BTreeMap::new(),
+            exposures: BTreeMap::new(),
+            player: None,
             resolved_through: None,
             closed: false,
         })
@@ -1766,6 +2003,70 @@ impl OrdnanceSession {
         Ok(())
     }
 
+    /// Declares that a component applies the measured `SONIC`/`FLASH` exposure
+    /// when it strikes an actor (task #2252).
+    ///
+    /// This is the producer side of the per-hit exposure `0x42e840`: the
+    /// record's effect bit is a measured property of its
+    /// `SONIC`/`FLASH` status key (see [`measured_exposure_bit`]), and the
+    /// runtime's lowered component deliberately declares **no** fixed-duration
+    /// status for it (a `MeasuredEffectDuration::Exposure` record is skipped
+    /// by the measured-record lowering), because the strength and the deadline
+    /// are computed from the hit's geometry. Registering the bit here is what
+    /// makes [`step_ordnance_session`] apply that exposure from a blast.
+    ///
+    /// Registering the same id twice replaces the bit, for the same reason
+    /// [`register_tangler_field`](Self::register_tangler_field) replaces its
+    /// declaration: a reload re-reads the same record.
+    ///
+    /// # Errors
+    ///
+    /// [`ExposureRegistrationError::Closed`] for a closed session.
+    pub fn register_exposure(
+        &mut self,
+        ordnance: &OrdnanceId,
+        bit: ExposureBit,
+    ) -> Result<(), ExposureRegistrationError> {
+        if self.closed {
+            return Err(ExposureRegistrationError::Closed);
+        }
+        self.exposures.insert(ordnance.clone(), bit);
+        Ok(())
+    }
+
+    /// The measured exposure bit one component applies, when it applies one.
+    #[must_use]
+    pub fn exposure_for(&self, ordnance: &OrdnanceId) -> Option<ExposureBit> {
+        self.exposures.get(ordnance).copied()
+    }
+
+    /// Every component that applies a measured exposure, in ascending id order.
+    #[must_use]
+    pub fn exposure_ids(&self) -> Vec<OrdnanceId> {
+        self.exposures.keys().cloned().collect()
+    }
+
+    /// Names the actor this session's player seat flies.
+    ///
+    /// The measured exposure gives the player a screen/audio effect and no
+    /// control loss (`0x4ba5bf`), so the ordinary incapacitation target gate
+    /// (`0x4200d0`) already refuses it for `0x71c298`; naming the player here
+    /// makes that refusal a session fact rather than a caller's promise, and
+    /// keeps an exposure on the player out of the ledger the flight consumer
+    /// reads. A session with no player set refuses every actor the same way any
+    /// other non-player victim is treated.
+    #[must_use]
+    pub const fn with_player(mut self, player: ActorId) -> Self {
+        self.player = Some(player);
+        self
+    }
+
+    /// The player seat this session named, if any.
+    #[must_use]
+    pub const fn player(&self) -> Option<ActorId> {
+        self.player
+    }
+
     /// Registers one actor's declared loadout.
     ///
     /// This is the stage's *producer* boundary: the components arrive as the
@@ -1922,6 +2223,7 @@ impl OrdnanceSession {
         self.components.clear();
         self.launched_units.clear();
         self.tangler_fields.clear();
+        self.exposures.clear();
         let mirrors = despawn_ordnance_mirrors(world);
         self.runtime = OrdnanceRuntime::new(
             self.session_id,
@@ -2284,6 +2586,24 @@ impl std::fmt::Display for TanglerFieldRegistrationError {
 }
 
 impl std::error::Error for TanglerFieldRegistrationError {}
+
+/// Why a component's measured `SONIC`/`FLASH` exposure bit could not be
+/// declared on a session (task #2252).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExposureRegistrationError {
+    /// The session has been closed and accepts nothing.
+    Closed,
+}
+
+impl std::fmt::Display for ExposureRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("the session is closed"),
+        }
+    }
+}
+
+impl std::error::Error for ExposureRegistrationError {}
 
 /// The session's open tangler fields and the tangle timers they leave behind.
 ///
@@ -3000,6 +3320,22 @@ pub fn step_ordnance_session(
                         }
                         Err(source) => blast.status_refused = Some(source),
                     }
+                    // The measured `SONIC`/`FLASH` exposure of a record whose
+                    // guidance loss detonated (task #2252): the same measured
+                    // per-hit routine, measured from the position the runtime
+                    // last recorded for the item.
+                    apply_blast_exposure(
+                        session,
+                        &mut tick,
+                        step.at,
+                        &BlastExposureSources {
+                            projectile,
+                            ordnance: detonation.ordnance(),
+                            source: detonation.position(),
+                            radius_m: detonation.area_effect().map(|area| area.radius_m()),
+                            recipients: step.blast_recipients,
+                        },
+                    );
                     if detonation.area_effect().is_some() {
                         match session.runtime.open_detonation_area(
                             session.session_id,
@@ -3112,11 +3448,17 @@ pub fn step_ordnance_session(
                 // Every fuse trigger reaches the original's burst function, so
                 // the tangler field opens here: on a swept contact at the
                 // interpolated point of contact, otherwise at the position the
-                // item ended this tick at.
-                if let Some(item) = session.runtime.get(&projectile) {
+                // item ended this tick at. The same burst carries the record's
+                // measured `SONIC`/`FLASH` exposure, measured from the point of
+                // contact and the record's own radius (task #2252).
+                let burst = session.runtime.get(&projectile).map(|item| {
                     let ordnance = item.definition().ordnance().clone();
                     let centre = burst_field_centre(item, &trigger);
-                    open_burst_tangler(session, &mut tick, step.at, &ordnance, shooter, centre);
+                    let radius_m = item.definition().area_effect().map(|area| area.radius_m());
+                    (ordnance, centre, radius_m)
+                });
+                if let Some((ordnance, centre, _)) = &burst {
+                    open_burst_tangler(session, &mut tick, step.at, ordnance, shooter, *centre);
                 }
 
                 let mut detonation = OrdnanceDetonation {
@@ -3213,6 +3555,27 @@ pub fn step_ordnance_session(
                                 }
                             }
                             Err(source) => detonation.status_refused = Some(source),
+                        }
+
+                        // The measured `SONIC`/`FLASH` exposure, for the
+                        // records that carry one (task #2252). It is applied
+                        // after the declared statuses because it needs the
+                        // item's own record (its radius) and the recipients the
+                        // caller supplied, and it must not depend on whether a
+                        // declared status list happened to exist.
+                        if let Some((ordnance, centre, radius_m)) = &burst {
+                            apply_blast_exposure(
+                                session,
+                                &mut tick,
+                                step.at,
+                                &BlastExposureSources {
+                                    projectile,
+                                    ordnance,
+                                    source: *centre,
+                                    radius_m: *radius_m,
+                                    recipients: step.blast_recipients,
+                                },
+                            );
                         }
 
                         if declares_area {
@@ -5045,6 +5408,34 @@ pub fn measured_tangler_field(row: &OriginalComponentLaunch) -> Option<TanglerFi
     // A field persists for its measured `TIME`; a blast's area has none.
     area.lifetime_s?;
     cs_content::ordnance::lower_tangler_field(row, None)
+}
+
+/// The measured `SONIC`/`FLASH` exposure bit a record carries, if it carries
+/// one (task #2252).
+///
+/// This is the producer side of the per-hit exposure: the record's effect keys
+/// are the ones T452.R.05 measured, and the caller declares the answer on a
+/// session with [`OrdnanceSession::register_exposure`], which is what makes
+/// [`step_ordnance_session`] apply the exposure from a blast.
+///
+/// **Measured:** the facing flag the per-hit routine `0x42e840` receives is the
+/// `FLASH` bit itself — the caller loads the weapon's effect flags
+/// (`weapon+0x210`), shifts right by eleven and masks one (`0x4ba576`:
+/// `shr ecx,0xb`, `0x4ba579`: `and cl,1`), and `0x800 >> 11 == 1` is `FLASH`
+/// while `SONIC`'s `0x200 >> 11 == 0`. A record that declares both bits is
+/// therefore **faced**, so `FLASH` wins over `SONIC` here; a `SONIC`-only
+/// record is the unfaced case. The exposure runs once per hit, not once per
+/// declared bit.
+#[must_use]
+pub fn measured_exposure_bit(row: &OriginalComponentLaunch) -> Option<ExposureBit> {
+    let effects = cs_content::ordnance::measure_component_behavior(row).effects;
+    if effects.iter().any(|effect| effect.key == "FLASH") {
+        Some(ExposureBit::Flash)
+    } else if effects.iter().any(|effect| effect.key == "SONIC") {
+        Some(ExposureBit::Sonic)
+    } else {
+        None
+    }
 }
 
 /// Lowers **one** measured original record into a declared component.

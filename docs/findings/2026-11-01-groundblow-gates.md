@@ -26,13 +26,12 @@ disarmed values.
 
 ## Still not wired (affected content, resolving task)
 
-Nothing writes the fields in a mission yet: the contact response that sets
-`V+0xac = now + 1.0` on both aircraft of a class 0/4 pair
-(`0x48d31e`..`0x48d395`, `crates/cs_app/src/physics/contacts.rs`) and whatever
-sets `V+0x358 = 4` (the incapacitation status effect, #2172) do not fill them.
-Until they do, an AI within 1 s of an aircraft-into-aircraft contact, and a
-stunned aircraft, still run their ground blow. The `+0xb4` damping stays
-unmodelled (no site assigns it a non-zero value). No constant was tuned.
+Both fields are written now (below). What remains is not a writer but
+coverage: `+0xb4` damping stays unmodelled (no site assigns it a non-zero
+value), and no retail mission yet reaches either gate, because the mission
+ordnance step supplies no blast recipients and no bound loadout carries a
+`SONIC`/`FLASH` record (see the #2252 limit in
+`2026-10-28-t452-r05-slot-map-and-incapacitation.md`). No constant was tuned.
 
 ## Wired by #2251 (`V+0xac`)
 
@@ -54,7 +53,30 @@ Static claims only, not `verified_original`; the bytes are the ones above
   timestep, converted once) and the record's deadline in every record's
   `OriginalInput`; the law alone decides who is gated, so a player stays
   ungated by construction.
-* `V+0x358 = 4` (`status_word`) is still not written by anything (#2172).
+
+## Wired by #2252 (`V+0x358`)
+
+Static claims only, not `verified_original`; the bytes are the ones in
+`2026-10-28-t452-r05-slot-map-and-incapacitation.md`, no new image read.
+
+* `playtest::scene::overlay_incapacitation` reads the mission ordnance
+  session's status ledger (the one writer of
+  `StatusEffectKind::Incapacitation`) and, while
+  `incapacitation::incapacitated_mode` reports the mode for the record's
+  `DamageActorBinding` actor, states `status_word = INCAPACITATED_STATUS` (4)
+  and passes the six control words through
+  `incapacitation::effective_controls` (all zero). Otherwise the word is `0`
+  and the record's own controls stand.
+* `drive_original_flight` applies it after the ground-blow probe overlay, so a
+  stunned aircraft runs neither its controls nor its ground blow until the
+  measured deadline tick, on which the ledger's expiry pass clears the mode and
+  both come back. A playtest with no ordnance session or no
+  `DamageActorBinding` (the synthetic and free-flight scenes) overlays nothing.
+* The player seat never reads an incapacitated mode: the measured exposure
+  hands `0x71c298` a screen/audio effect and no control loss, so
+  `overlay_incapacitation` leaves a player's word at `0` and its controls
+  intact whatever the ledger holds. The screen and the sound themselves still
+  have no presentation consumer.
 
 ## Tests
 

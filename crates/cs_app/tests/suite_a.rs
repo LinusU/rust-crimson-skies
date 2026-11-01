@@ -206,6 +206,7 @@ mod accept_flak_c3_trails;
 mod accept_flak_c4_sounds;
 mod accept_flak_c5_smoke;
 mod accept_flak_c_round_and_effect;
+mod accept_incap_hitpath;
 mod accept_m01_b_obj_1_completion_effects;
 mod accept_m01_b_obj_2_objective_semantics;
 mod accept_m01_b_obj_3_stage_conditions;

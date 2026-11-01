@@ -11,7 +11,13 @@
 //!   `intensity = clamp(1 - 2.5 * (ratio - 0.6), 0, 1)`;
 //! * `FLASH` additionally scales the intensity by
 //!   `clamp(2 * facing_dot, 0, 1)`, where `facing_dot` is the dot product of
-//!   the victim's forward vector with the victim-minus-source offset;
+//!   the victim's forward vector (`V+0x198`) with the **unit**
+//!   victim-minus-source offset: `0x42e8ed` hands that offset to `0x422690`,
+//!   which divides it by its own length in place (`0x4226c9`..`0x4226d9`) and
+//!   returns the length the caller discards (`0x42e8f6`), so the vector the
+//!   dot reads (`0x42e924`..`0x42e938`) is normalised. A zero-length offset is
+//!   left as zero and gives `facing_dot = 0`. Task #2252 settled this from the
+//!   bytes; [`ExposureGeometry::from_hit`] is the one builder that applies it;
 //! * the duration is `intensity * 5.0` seconds;
 //! * the player gets a screen/audio exposure and **no** control loss;
 //! * any other actor passing the `0x4200d0` gate (not the player, `+0x91d`
@@ -29,6 +35,7 @@
 
 use cs_types::Tick;
 use cs_types::net::SessionId;
+use cs_types::space::WorldPosition;
 
 use crate::damage::ActorId;
 use crate::time::TickRate;
@@ -66,8 +73,52 @@ pub struct ExposureGeometry {
     pub distance_squared_m2: f64,
     /// The record's `IMPACT_PROXIMITY`, metres (unsquared).
     pub impact_proximity_m: f64,
-    /// `dot(victim_forward, victim_pos - source_pos)`; read only by `FLASH`.
+    /// `dot(victim_forward, unit(victim_pos - source_pos))`; read only by
+    /// `FLASH`. The offset is **normalised** (`0x42e8ed` -> `0x422690`), so a
+    /// [`FLASH`](ExposureBit::Flash) hit from directly ahead is `1.0` whatever
+    /// the distance, one at half the facing dot is `0.5`, and a hit from
+    /// behind is negative and does nothing.
     pub facing_dot: f64,
+}
+
+impl ExposureGeometry {
+    /// Builds the geometry from the hit loop's own data: where the shot went
+    /// off, where the victim was and which way the victim's nose pointed.
+    ///
+    /// The facing term is measured over the **unit** victim-minus-source
+    /// offset (`0x42e8ed` normalises it at `0x422690` before the dot at
+    /// `0x42e924`..`0x42e938`; task #2252). A zero-length offset is the one
+    /// case the routine leaves unnormalised, and its dot is therefore `0.0`,
+    /// which is what this builder returns.
+    ///
+    /// `impact_proximity_m` is the record's own `IMPACT_PROXIMITY` — the
+    /// radius the ratio is measured over (`0x4ba590` squares `weapon + 0x3c`).
+    #[must_use]
+    pub fn from_hit(
+        source: WorldPosition,
+        victim: WorldPosition,
+        victim_forward: [f64; 3],
+        impact_proximity_m: f64,
+    ) -> Self {
+        let source = source.to_array();
+        let victim = victim.to_array();
+        let offset = [0, 1, 2].map(|axis| victim[axis] - source[axis]);
+        let distance_squared_m2 =
+            offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2];
+        let length = distance_squared_m2.sqrt();
+        let unit = if length > 0.0 {
+            offset.map(|component| component / length)
+        } else {
+            [0.0; 3]
+        };
+        let facing_dot =
+            unit[0] * victim_forward[0] + unit[1] * victim_forward[1] + unit[2] * victim_forward[2];
+        Self {
+            distance_squared_m2,
+            impact_proximity_m,
+            facing_dot,
+        }
+    }
 }
 
 /// The measured exposure: a raw intensity and the duration it implies.

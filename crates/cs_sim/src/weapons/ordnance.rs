@@ -113,6 +113,9 @@ use crate::weapons::guns::{
     InheritanceRule, MountTransform, ProjectileId, ProjectileSegment, RAMP_START_SPEED_MPS,
     SweptHit, WEAPON_DAMAGE_CHANNELS, WeaponDamage,
 };
+use crate::weapons::incapacitation::{
+    ExposureBit, ExposureGeometry, ExposureOutcome, IncapacitationError, IncapacitationVictim,
+};
 
 // ---------------------------------------------------------------- identity ----
 
@@ -5856,6 +5859,7 @@ pub struct BlastRecipient {
     target: ActorId,
     node: DamageNodeKey,
     position: WorldPosition,
+    facing: Option<[f64; 3]>,
 }
 
 impl BlastRecipient {
@@ -5867,7 +5871,21 @@ impl BlastRecipient {
             target,
             node,
             position,
+            facing: None,
         }
+    }
+
+    /// The same recipient with the actor's forward axis (`V+0x198`) this tick.
+    ///
+    /// Only the measured `SONIC`/`FLASH` exposure reads it: `FLASH` scales its
+    /// intensity by the facing term (`docs/findings/
+    /// 2026-10-28-t452-r05-slot-map-and-incapacitation.md`), and a recipient
+    /// with no axis cannot be measured for that bit (task #2252). A blast that
+    /// only deals damage never needs one.
+    #[must_use]
+    pub const fn with_facing(mut self, forward: [f64; 3]) -> Self {
+        self.facing = Some(forward);
+        self
     }
 
     /// The actor that takes the blast.
@@ -5880,6 +5898,12 @@ impl BlastRecipient {
     #[must_use]
     pub const fn position(&self) -> WorldPosition {
         self.position
+    }
+
+    /// The actor's forward axis, when the producer supplied it.
+    #[must_use]
+    pub const fn facing(&self) -> Option<[f64; 3]> {
+        self.facing
     }
 }
 
@@ -6456,6 +6480,47 @@ impl OrdnanceRuntime {
         let source = live.definition.ordnance().clone();
         let effects = live.definition.status().to_vec();
         self.apply_effects(session, tick, target, &source, &effects)
+    }
+
+    /// Applies one `SONIC`/`FLASH` exposure to a struck actor (task #2252).
+    ///
+    /// The measured per-hit exposure (`0x42e840`) is not a declared
+    /// fixed-duration status: its strength and deadline are computed from the
+    /// hit's geometry ([`crate::weapons::incapacitation::measure_exposure`]),
+    /// so it has its own entry rather than going through
+    /// [`apply_statuses`](Self::apply_statuses). The effect it writes *is* an
+    /// ordinary [`StatusEffectKind::Incapacitation`] ledger entry, so
+    /// [`incapacitated_mode`](crate::weapons::incapacitation::incapacitated_mode),
+    /// the ledger's expiry pass and the flight consumer all read it unchanged.
+    ///
+    /// The caller supplies the geometry (`0x42e85b`..`0x42e966`) and the
+    /// victim's gate state (`0x4200d0`); nothing here invents either.
+    ///
+    /// # Errors
+    ///
+    /// [`IncapacitationError`] for bad geometry or a ledger refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_exposure(
+        &mut self,
+        session: SessionId,
+        tick: Tick,
+        source: &OrdnanceId,
+        bit: ExposureBit,
+        geometry: &ExposureGeometry,
+        victim: &IncapacitationVictim,
+        actor: ActorId,
+    ) -> Result<ExposureOutcome, IncapacitationError> {
+        crate::weapons::incapacitation::apply_exposure(
+            &mut self.status,
+            session,
+            tick,
+            self.rate,
+            actor,
+            source,
+            bit,
+            geometry,
+            victim,
+        )
     }
 
     /// Applies one guidance-loss detonation's declared status effects to a

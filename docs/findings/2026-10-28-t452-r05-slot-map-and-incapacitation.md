@@ -201,6 +201,99 @@ filed as follow-up **`T452-R05-STATUS-KIND` (#2172)**, which depends on #2156.
 The duration side stays resolved: `t452_04.limit.status_effect_duration` is
 resolved for every SONIC/FLASH row (the formula above).
 
+## Addendum (#2252): the `FLASH` facing offset is normalised, and the exposure has a caller
+
+Task #2252 (follow-up of #2172 and #2222) closed the one question #2172 left
+open and wired the measured exposure into the application. Static analysis
+only, same image and same caveats; the original executable was not run.
+
+### The facing term reads a **unit** victim-minus-source offset
+
+| step | site | measured |
+| --- | --- | --- |
+| the offset | `0x42e8d3`..`0x42e8ea` | `victim.position - source.position`, three floats at `[ebp-0x18]` |
+| normalisation | `0x42e8ed`..`0x42e8f6` | `lea eax,[ebp-0x18]; push eax; call 0x422690; fstp st(0)` |
+| the helper | `0x422690` | computes `sqrt(x²+y²+z²)` (`0x4226b0`), stores it at `[ebp-4]`, tests its mantissa (`0x4226b5`) and, unless it is zero, divides the vector in place: `fld1; fdivrp st(1)` (`0x4226be`) then three `fmul`/`fstp` pairs (`0x4226c2`..`0x4226d9`). It returns the length |
+| the dot | `0x42e8f8`..`0x42e93a` | the victim's own forward axis (`[esi+0x198]`) dotted with the (now unit) offset; `fstp [ebp+8]` keeps the scalar |
+| the clamp | `0x42e94e` | `fcom [0x6032e0]` = `0.5`; at or above it the intensity is unchanged, below it `intensity *= 2 * dot` (`0x42e95e`..`0x42e966`) |
+| behind | `0x42e940`..`0x42e94c` | `dot < 0` returns `false` before anything is written: a hit from behind does nothing at all |
+
+**So the offset is normalised.** `0x422690` divides the vector by its length in
+place and the caller discards the returned length; the dot is therefore
+`clamp(dot(unit(victim_pos - source_pos), victim_forward), 0, 1)` scaled by two —
+which is the `clamp(2 * facing_dot, 0, 1)` #2172 stated, with `facing_dot` over
+the **unit** offset, not the raw one. A zero-length offset is the one case the
+helper leaves unnormalised (the mantissa test at `0x4226b5` skips the division),
+and its dot is then `0.0`, which the routine reads as "no effect".
+
+#2172's `ExposureGeometry::facing_dot` now documents that meaning and
+`ExposureGeometry::from_hit` is the one builder that applies it
+(`crates/cs_sim/src/weapons/incapacitation.rs`).
+
+### The facing flag is the `FLASH` bit, so a record declaring both is faced
+
+The per-hit caller loads the weapon's `0x38`-byte effect object
+(`weapon+0x210`), its flags dword, shifts right by eleven and masks one
+(`0x4ba576`: `shr ecx,0xb`, `0x4ba579`: `and cl,1`) and passes the result as
+the routine's first argument. `0x800 >> 11 == 1` is `FLASH`; `SONIC`'s
+`0x200 >> 11 == 0`. The exposure runs **once** per hit, not once per declared
+bit, so a record that declares both bits — `wep_09` does — is faced.
+
+### What now consumes it
+
+| piece | consumer |
+| --- | --- |
+| `measured_exposure_bit(row)` | the production producer: a measured row's `SONIC`/`FLASH` effect keys become one `ExposureBit`; `wep_08` is `Sonic`, `wep_09` and `wep_15` are `Flash`, and no other classified record carries one |
+| `OrdnanceSession::register_exposure` | the session declaration, the same producer shape `register_tangler_field` has: the lowered component deliberately declares no fixed-duration status for an exposure record, so the bit is registered beside the loadout |
+| `step_ordnance_session`'s blast path | for a triggered (or guidance-detonation) item with a registered bit, every supplied `BlastRecipient` is measured with `ExposureGeometry::from_hit` from the burst point, the record's `IMPACT_PROXIMITY` radius and the victim's forward axis, and applied with `apply_exposure` |
+| `OrdnanceSession::with_player` | which recipient is `0x71c298`; the ledger never receives an incapacitation for it |
+| `playtest::scene::overlay_incapacitation` | the flight input: `V+0x358` is `4` and the six control words are zeroed through `effective_controls` while the mode is live, so the ground-blow gate (`0x48c22b`) and the controls are both suppressed until the whole-tick deadline |
+
+A refusal is named, never guessed: `BlastExposureRefusal::MissingRecipients`,
+`MissingRadius` (a record with no `IMPACT_PROXIMITY` has no ratio to measure
+over) and `MissingFacing` (a `FLASH` victim with no forward axis).
+
+### What is still not done (affected content, resolving task)
+
+* **The player's screen and sound.** The measured player branch (`0x4ba5bf` ->
+  `0x42e9d0`, with `SONIC` selecting the `(1,0,0)` parameters and its own sound
+  name and `FLASH` the `(1,1,1)` ones) has no presentation consumer yet: the
+  step reports `ExposureOutcome::PlayerScreenAudio` with the measured intensity
+  and duration, and nothing draws or plays it. No retail mission can reach it
+  either, because the records that carry the bit are not bound to a loadout yet
+  (F28-D); when they are, the consumer is the follow-up.
+* **The victim gate's other words.** `0x4200d0` also tests `+0x91d`, `+0xf8`
+  and `+0x67c`; this runtime models none of the three, so the exposure applies
+  with "not exempt, not busy, state word zero" and the gate is stated that way
+  in `apply_blast_exposure`. Nothing in the session sets those words, and a
+  future feature that does must extend `IncapacitationVictim` rather than
+  leave this silently wrong.
+* **Production recipients.** `cs_app`'s mission ordnance step still passes
+  `blast_recipients: None` and the M01 rocket is a designed record with no
+  exposure bit, so no mission fires an exposure yet. The path is complete and
+  exercised through `step_ordnance_session` with producer-supplied recipients;
+  the recipient producer for a retail loadout belongs with the F28-D binding
+  that gives a mission a record carrying the bit.
+
+### Files
+
+- `crates/cs_sim/src/weapons/incapacitation.rs`: the normalisation statement,
+  and `ExposureGeometry::from_hit` (the one builder of the geometry).
+- `crates/cs_sim/src/weapons/ordnance.rs`: `BlastRecipient::with_facing`,
+  `OrdnanceRuntime::apply_exposure`.
+- `crates/cs_app/src/ordnance.rs`: `measured_exposure_bit`,
+  `OrdnanceSession::register_exposure` / `exposure_for` / `exposure_ids` /
+  `with_player`, `apply_blast_exposure` on the trigger and guidance-loss paths,
+  and the `BlastExposure` / `BlastExposureRefusal` reports.
+- `crates/cs_app/src/playtest/scene.rs`: `overlay_incapacitation`;
+  `crates/cs_app/src/playtest/mod.rs` calls it from the fixed-tick driver.
+- `crates/cs_app/src/mission_session/weapons.rs`: names the player on the
+  session.
+- `crates/cs_app/tests/accept_incap_hitpath.rs` (new, 7 tests, a module of
+  `suite_a.rs`).
+- No protected path, no `Cargo.toml`/`Cargo.lock` change, no original data, no
+  binary file.
+
 ## What the production reader now states
 
 | symbol | value |
