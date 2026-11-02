@@ -796,3 +796,103 @@ Nothing here is `verified_original`.
 | --- | --- | --- |
 | the unit of `[0x9be6f8]` (a per-call `inc` in `0x5a8550`, not the float clock `[0x9ad744]`) | how long the debug `-suspend <n>` switch delays the freeze; no product behaviour depends on it | the caller chain of `0x5a8550` (fixed step vs frame) |
 | what a stored `hide_obj` of `0` means to the objective wake walk | the semantics of the absent-`HIDE_OBJ` branch; **no M01 block reaches it** (it declares no `HIDE_OBJ`) | the walk's `+0xd8` consumer, owned by the objective-executor line `M02-B-FU4` (#807) |
+
+## 10. The hillside drift is a dead pitch axis: vertical error first, then the escape climb's overshoot (task #2295)
+
+Port behaviour plus static reads of the owner image; claim id
+`OWNER-STATIC-2026-10-29`, nothing `verified_original`. Trace by
+`accept_m01_wingman_drift_trace_hillside` (`CS_DRIFT_TRACE=1 cargo test -p
+cs_app --test cs_app_tests_a -- accept_m01_wingman_drift_trace --include-ignored
+--nocapture`; retail M01, 120 Hz, `original_stick` on, merged gains, row every
+0.5 s over 45 s; raw rows not committed). The slot is
+`station_point(player, STATION_OFFSET_PLAYER_M)`; *along* is the slot error on
+the leader's velocity direction, *vert* is `slot.y - Betty.y`, *cross* the
+remaining horizontal part (unsigned). Implementer `sonnet-2`.
+
+### 10.1 Trace summary
+
+| t (s) | along | cross | vert | gap | Betty / leader m/s | roll | pitch | thr | latch |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.5 | 158 | 38 | 2 | 143 | 22 / 69 | +0.60 | 0 | 0.76 | – |
+| 3 | 208 | 32 | 19 | 193 | 101 / 97 | −0.33 | 0 | 1.00 | – |
+| 10 | 132 | 30 | 50 | 129 | 113 / 100 | +0.10 | 0 | 1.00 | – |
+| 17 | 51 | 60 | 73 | 97 | 113 / 100 | 0 | 0 | 1.00 | – |
+| 23 | 19 | 36 | 86 | 95 | 106 / 100 | −0.12 | 0 | 0.86 | – |
+| 28 | 3 | 128 | 90 | 162 | 105 / 100 | 0 | 0 | 0.79 | – |
+| 34.5 | 2 | 2 | 118 | 119 | 104 / 100 | +1.00 (sat) | 0 | 0.83 | – |
+| 35.5 | 7 | 44 | 119 | 126 | 105 / 100 | −0.02 | +1.00 (sat) | 0.89 | climb |
+| 37 | 44 | 106 | 84 | 134 | 77 / 100 | +0.31 | 0 | 1.00 | – |
+| 40 | 206 | 195 | −74 | 277 | 80 / 98 | +0.09 | 0 | 1.00 | – |
+| 45 | 355 | 369 | −295 | 577 | 93 / 96 | 0 | 0 | 1.00 | – |
+
+Yaw is 0.00 on every row (the yaw word needs a fine-aim goal, §4). The
+phase is 1 (`follow_engaged`) from the first row.
+
+### 10.2 Which error dominates, and when
+
+* **0..~20 s, along-track: a launch transient, not a fault.** Betty spawns at
+  22 m/s behind a player already at 69 m/s; the throttle target is pegged at
+  1.0 by 1.5 s and she cruises at 113 m/s against the leader's 100, so the
+  158..208 m along-track error closes at ~12 m/s and is gone by ~28 s. The
+  throttle path is not the drift's cause: by 23 s the speed deficit is zero
+  and the throttle sits at 0.8..0.9.
+* **From the first row, vertical: the dominant term.** `vert` grows
+  monotonically from 2 m (0.5 s) to 86 m (23 s) and 118 m (34.5 s) while the
+  pitch command is **exactly 0.00 on every row outside the escape climb**
+  (pinned by `accept_m01_wingman_drift_pitch_command_is_zero_outside_the_climb`).
+  The law asks for nose-up (its `+0x108` word is positive); step 7 zeroes it.
+  By 28 s the vertical error is larger than the along-track one and stays the
+  largest term until the climb.
+* **Cross-track follows from it.** With no pitch the only authority is roll;
+  the coarse branch rolls toward `-bx` and cannot raise the nose, so the
+  slot slides past: `cross` swings 2 → 60 → 128 m (roll saturating at 25 s and
+  34.5 s).
+* **~35 s, the escape climb is the overshoot.** The probe latches at 35.0 s
+  (`esc`); for ~1.5 s the emergency words (3.5 / 1.0) saturate pitch at +1.00.
+  That is the one pitch input in the whole flight, and nothing takes it out:
+  after the latch drops (36.5 s) Betty keeps climbing with a zero pitch word,
+  `vert` goes 103 → −295 m (Betty 295 m *above* the slot), speed falls
+  104 → 76 m/s so `along` opens to 355 m, and `cross` to 369 m. The 577 m
+  final gap is these three at comparable size (|slot error| ≈ 585 m).
+
+So the 577 m is **a vertical error that the dead pitch axis cannot correct,
+and its one correction, the escape climb, is an uncorrected overshoot.** It
+starts at tick 1; the speed deficit is only the first 20 s.
+
+### 10.3 The port against the image
+
+The pitch scale is the term to check. Every link of "dead" is a pinned window
+(`accept_m01_wingman_drift_pitch_scale_windows_match_the_image`):
+
+| claim | window |
+| --- | --- |
+| the key `mode_alt` stores into the definition's `+0xa8` | text `0x6280b8`; `push 0x6280b8` at `0x47b08e`; `mov [edi+0xa8], eax` `89 87 a8 00 00 00` at `0x47b0a6` (constructor default 2.0, `0x478b10`, is overwritten there) |
+| the spawn copy takes `+0xa8` unless it is −1.0 and stores vehicle `+0x8c8` | `mov eax,[ebx+0xa8]` `0x47d1e9`; `cmp` with `0xbf800000` `0x47d1ef`; `mov [esi+0x8c8], eax` `0x47d1fb` |
+| step 7 multiplies the pitch word `+0x108` by `+0x8c8` | `fld [esi+0x8c8]` `0x41be80`; `fmul [esi+0x108]` `0x41be97` |
+| nothing else rewrites `+0x8c8` | a byte scan of `.text` for `89`/`c7`/`d9` stores of disp32 `0x8c8` finds only `0x47d1fb` and `0x47d20f` (the second is the `def+0x268` fallback) |
+
+The port's mapping is the image's: `+0x108` is the pitch word (`by`, the
+projection on the follower's up row), scaled by `+0x8c8` = `mode_alt` = 0.0,
+and `+0x100` takes the `+0x8c4` (0.6) roll scale. **No port bug found in the
+pitch scale, so nothing was changed**; the default off `original_stick` and
+the default M01 follower are untouched. The throttle path (`0x41b560` →
+`follow_throttle_target`) is not the dominant term, so it was not re-derived
+here.
+
+What the statics leave open, and so what to look at next: the original
+wingman is a vehicle with *no* pitch authority from this law, yet it holds
+altitude in the shipped game. Either something outside the law supplies pitch
+(the flight model's own trim or auto-level in the force block `0x48c..`, which
+the port's `OriginalFlightModel` may not reproduce), or the follower of M01 is
+not flown by this law. A second AI routine with the same words exists:
+`0x4209b0` (called from `0x41d4e9` and `0x41da69`) multiplies `+0x100`,
+`+0x108`, `+0x10c` by `+0x8c4`/`+0x8c8`/`+0x8cc` (`0x420ea3`..`0x420ec7`) and
+writes `+0x108` from constants at `0x420d93`/`0x420dd0` (∓0.05); it is not the
+follower (§1) and was not decoded here.
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| what supplies the follower's altitude authority in the original with `+0x8c8` = 0 | whether `original_stick` can ever hold station | the force block's use of `+0x114/+0x11c/+0x120` (`0x48caea`, `0x48cb07`, `0x48cbb7`) against the port's flight model |
+| the role of `0x4209b0` (callers `0x41d4e9`, `0x41da69`) | whether it flies M01's wingman in any phase | decode its callers' mode gates |
+
+Nothing here is `verified_original`.
