@@ -233,3 +233,49 @@ fn accept_m01_wingman_stick_betty_over_the_hillside() {
         assert!(worst_after.is_finite() && closest.is_finite());
     }
 }
+
+/// The escape-climb latch's constants are the image's words, and the
+/// `0x41f810` windows still carry the floor/ceiling globals, the re-arm
+/// timer `+0xf0` and the `+0x358 = 3` store.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m01_escape_latch_constants_match_the_image() {
+    use cs_app::mission_ai::{ESCAPE_LOOKAHEAD_S, ESCAPE_RAND_SCALE, ESCAPE_REARM_FACTOR};
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let facts = engine_facts().expect("the committed table parses");
+    let at = |va: u64| usize::try_from(facts.image_offset(va).expect("va in image")).expect("off");
+    let f32_at = |va: u64| {
+        let i = at(va);
+        f32::from_le_bytes(loaded.bytes[i..i + 4].try_into().expect("4 bytes"))
+    };
+    assert_eq!(f32_at(0x603644), ESCAPE_LOOKAHEAD_S);
+    assert_eq!(f32_at(0x603598), ESCAPE_RAND_SCALE);
+    assert_eq!(f32_at(0x6032e0), ESCAPE_REARM_FACTOR);
+    assert_eq!(f32_at(0x6032dc), 1.0);
+    let window = |va: u64, bytes: &[u8]| {
+        let i = at(va);
+        assert_eq!(
+            &loaded.bytes[i..i + bytes.len()],
+            bytes,
+            "window at {va:#x}"
+        );
+    };
+    // fcomp [0x71c3f0] (floor), fcomp [0x71c3f4] (ceiling), probe scale.
+    window(0x41f827, &[0xd8, 0x1d, 0xf0, 0xc3, 0x71, 0x00]);
+    window(0x41f83e, &[0xd8, 0x1d, 0xf4, 0xc3, 0x71, 0x00]);
+    window(0x41f8b5, &[0xd8, 0x0d, 0x44, 0x36, 0x60, 0x00]);
+    // fstp [esi+0xf0] re-arm store; mov [esi+0x358], 3 latch; clear to 0.
+    window(0x41f8a7, &[0xd9, 0x9e, 0xf0, 0x00, 0x00, 0x00]);
+    window(
+        0x41f98e,
+        &[0xc7, 0x86, 0x58, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00],
+    );
+    window(
+        0x41f9a6,
+        &[0xc7, 0x86, 0x58, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    );
+    // The call to the probe 0x4c8f70.
+    window(0x41f94a, &[0xe8, 0x21, 0x96, 0x0a, 0x00]);
+    // The clock the timer rides on: [0x71c470] += [0x9ad744] at 0x4897cb.
+    window(0x4897cb, &[0xd9, 0x05, 0x70, 0xc4, 0x71, 0x00]);
+}

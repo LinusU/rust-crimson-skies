@@ -111,8 +111,8 @@ use std::path::Path;
 use avian3d::prelude::{LinearVelocity, Mass, NoAutoMass, Position, Rotation};
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
-    App, Component, Entity, FixedPreUpdate, Plugin, Quat, Query, ResMut, Resource, Vec3, With,
-    World,
+    App, Component, Entity, FixedPreUpdate, Plugin, Quat, Query, Res, ResMut, Resource, Time, Vec3,
+    With, World,
 };
 
 use cs_content::original_airframe::{import_retail_airframe, import_retail_globals};
@@ -407,6 +407,9 @@ pub struct MissionAircraftAi {
     /// (`vehicle+0x8c4..+0x8d8`, [`M01_WINGMAN_PILOT_GAINS`] for the retail
     /// M01 wingman).
     pub pilot_gains: PilotInputGains,
+    /// The `0x41f810` escape-climb latch (`vehicle+0x358 == 3`, timer
+    /// `+0xf0`). Only consulted while [`Self::original_stick`] is on.
+    pub escape: EscapeClimbLatch,
 }
 
 impl MissionAircraftAi {
@@ -454,6 +457,7 @@ impl MissionAircraftAi {
             follow_engaged: false,
             original_stick: false,
             pilot_gains: M01_WINGMAN_PILOT_GAINS,
+            escape: EscapeClimbLatch::default(),
         }
     }
 
@@ -673,6 +677,111 @@ pub const PILOT_GAINS_AI_INPUT_KEYS: PilotInputGains = PilotInputGains {
 /// mode-4 follower's station call passes `bl = 0` (`0x41eed3`, finding §6),
 /// so the law applies this set — never the `ai_emerg_input_*` set.
 pub const M01_WINGMAN_PILOT_GAINS: PilotInputGains = PILOT_GAINS_SPAWN_WORDS;
+
+/// **Measured (static)**: the world floor the escape climb latches under,
+/// in metres (`[0x71c3f0]`, read at `0x41f827`). The image's word is `0.0`
+/// (a runtime global); the value is the task's reading of the world setup
+/// (#2280), not re-read from the image.
+pub const ESCAPE_WORLD_FLOOR_M: f32 = 20.0;
+/// **Measured (static)**: the world ceiling above which the look-ahead is
+/// skipped and the latch clears (`[0x71c3f4]`, `0x41f83e`); same provenance
+/// as [`ESCAPE_WORLD_FLOOR_M`].
+pub const ESCAPE_WORLD_CEILING_M: f32 = 7000.0;
+/// **Measured (static)**: the look-ahead multiplier on the velocity
+/// (`0x603644` = `0x40900000`, `0x41f8b5`..`0x41f8d9`).
+pub const ESCAPE_LOOKAHEAD_S: f32 = 4.5;
+/// **Measured (static)**: `rand()` scale (`0x603598` = `0x38000100`, about
+/// `1/32767`, `0x41f87c`).
+pub const ESCAPE_RAND_SCALE: f32 = f32::from_bits(0x3800_0100);
+/// **Measured (static)**: the re-arm factor (`0x6032e0` = `0.5`, `0x41f896`);
+/// the added constant `0x6032dc` is `1.0`.
+pub const ESCAPE_REARM_FACTOR: f32 = 0.5;
+/// **Measured (static)**: the goal's height above the aircraft while the
+/// latch is set; the follower flies `0x41e7ff` with this goal and `bl = 1`,
+/// i.e. the emergency gains ([`PILOT_GAINS_AI_INPUT_KEYS`]).
+pub const ESCAPE_GOAL_UP_M: f32 = 1000.0;
+
+/// The world query behind `0x4c8f70`: does the segment `from -> to` touch
+/// the world. The original's call reports a hit as a zero return with a
+/// non-zero out byte (`0x41f95b`..`0x41f96b`); the runtime wiring of the
+/// real query is a follow-up (#2281), so the latch takes it injected.
+pub trait TerrainProbe {
+    /// Whether the segment hits the world.
+    fn hits(&self, from: Vec3, to: Vec3) -> bool;
+}
+
+/// The default probe: nothing is ever hit.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoTerrainProbe;
+
+impl TerrainProbe for NoTerrainProbe {
+    fn hits(&self, _from: Vec3, _to: Vec3) -> bool {
+        false
+    }
+}
+
+impl<F: Fn(Vec3, Vec3) -> bool> TerrainProbe for F {
+    fn hits(&self, from: Vec3, to: Vec3) -> bool {
+        self(from, to)
+    }
+}
+
+/// The probe the mission AI uses; `None` is [`NoTerrainProbe`].
+#[derive(Resource, Default)]
+pub struct MissionTerrainProbe(pub Option<Box<dyn TerrainProbe + Send + Sync>>);
+
+/// The state `0x41f810` keeps per AI vehicle: whether `+0x358 == 3` and the
+/// `+0xf0` timer. The timer is on the engine's accumulated clock
+/// (`[0x71c470] += step` at `0x4897cb`..`0x4897e4`), which the caller seeds
+/// into `+0xf0` when the AI flag `+0x944` was just raised (`0x489aab`) — so
+/// the first call probes at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EscapeClimbLatch {
+    /// `vehicle+0x358 == 3`: the follower flies the escape climb.
+    pub climbing: bool,
+    /// `vehicle+0xf0`: the clock value at which the probe may run again.
+    pub rearm_at_s: f32,
+}
+
+impl EscapeClimbLatch {
+    /// One call of `0x41f810`. `clock_s` is `[0x71c470]`; `rand` is one
+    /// `rand()` draw (`0..=32767`). Returns [`Self::climbing`].
+    pub fn step(
+        &mut self,
+        position: Vec3,
+        velocity: Vec3,
+        clock_s: f32,
+        rand: u32,
+        probe: &dyn TerrainProbe,
+    ) -> bool {
+        if position.y < ESCAPE_WORLD_FLOOR_M {
+            self.climbing = true;
+            return true;
+        }
+        if position.y >= ESCAPE_WORLD_CEILING_M {
+            self.climbing = false;
+            return false;
+        }
+        if clock_s < self.rearm_at_s {
+            return self.climbing;
+        }
+        self.rearm_at_s = (rand as f32 * ESCAPE_RAND_SCALE + 1.0) * ESCAPE_REARM_FACTOR + clock_s;
+        self.climbing = probe.hits(position, position + velocity * ESCAPE_LOOKAHEAD_S);
+        self.climbing
+    }
+
+    /// The goal delta and pilot gains the follower flies this tick:
+    /// `own position + 1000 up` with the emergency words while latched,
+    /// otherwise the station `error` with `gains`.
+    #[must_use]
+    pub fn goal(&self, error: Vec3, gains: PilotInputGains) -> (Vec3, PilotInputGains) {
+        if self.climbing {
+            (Vec3::Y * ESCAPE_GOAL_UP_M, PILOT_GAINS_AI_INPUT_KEYS)
+        } else {
+            (error, gains)
+        }
+    }
+}
 
 /// The three stick words `0x41b560` writes: `vehicle+0x100`, `+0x108`,
 /// `+0x10c`, copied to `+0x114`, `+0x11c`, `+0x120` (`0x41c01e`..), which the
@@ -1431,7 +1540,8 @@ pub struct MissionAiPlugin;
 impl Plugin for MissionAiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MissionAiReport>()
-            .init_resource::<MissionAiFireOrders>();
+            .init_resource::<MissionAiFireOrders>()
+            .init_resource::<MissionTerrainProbe>();
         app.add_systems(
             FixedPreUpdate,
             (arm_mission_ai, decide_mission_aircraft_ai).chain(),
@@ -1447,6 +1557,8 @@ impl Plugin for MissionAiPlugin {
 /// identity, so an ECS reorder cannot rename a target) and, for the player
 /// fallback, by [`MissionPlayerBody`].
 fn decide_mission_aircraft_ai(
+    time: Res<Time>,
+    probe: Res<MissionTerrainProbe>,
     mut report: ResMut<MissionAiReport>,
     mut orders: ResMut<MissionAiFireOrders>,
     mut aircraft: Query<(
@@ -1601,7 +1713,14 @@ fn decide_mission_aircraft_ai(
             MissionAiBehaviour::HoldCourse => (hold_course_direction(nose), START_THROTTLE, None),
         };
         flight.command = match stick_goal {
-            Some(goal) => {
+            Some(error) => {
+                let clock = time.elapsed_secs();
+                let rand = (ai.decisions.wrapping_mul(2_654_435_761) >> 7) as u32 & 0x7fff;
+                let noprobe = NoTerrainProbe;
+                let probe: &dyn TerrainProbe = probe.0.as_deref().unwrap_or(&noprobe);
+                ai.escape.step(here, own_velocity.0, clock, rand, probe);
+                let pilot_gains = ai.pilot_gains;
+                let (goal, gains) = ai.escape.goal(error, pilot_gains);
                 let words =
                     wingman_stick_command(orientation, goal, own_velocity.0.length(), RUDDER_TOL);
                 if words.recover_throttle {
@@ -1613,7 +1732,7 @@ fn decide_mission_aircraft_ai(
                     } else {
                         throttle
                     },
-                    ai.pilot_gains,
+                    gains,
                 )
             }
             None => pursuit_command(orientation, aim, throttle),
@@ -1887,6 +2006,65 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
 
     use super::*;
+
+    #[test]
+    fn accept_m01_escape_latch_floor_ceiling_and_probe_decide_the_state() {
+        let hit = |_: Vec3, _: Vec3| true;
+        let miss = NoTerrainProbe;
+        let fast = Vec3::new(0.0, 0.0, -100.0);
+        // Under the floor: latched without asking the probe.
+        let mut latch = EscapeClimbLatch::default();
+        assert!(latch.step(Vec3::new(0.0, 10.0, 0.0), fast, 0.0, 0, &miss));
+        // Above the ceiling: cleared without asking the probe.
+        assert!(!latch.step(Vec3::new(0.0, 7000.0, 0.0), fast, 0.0, 0, &hit));
+        // Between: a hit latches, a miss clears.
+        let mid = Vec3::new(0.0, 500.0, 0.0);
+        assert!(latch.step(mid, fast, 0.0, 0, &hit));
+        assert!(!latch.step(mid, fast, 100.0, 0, &miss));
+    }
+
+    #[test]
+    fn accept_m01_escape_latch_probes_the_velocity_segment_and_rearms() {
+        let seen = std::cell::Cell::new(None);
+        let probe = |from: Vec3, to: Vec3| {
+            seen.set(Some((from, to)));
+            false
+        };
+        let mut latch = EscapeClimbLatch::default();
+        let pos = Vec3::new(1.0, 500.0, 2.0);
+        let vel = Vec3::new(10.0, 0.0, -20.0);
+        latch.step(pos, vel, 3.0, 32767, &probe);
+        assert_eq!(seen.take(), Some((pos, pos + vel * 4.5)));
+        // rand 32767 -> (~1 + 1) * 0.5 + clock.
+        assert!(
+            (latch.rearm_at_s - 4.0).abs() < 1e-3,
+            "{}",
+            latch.rearm_at_s
+        );
+        // Before the re-arm time the probe is not asked and the state holds.
+        latch.climbing = true;
+        assert!(latch.step(pos, vel, 3.5, 0, &probe));
+        assert_eq!(seen.take(), None);
+        // At the re-arm time it is asked again.
+        latch.step(pos, vel, 4.0, 0, &probe);
+        assert!(seen.take().is_some());
+        assert!(!latch.climbing);
+    }
+
+    #[test]
+    fn accept_m01_escape_latch_goal_is_one_thousand_up_with_the_emergency_gains() {
+        let mut latch = EscapeClimbLatch::default();
+        let error = Vec3::new(5.0, 0.0, -50.0);
+        assert_eq!(
+            latch.goal(error, M01_WINGMAN_PILOT_GAINS),
+            (error, M01_WINGMAN_PILOT_GAINS)
+        );
+        latch.climbing = true;
+        assert_eq!(
+            latch.goal(error, M01_WINGMAN_PILOT_GAINS),
+            (Vec3::new(0.0, 1000.0, 0.0), PILOT_GAINS_AI_INPUT_KEYS)
+        );
+    }
 
     #[test]
     fn accept_m01_play_ai_hold_course_steers_along_the_heading() {
@@ -2330,6 +2508,8 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<MissionAiReport>();
         world.init_resource::<MissionAiFireOrders>();
+        world.init_resource::<MissionTerrainProbe>();
+        world.init_resource::<Time>();
         world
     }
 
