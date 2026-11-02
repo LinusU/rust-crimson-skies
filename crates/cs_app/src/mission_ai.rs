@@ -210,6 +210,11 @@ pub const FOLLOW_ENGAGE_DIST2: f32 = 490_000.0;
 /// condition asks for, 20.576 m/s (`0x603594`, row `follow_engage_speed`).
 pub const FOLLOW_ENGAGE_SPEED_M_S: f32 = 20.576;
 
+/// **Measured (static)**: the follower's phase 0 body, with no target, aims
+/// at the leader's position plus this much on y (`0x6035c4`, finding §8;
+/// `0x41eb96`..`0x41ebbe`). Flown only behind [`MissionAircraftAi::original_stick`].
+pub const PHASE0_LEADER_CLIMB_M: f32 = 200.0;
+
 /// **Measured (static)**: lower clamp of the follower's throttle target
 /// (`0x61fb28`, row `follow_throttle_min`).
 pub const FOLLOW_THROTTLE_MIN: f64 = 0.4;
@@ -1686,6 +1691,12 @@ fn decide_mission_aircraft_ai(
                             ai.follow_engaged = true;
                         }
                         if player_leader && !ai.follow_engaged {
+                            if ai.original_stick {
+                                // Phase 0 without a target: the stick law
+                                // flies at the leader + 200 m on y.
+                                stick_goal =
+                                    Some(leader_position + Vec3::Y * PHASE0_LEADER_CLIMB_M - here);
+                            }
                             (hold_course_direction(nose), START_THROTTLE, None)
                         } else {
                             let offset = if player_leader {
