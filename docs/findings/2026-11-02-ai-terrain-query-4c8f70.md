@@ -7,7 +7,10 @@ address convention `VA = file offset + 0x400000`). The original executable
 was **not** run: nothing here is `verified_original`. The byte windows are
 re-read by `accept_m01_ai_terrain_query_*`
 (`crates/cs_app/tests/campaign/m01_ai_terrain_query.rs`, ignored without
-`CS_ENGINE_IMAGE`, fails loudly when it is unset).
+`CS_ENGINE_IMAGE`, fails loudly when it is unset). The #2293 follow-up
+section (§13) is re-read by `accept_m01_ai_terrain_contact_*`
+(`crates/cs_app/tests/campaign/m01_ai_terrain_contact.rs`, same gating);
+its retail-file claims are re-read there from `CS_GAME_DIR`.
 
 ## 1. Answer in one paragraph
 
@@ -482,13 +485,15 @@ can never return them.
   `1024 x -1024` over `x in [-16384, 0]`, `z in [-16384, 0]`; the hillside is
   in cell (4, 12); the mountain ring and the east cliffs are not in the grid;
   the floor/ceiling writer is `0x474151`/`0x47415b` (8000 / 20).
-* **Not settled:** whether `0x4c9a00` records the hillside group as a hit
-  depends on the type-5 handler's exact tests (`0x4cc010`, `0x55c9c0`) and on
-  the group handlers for node types 6/7, none of which is decoded here. The
-  port's collider-face approximation (#2281) is in the right direction at the
-  hillside (the original does see that geometry) and in the wrong direction at
-  the mountain ring and cliffs (the original never sees them); no production
-  behaviour is changed by this task and `original_stick` stays off.
+* **Not settled (here; resolved in §13):** whether `0x4c9a00` records the
+  hillside group as a hit depended on the type-5 handler's exact tests
+  (`0x4cc010`, `0x55c9c0`) and on the group handlers for node types 6/7.
+  §13 decodes them: the hillside members take a triangle-exact mesh test
+  behind an AABB pre-reject. The port's collider-face approximation (#2281)
+  is in the right direction at the hillside (the original does see that
+  geometry) and in the wrong direction at the mountain ring and cliffs (the
+  original never sees them); no production behaviour is changed by this
+  task and `original_stick` stays off.
 * **Not settled:** the nine grid nodes whose flags word lacks `0x8000` may be
   skipped when the query walks a folded (out-of-grid) copy of their cell; the
   file lists them, the wrapped-copy gate at `0x4c9334` would not. None of them
@@ -499,8 +504,337 @@ can never return them.
 
 | unknown (remaining) | affects | resolving step |
 | --- | --- | --- |
-| exact tests `0x55c9c0`, `0x4cbf80`, `0x4c9fe0`, `0x4c9e10`, `0x4ca140` | does a listed terrain object count as a hit | decode each |
-| defaults of `0x71e8ac`/`0x71e8b4`/`0x9be6f8` | filter in non-follower calls | their setters |
+| exact tests `0x55c9c0`, `0x4cbf80`, `0x4c9fe0`, `0x4c9e10`, `0x4ca140` | does a listed terrain object count as a hit | **decoded in §13** |
+| defaults of `0x71e8ac`/`0x71e8b4`/`0x9be6f8` | filter in non-follower calls | their setters (`0x71e8b0` decoded in §13.9) |
 | runtime `[node+0x24]` vs file `flags` for the nine `0x8000`-clear grid nodes | folded-copy visibility of 9 scenery nodes | a capture or the flag fixup in `gClsReadNode` |
 
 Nothing here is `verified_original`.
+
+## 13. The per-type contact tests, decoded (#2293)
+
+Follow-up of #2290/#2292. Implementer: `swe2-max-1`. Same convention as the
+rest of this file: `static` reads of the decrypted image, the original was
+not run, byte windows re-read by `accept_m01_ai_terrain_contact_*`. Retail
+file facts (node types, `mesh_index`) are read from
+`$CS_GAME_DIR/ZBD/C3/gamez.zbd` with `cs_formats`' `RawNodeInfo` layout.
+
+### 13.1 The hillside members are all node type 5
+
+Every member the query can meet in cells (4, 12) and (5, 12) — §11's table —
+is `node_type = 5` (`NODE_TYPE_OBJECT3D`), including the group `g28604` and
+its child `g28982` (retail file, `static`):
+
+| slot | name | type | flags | `mesh_index` |
+| --- | --- | --- | --- | --- |
+| 829 | `g28596` | 5 | `0x0308831c` | 516 |
+| 871 | `g28471` | 5 | `0x0308831c` | 559 |
+| 2874 | `g28604` | 5 | `0x0308851c` | `-1` (no own mesh; child 2882 `g28982` has 762) |
+| 830 | `g28598` | 5 | `0x0308831c` | 517 |
+| 881 | `g28474` | 5 | `0x0308831c` | 562 |
+| 2873 | `g28603` | 5 | `0x0308851c` | 761 |
+
+So the only dispatch case the hillside can take is `0x4c9a00`'s case 5
+(`0x4c9adf`). The other decoded handlers matter only where the same code
+shares the callee: types 1, 8 and 9 run the same exact test `0x55c9c0`
+under their own transform pushes.
+
+### 13.2 `0x4c9a00` prologue and the second argument
+
+The dispatch is on `[obj+0x34] - 1` through the table at `0x4c9de0`
+(pinned by `accept_m01_ai_terrain_query_`). The shared prologue loads
+`bl = 0x20` (`mov bl, 0x20` at `0x4c9a9d`) — the "box test suffices" mask —
+before the switch. The call's second argument is **not a depth**: the cell
+walk passes the entry's ordinal + 1 (`inc edx; push edx` at `0x4c9357`,
+entry stride 12 at `0x4c9384`), and the child loops pass the parent's
+child count (`movsx edx, word [esi+0x56]` at `0x4c9c4c` / `0x4c9fb3`). Every
+handler opens with the same gate on it:
+
+```asm
+004c9ae5  mov eax, dword ptr [esp + 0x18]   ; arg2
+004c9aef  cmp eax, ebp                      ; ebp = 1
+004c9af7  jg  0x4c9b00                      ; arg2 > 1 -> 0x4cc010 AABB first
+004c9af9  mov eax, dword ptr [esi + 0x24]
+004c9afc  test bl, al                       ; [obj+0x24] bit 0x20?
+004c9afe  je  0x4c9b28                      ; clear -> exact path, no AABB
+```
+
+A listed object's **first** cell entry (`arg2 = 1`) therefore skips the
+bounds pre-reject for flag-`0x20`-clear objects and goes straight to the
+exact test; later entries (`arg2 >= 2`) always run `0x4cc010` first. After
+the AABB passes, the same `test bl, al` runs again (`0x4c9b14`): objects
+whose `[obj+0x24]` low byte carries `0x20` are recorded on the box alone
+(`0x4c7f50` at `0x4c9b18`); `0x20`-clear objects take the exact path.
+
+The hillside members all have low flags byte `0x1c` — `0x20` clear — so each
+of them reaches the triangle test.
+
+### 13.3 `0x4cbf80`: strict AABB vs segment box overlap
+
+`0x4cbf80(box)` is a leaf routine (`static`): it compares the segment's
+stored min/max globals against the 0x18-byte `box` in the order
+`(max_x, min_x, max_y, min_y, max_z, min_z)`, strict `fcomp` inequalities,
+returning 0 on the first separated axis:
+
+```asm
+004cbf80  mov  eax, [0x63b35c]
+004cbf85  fld  [0x71e8dc]        ; seg max x
+004cbf8b  mov  ecx, [esp + 4]
+004cbf8f  inc  eax
+004cbf90  mov  [0x63b35c], eax
+004cbfa1  fld  [0x71e8d0]        ; seg min x  vs  [box + 0xc]
+004cbfb4  fld  [0x71e8e0]        ; seg max y  vs  [box + 4]
+004cbfc7  fld  [0x71e8d4]        ; seg min y  vs  [box + 0x10]
+004cbfda  fld  [0x71e8e4]        ; seg max z  vs  [box + 8]
+004cbfed  fld  [0x71e8d8]        ; seg min z  vs  [box + 0x14]
+```
+
+(`[0x63b35c]` is a call tally like the other `0x63b2xx` counters.) The box
+layout is `min(x,y,z)` at `+0..+0xb`, `max(x,y,z)` at `+0xc..+0x17`.
+Contact on a face alone does not overlap (strict `>`), so a grazing segment
+is not a hit. The quadtree walker `0x4c9880` already uses it on the tree's
+interior boxes (`§5`); the object bounds path uses it below.
+
+### 13.4 `0x4cc010`: which bounds the object is tested against
+
+`0x4cc010(obj)` (`static`) decides whether the object's bounds test applies
+and which form it takes:
+
+```asm
+004cc010  mov  edx, [0x63b35c]
+004cc02b  test ah, 1             ; [obj+0x24] bit 0x100 required
+004cc02e  jne  -> run test
+          ...  bit clear -> return 1 ("rejected")
+004cc03a  test al, 0x20          ; [obj+0x24] bit 0x20
+004cc03c  jne  0x4cc055
+004cc044  call 0x4ce1b0          ; -> one world AABB
+004cc055  call 0x4cd9d0          ; -> eight transformed corners
+```
+
+* `0x4ce1b0` first tries the stored 6-float AABB at `[obj+0x70]` (the file
+  calls that region `unk112`/`unk116`; which stored box lands there is a
+  runtime detail this reading does not settle) and otherwise evaluates the
+  bounds of the node's data record (`edi = [obj+0x38]`).
+* `0x4cd9d0` has the same assert skeleton and computes the box's eight
+  corners transformed by the current matrix stack — for objects whose
+  flag word already carries `0x20` (the "box suffices" bit) it still
+  measures the full transformed box.
+* Both feed `0x4cbf80`; nonzero return rejects the node (`0x4c9ddb`).
+
+So the broad phase is a world-space **AABB overlap**, optionally of the
+transformed corner box — never a sphere and never a heightfield.
+
+### 13.5 Type 5 end to end (`0x4c9adf`..`0x4c9c71`)
+
+Putting the case together (`static`):
+
+1. `arg2 > 1` or flag `0x20` → `0x4cc010`; reject on nonzero.
+2. Flag `0x20` set → `0x4c7f50(obj)` records the node on the AABB alone,
+   return 0.
+3. Flag `0x20` clear → `edi = [obj+0x38]` (the node's data record). If
+   `[edi]` bit 8 is set the transform stage is skipped (`ebp = 0`, no pop
+   owed). Otherwise a transform level is pushed, with `[obj+0x24]` bit
+   `0x80000` selecting the form: bit clear → `0x539270(edi + 0x60)` +
+   `0x53a3c0(edi + 0x30, 3)`; bit set and `[edi]` bit `0x20` set →
+   `0x539270(edi + 0x60)` + `0x53a3c0(edi + 0x30, 1)` followed by a
+   consume-once clear of `[edi]` bit `0x20` (`0x4c9b55`..`0x4c9b5e`);
+   bit set and `[edi]` bit `0x20` clear → the stored matrix is pushed
+   directly (flag word `0`, matrix pointer `edi + 0x60`,
+   `0x4c9b60`..`0x4c9b85`). `0x539270` pushes a (flag, matrix-pointer)
+   pair onto `0x6379dc`/`0x6379e0`; `0x53a3c0` fills it.
+4. `eax = [obj+0x3c]` — the node's resolved mesh record, the file's
+   `mesh_index` slot patched to a pointer at load (the patch site is not
+   pinned; `-1` in the file implies null here). Zero, or
+   `[obj+0xc4] <= [0x71e8b0]` (`0x4c9ba2`..`0x4c9bb5`), skips the exact
+   test. `[obj+0xc4]` is the file's `unk196`, asserted `160` for
+   object/LOD nodes.
+5. `0x55c9c0(geo = [obj+0x3c], rec = [0x71e9f4], &0x71e8b8, &0x71e8c4)`
+   — the last two args are pointers to the stored segment start/end
+   globals (inputs; `0x55ca5d` reads the start through `arg3`).
+6. Nonzero return → `0x4c7f50(obj)` completes the record (`+0x24` =
+   object, `+0x28` = owner word).
+7. Unless stop-mode already produced a record (`0x4c9bde`..`0x4c9bef`),
+   every child `[obj+0x5c][i]` passes the flag/`+0xc4` pre-filter and is
+   re-dispatched as `0x4c9a00(child, child_count)` (`0x4c9bf1`..`0x4c9c53`).
+8. `ebp` nonzero → `0x4c1550` pops the transform level (`0x4c9c55`).
+9. Return `1` when the count byte is still zero, `0` when a record was
+   added — the query's own convention.
+
+The `0x4cc010` reject label `0x4c9ddb` (shared by every case) returns the
+nonzero reject code with no record.
+
+### 13.6 `0x55c9c0`: segment versus triangle mesh
+
+`0x55c9c0(geo, rec, &seg_start, &seg_end)` (`static`) is the exact test;
+`geo` is the mesh record `[obj+0x3c]` produced:
+
+```asm
+0055c9cc  mov eax, dword ptr [edi + 0x10]   ; group count
+0055c9cf  test eax, eax                      ; zero -> return 0, no test
+0055c9d7  test byte ptr [edi + 8], 0x10      ; geo flag: scaled vertices
+0055c9f0  mov eax, dword ptr [edi + 0x1c]    ; vertex count
+0055c9fa  mov edx, dword ptr [edi + 0x44]    ; scale-recip path args
+0055ca0b  call 0x53c580                      ; -> scaled vertex array [0xa06fb4]
+0055ca1e  mov eax, dword ptr [edi + 0x38]    ; else plain vertex array
+0055ca24  mov ecx, dword ptr [0x6379dc]
+0055ca2a  cmp  dword ptr [ecx], 0            ; stacked-transform flag
+0055ca2d  jne  0x55cb33                      ; nonzero: segment stays world
+0055ca41  call 0x53dfc0                      ; inverse affine of stack top
+```
+
+* When a transform level is stacked (flag word `0`), `0x53dfc0(matrix,
+  &affine, 1)` computes the inverse affine into a 0x30-byte local and the
+  segment endpoints are multiplied through it (`0x55ca51`..`0x55cb55`) —
+  the mesh is tested in **object space**. The mode argument `1` selects
+  the full affine; its other values are not decoded.
+* The mesh record's relevant fields: `+0x08` flag word (bit `0x10` = the
+  scaled-vertex path), `+0x10` group count, `+0x1c` vertex count, `+0x24`
+  a scale scalar (compared against `0.0`, `fcomp [0x603398]`), `+0x34`
+  the group table, `+0x38` the vertex array, `+0x44` scale-record
+  argument, `+0x58` the last-hit group index (cache, written back at
+  `0x55d259`).
+
+Each **group** record is 40 bytes (`esi = [geo+0x34] + last_hit * 40`,
+`0x55cb5b`..`0x55cb64`) and is walked first from the cached index, then
+the remainder in a second sweep (`0x55cec2`..; cached group skipped at
+`0x55ced5`). The group word's bit `0x2000` marks an **indexed strip**;
+`& 0x3ff` is the index count and `count - 2` the triangle count
+(`0x55cb67`..`0x55cb7a` — degenerate pairs are skipped via the duplicate
+checks at `0x55cba7`/`0x55cbb8`). A clear `0x2000` is a **fan/polygon
+list** tested as one convex polygon. Vertices are copied into the scratch
+triple at `0xa05e84` (three 12-byte copies per triangle,
+`0x55cbd2`..`0x55cc35`).
+
+The group field `+0x14` is a pointer to a material/surface record; its
+byte `+1` bit `0x02` selects the tester:
+
+```asm
+0055cc38  mov  edx, dword ptr [esi + 0x14]
+0055cc3b  mov  edx, dword ptr [edx]
+0055cc3d  test byte ptr [edx + 1], 2
+0055cc41  je   -> 0x55d6c0 (plain)
+0055cc9c  call 0x55db90                      ; textured: also fills UV outs
+0055ccc4  call 0x55d6c0                      ; plain
+```
+
+On a hit (`0x55ccc4` tester → `jne 0x55cdc6`) the routine writes
+`rec+0x20 = [[group + 0x14]]` — the surface word — (`0x55cdc6`..`0x55cdce`),
+transforms `rec+0` (the normal, through the 3x3 part of the stack matrix,
+no translation) and `rec+0xc` (the contact point, full affine) back to
+world when a transform is stacked (`0x55cdd1`..`0x55cea9`), normalises
+`rec+0` in place via `0x422690` (`0x55ceac`) and returns `1`
+(`mov eax, 1` at `0x55ceb8`). The second sweep's hit path does the same
+record work and additionally stores the hit group's index into
+`[geo+0x58]` (`0x55d259`), so the last hit is where the next query's
+walk starts. Every miss path — empty mesh, tester reject, group walk
+exhausted — lands on `xor eax, eax; ret` at `0x55d15d` and returns `0`.
+
+### 13.7 `0x55d6c0` / `0x55db90`: the polygon testers
+
+`0x55d6c0(rec, &seg_a, &seg_b, tri, count, double_sided)` (`static`)
+tests the segment (two locals the caller built) against the convex
+polygon at `tri` (`[0xa05e84]`):
+
+* `0x55d6d2`..`0x55d73a`: face normal from the first three vertices,
+  stored at `rec+0..0xb`; `[0x63b364]` is its call tally.
+* `0x55d73d`..`0x55d77e`: `d = -(n . v0)`; `denom = n . dir`; when
+  `denom` underflows zero (`fcomp [0x6032c8]`, CF clear) the single-sided
+  variant (`double_sided == 0`) rejects immediately.
+* `0x55d7a9`..`0x55d7c1`: back-face reject via the sign bit of `denom`
+  xor `double_sided` (`test edi, 0x80000000`).
+* `0x55d7c2`..`0x55d7e6`: `t` and the contact point — `rec+0xc..0x17`.
+* The remainder walks the polygon's edges in the two axes of the
+  dominant projection (`f7 04 be 00 00 00 80` sign test at `0x55d82e`,
+  six-way jump `ff 24 bd 74 db 55 00` at `0x55d84a` through `0x55db74`),
+  rejecting when the hit lies outside with the qword epsilon `-0.0001`
+  at `0x609180`; inside → `return nonzero`.
+
+`0x55db90` is the textured variant (`sub esp, 0x28`; `0x53e380` computes
+the polygon normal into `rec` at `0x55dbbb`, `0x53e42d` computes
+barycentric weights at `0x55de2e`): it takes two extra arguments — a
+face-UV triple and an interpolated-UV out — which `0x55c9c0` fills from
+frame locals (`ebp-0x50`, `ebp-0x20`), so for this query the UV work is
+dead output.
+
+`0x422690(rec)` is a 3-component normalise-in-place (`fsqrt`/`fdivrp`
+over `rec+0..0xb`), so `rec+0` is left as a **unit** normal.
+
+### 13.8 The other dispatch cases
+
+| type | handler | shape |
+| --- | --- | --- |
+| 1 (model) | `0x4c9fe0` | no `0x4cc010` stage; flag bit 4 gates `0x539270(esi+0x44)` + `0x53bb20(esi+0x20, esi+0x14, &unit_scale)` then the same `+0x3c`/`+0xc4`/`[0x71e8b0]` gate → `0x55c9c0` (`0x4ca05d`) → inline record |
+| 5 (Object3d) | `0x4c9adf` | §13.5 |
+| 6 (LOD) | `0x4c9c72` | `[data+4] > 5.0` (`fcomp [0x6033e8]`) → return 1; else optional AABB/record then `0x4c9a00` on **every** child |
+| 7 (selector) | `0x4c9d12` | `[data] == 0` → return 1; else optional AABB/record then `0x4c9a00` on **one** child: `[data + [data+0x14]*8 + 0x20]` (`0x4c9d60`) — an 8-byte option table at `+0x20`, index at `+0x14` |
+| 8 | `0x4c9e10` | same skeleton as 5; transform `0x539270(edi+0x38)` + `0x53a3c0(edi+8, 1)` gated by flag bit 4; `0x55c9c0` at `0x4c9f02`; the record's `+0x24/+0x28` written inline (same code `0x4c7f50` runs) |
+| 9 | `0x4ca140` | same skeleton as 5; transform `0x539270(edi+0x30)` filled by four piecewise helpers — `0x53a970(edi+0xc, edi+0x10, edi+0x14)`, `0x53ac80(edi+4)`, `0x53aae0(edi)`, `0x53ae20(edi+8)` — `0x55c9c0` at `0x4ca244` |
+| 10 | `0x4c9dd7` | `mov eax, [esp+0x18]; ret` — returns arg2, tests nothing |
+| 2,3,4 | `0x4c9daf` | the unknown-type error already pinned |
+
+The `+0xc4 > [0x71e8b0]` gate, the `+0x3c` null check and the children
+recursion are identical in every exact-test handler; the differences are
+the transform source and whether `0x4c7f50` or its inline copy writes the
+record tail.
+
+### 13.9 The record, what the caller reads, `[0x71e8b0]`
+
+The `0x2c`-byte record layout, consolidated (`static`; every field that
+is written is listed — `+0x18..+0x1f` has no measured writer on the
+hillside path and stays **unknown**):
+
+| offset | writer | content |
+| --- | --- | --- |
+| `+0x00..+0x0b` | `0x55d6c0`/`0x55db90`, normalised by `0x422690` | unit contact normal, world space when a transform is stacked |
+| `+0x0c..+0x17` | `0x55d6c0`/`0x55db90` | world contact point |
+| `+0x18..+0x1f` | — | unknown (no writer measured on this path) |
+| `+0x20` | `0x55c9c0` | `[[group+0x14]]` — the surface/material word |
+| `+0x24` | `0x4c7f50` (or its inline copy) | the object node |
+| `+0x28` | `0x4c7f50` (or its inline copy) | owner word: `[obj+0x40]`; when the node carries flag `0x200000` the code walks `parent_array[0]` up while the current node keeps the bit, has `[+0x40] == 0` and has a parent, and records the `[+0x40]` of where it stops (`0x4c9e68`..`0x4c9e8a`) |
+
+`0x41f810` reads **only** the count byte `buf[0]` (and the query's return):
+the record fields exist for other callers. The escape latch cannot see the
+normal, point or material — measured at `0x41f95f`..`0x41f98e`.
+
+`[0x71e8b0]`, the `+0xc4` threshold in every exact-test gate, has a single
+setter `0x4c7600(arg1, arg2)`: `arg1 != 0` stores `arg2`, `arg1 == 0`
+stores `-1` (`0x4c7600`..`0x4c761c`). Its only call sites — `0x5b053a`
+and `0x5b055f` — bracket one `0x4c8ec0` call with `(1, [esi+0x7c])` /
+`(0, -1)`, so after any such call the global is left `-1`. `0x41f810`
+never sets it: for the follower's query the `+0xc4 > -1` test passes for
+every node (the file asserts `unk196 = 160` for object/LOD nodes), i.e.
+the threshold is inert on this path.
+
+### 13.10 Answer for the hillside, and consistency with the port
+
+For every listed member of cells (4, 12)/(5, 12) the original test is:
+
+`flags` bits `0x04`+`0x10` → stop-mode/`+0xc4`/`0x2000000` filters →
+**AABB pre-reject** (`0x4cc010`, skipped only for a cell's first entry) →
+transform push → **`0x55c9c0` triangle-exact test** in object space over
+the mesh's strip/fan groups → `0x4c7f50` records `normal | point |
+material | node | owner` → children recurse.
+
+So it is **not** a sphere test, **not** a heightfield lookup, and **not**
+satisfied by the AABB alone for these nodes (their `0x20` "box suffices"
+bit is clear): the segment must cross a collision face. `g28604`, whose
+`mesh_index` is `-1`, presumably has `[obj+0x3c] == 0` — its own test is
+skipped and the group's reach is exactly its children; `g28982` (mesh
+762) carries the geometry the segment is tested against.
+
+Consistency with #2292's port-side probe (`WorldSegmentProbe`, a segment
+cast against the runtime colliders): no contradiction — the port already
+documents the probe as an approximation, and a trimesh collider over the
+same faces approximates this exact test. The decode adds two refinements
+the approximation does not have: the AABB pre-reject (performance only,
+same answer) and the fact that only the partition-listed nodes are
+candidates at all (§11). Nothing here changes `original_stick`.
+
+### 13.11 Unknowns left open
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| `rec+0x18..+0x1f` writers | other callers of the same query | instrument or decode a consumer |
+| `0x53dfc0` mode argument / full transform-stack semantics of `0x539270`/`0x53a3c0` | exact space the test runs in for nested nodes | decode the matrix-stack helpers |
+| the runtime patch that turns `mesh_index` into `[obj+0x3c]` | certainty that `g28604`'s pointer is null | `gClsReadNode` / loader fixup |
+| `[0x71e8ac]`/`[0x71e8b4]`/`[0x9be6f8]` defaults | non-follower calls | their setters, as before |
+| `0x4c8ec0` (the sibling entry point `0x5b0520` wraps) | the other query mode | separate decode |
