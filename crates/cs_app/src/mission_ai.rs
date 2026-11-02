@@ -614,6 +614,10 @@ pub const RUDDER_TOL: f32 = 0.2;
 /// The pilot's per-axis input scale and limit: `vehicle+0x8c4/+0x8c8/+0x8cc`
 /// (roll, pitch, yaw) and `vehicle+0x8d0/+0x8d4/+0x8d8` (the same axes).
 ///
+/// The law holds a second set (`vehicle+0x8dc..+0x8f0`, the
+/// `ai_emerg_input_*` words) that its fourth argument selects; this crate
+/// flies the first (`docs/findings/2026-11-02-m01-wingman-gains.md` §2.3).
+///
 /// The spawn copy (`0x47d1e9`..`0x47d334`) takes each word from `arg1+0xa8..`
 /// when it is not `-1.0` and else from the definition's `ai_input_*` words:
 /// `def+0x264` (`ai_input_scale_roll`), `+0x268` (`ai_input_scale_pitch`),

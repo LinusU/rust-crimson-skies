@@ -41,6 +41,13 @@ parser writes (`0x47b00f` ship = 3, `0x47b05c` wingman = 4, `0x47b077` plane =
 words to `2.0`, `0.5`, `0.15`, `100.0`, `100.0`, `0.25`
 (`0x478b10`..`0x478b44`).
 
+The three **limit** rows have a third, intermediate source: the loader's third
+argument, `arg3+0x38`/`+0x3c`/`+0x40`, taken when `arg3` is non-null and its
+word is not below `0.0` (`0x47d278`..`0x47d298`, and the same shape for
+`+0x8d0` at `0x47d2c1` and `+0x8d8` at `0x47d306`). M01's spawn path passes
+zero there (`0x47ff26`..`0x47ff32`: `push 0; push 0; lea eax, [doc]; push
+ebx`), so the definition's limit words apply.
+
 ### 2.2 The definition parser (`0x479240`)
 
 The six words are *not* the `ai_input_*` keys. The parser writes:
@@ -68,8 +75,10 @@ with the defaults written at `0x478dd6` (`def+0x260` = `0x3e4ccccd`, `0.2`),
 **So the two readings conflict.** The spawn copy's *first* source
 (`def+0xa8..+0xbc`) holds `mode_alt`/`collision_d` and the constructor's
 `100/100/0.25`; the *fallback* (`def+0x264..+0x278`) holds the words whose
-names say "AI input scale/limit". Which one the retail wingman gets is decided
-below; this finding records both and does not pick a winner by taste.
+names say "AI input scale/limit". The fallback is only reached when the first
+source is still the `-1.0` sentinel, which the definition constructor never
+leaves it at; §3 covers which words the retail wingman's definition holds and
+what stays unmeasured.
 
 ### 2.3 The law's step 7 (`0x41be53`..`0x41bf8e`)
 
@@ -85,6 +94,19 @@ the original applies them in:
 The global byte `0x64ee4c` (read at `0x41be59`) adds `0.5` (`0x6032e0`) to a
 scale and `0.25` (`0x6034f4`) to a limit when set; the port flies it clear.
 
+Step 7 also selects between **two** gain sets with the law's fourth argument
+(`bl = [ebp+0x14]`, `0x41ba93`). Zero reads the `+0x8c4/+0x8c8/+0x8cc` scales
+and `+0x8d0/+0x8d4/+0x8d8` limits listed above; non-zero reads the
+`+0x8dc/+0x8e0/+0x8e4` scales and `+0x8e8/+0x8ec/+0x8f0` limits
+(`0x41be47`..`0x41bf89`). The spawn copy fills that second set from
+`arg1+0xc0..+0xd8` or, on the sentinel, the definition's `ai_emerg_input_*`
+words `def+0x27c..+0x294` (`0x47d344`..`0x47d445`; keys
+`ai_emerg_input_scale_pitch` `0x6282a0` … , constructor defaults `3.5`/`1.0` at
+`0x478e04`..`0x478e28`). Those defaults are the same `3.5`/`1.0` as the
+`ai_input_*` block, so the second set and the fallback reading are numerically
+one candidate. The port flies the first set (`bl == 0`); which argument the
+follower's call passes is not yet pinned (§6).
+
 ## 3. What M01's wingman actually gets (retail)
 
 * The `wingman` `vehicle.zrd` record (`ZBD/zrdr.zbd`, member offset 1397861,
@@ -99,10 +121,14 @@ scale and `0.25` (`0x6034f4`) to a limit when set; the port flies it clear.
   outright — implausible, and the reason the port flies the no-inheritance
   reading).
 * M01's `aiv.zrd` (`ZBD/C3/M01/zrdr.zbd`) `wingman_1` record carries 66
-  positional fields, and fields **44..49 — the record document's optional
-  override slots `doc+0xa8..doc+0xbc`** (`0x437ca9`..`0x437cf4`, the
-  constructor's `-1.0` sentinels at `0x437420`..`0x43743e`) — are all `-1.0`.
-  So the record overrides nothing and the definition's words apply.
+  positional fields, and fields **44..49** — the instance document's own
+  slots `doc+0xa8..doc+0xbc` (`0x437ca9`..`0x437cf4`, the constructor's `-1.0`
+  defaults at `0x437420`..`0x43743e`) — are all `-1.0`. The spawn copy does
+  **not** read them: its first source is the *definition*, resolved by name
+  from the class registry (`0x47b68b` in the definition path, `0x47fe59` in
+  M01's spawn path), and the instance document is only the loader's second
+  argument (`0x47ff2a`). So the words come from the definition's
+  `+0xa8..+0xbc`; the instance's six slots are a separate, unset block.
 
 The port therefore flies, for M01's wingman (`M01_WINGMAN_PILOT_GAINS`,
 `cs_app::mission_ai`):
@@ -148,7 +174,7 @@ the law cannot yet be judged by flying it here.
 | unknown | affects | resolving step |
 | --- | --- | --- |
 | whether the definition parser reads the record's own keys or the `kind_of`-merged ones | which of §2.1's two sources the `wingman` definition holds (`2.0/0.5/0.15` or `0.0/0.6/0.15`) | trace `0x57a090`'s tree construction and whether `0x477b70`'s copy ctor overlays the parent record |
-| why the spawn copy's first source is `mode_alt`/`collision_d` and not the `ai_input_*` block | whether the original's AI stick really uses those six numbers | an original run (`REF-OWNER-FIRST-CAPTURE`) or a stack trace of `arg1` at `0x47c210` in the retail binary |
+| which of step 7's two gain sets the follower's call selects (`bl == 0`, the `+0x8c4..` AI words, or non-zero, the `ai_emerg_input_*` `3.5`/`1.0`) | whether the original's AI stick uses `2.0/0.5/0.15` or `3.5/1.0`; the two flown readings (§5) cover both numerically, but not which one is the original's | identify which of the seven `0x41b560` call sites is the follower's and what each passes at `[ebp+0x14]`; an original run (`REF-OWNER-FIRST-CAPTURE`) settles it |
 | the ported law's remaining gaps (§5) | whether `original_stick` can ever be turned on | #2262's slot signs, the 80 m push, and the force-model comparison |
 
 Nothing here is `verified_original`; the numbers are static reads and the

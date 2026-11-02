@@ -16,11 +16,10 @@
 //!   keys at `def+0x264..+0x278` (`0x47b4bd`..`0x47b553`);
 //! * the spawn copy `0x47d1e9`..`0x47d334` that fills `vehicle+0x8c4..+0x8d8`
 //!   from `arg1+0xa8..+0xbc` (the definition, `0x47c2b4`'s kind test) and
-//!   falls back to `def+0x264..+0x278` on the `-1.0` sentinel — the same
-//!   sentinel the record document's constructor writes (`0x437420`..
-//!   `0x43743e`) and its positional-field parse overwrites (`0x437ca9`..
-//!   `0x437cf4`); the finding records why the two readings cannot both be
-//!   right;
+//!   falls back to `def+0x264..+0x278` on the `-1.0` sentinel, plus the
+//!   `+0x8dc..+0x8f0` `ai_emerg_input_*` set that step 7's `bl` argument
+//!   selects instead; the finding records which reading the retail data
+//!   supports and what stays unmeasured;
 //! * step 7 of the stick law (`0x41be53`..`0x41bf8e`) that scales each word
 //!   and clamps it to the limit.
 
@@ -258,6 +257,25 @@ fn accept_m01_wingman_gains_image_pins_the_writer_windows() {
         );
     }
 
+    // 4b. The alternate `ai_emerg_input_*` set the same copy fills and step 7
+    // selects when its `bl` argument is non-zero.
+    for (site, offset) in [
+        (0x47d347_u64, 0x8e0_u64),
+        (0x47d36e, 0x8dc),
+        (0x47d395, 0x8e4),
+        (0x47d3bc, 0x8ec),
+        (0x47d3e3, 0x8e8),
+        (0x47d40a, 0x8f0),
+    ] {
+        let window = bytes_at(bytes, site, 6);
+        assert_eq!(
+            u32::from_le_bytes(window[2..6].try_into().expect("disp")),
+            u32::try_from(offset).expect("offset"),
+            "the emergency spawn store at {site:#x} names vehicle+{offset:#x}"
+        );
+    }
+    assert_eq!(text_at(bytes, 0x6282a0), "ai_emerg_input_scale_pitch");
+
     // 5. Step 7 of the stick law: three scales then three limits.
     for (site, offset) in [
         (0x41be53_u64, 0x8c4_u64),
@@ -273,6 +291,21 @@ fn accept_m01_wingman_gains_image_pins_the_writer_windows() {
             u32::from_le_bytes(window[2..6].try_into().expect("disp")),
             u32::try_from(offset).expect("offset"),
             "the law's load at {site:#x} names vehicle+{offset:#x}"
+        );
+    }
+    // The `bl` argument picks the emergency set when non-zero.
+    assert_eq!(
+        bytes_at(bytes, 0x41be47, 4),
+        &[0x84, 0xdb, 0x74, 0x08],
+        "test bl, bl / je over the emergency scale load"
+    );
+    for (site, offset) in [(0x41be4b_u64, 0x8dc_u64), (0x41bed5, 0x8e8)] {
+        let window = bytes_at(bytes, site, 6);
+        assert_eq!(window[0], 0xd9, "an f32 load at {site:#x}: {window:?}");
+        assert_eq!(
+            u32::from_le_bytes(window[2..6].try_into().expect("disp")),
+            u32::try_from(offset).expect("offset"),
+            "the emergency load at {site:#x} names vehicle+{offset:#x}"
         );
     }
     // The `+0.5` bonus global `0x64ee4c` is read between the scale and the
@@ -368,9 +401,11 @@ const AI_INPUT_KEYS: [&str; 7] = [
 ];
 
 /// **The values M01's wingman actually gets.** The retail `wingman` record
-/// declares none of the seven keys, so the definition keeps the constructor
-/// defaults; M01's `wingman_1` document carries `-1.0` in the six override
-/// slots (fields 44..49), so it takes the definition's words too.
+/// declares none of the seven keys, so the definition keeps the constructor's
+/// words. M01's `wingman_1` document carries `-1.0` in its own six optional
+/// slots (fields 44..49); the spawn copy reads the definition, not those
+/// slots (finding §3), so they pin the record's shape rather than override
+/// the words.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_wingman_gains_retail_pins_m01_wingman_values() {
@@ -397,8 +432,10 @@ fn accept_m01_wingman_gains_retail_pins_m01_wingman_values() {
     assert_eq!(M01_WINGMAN_PILOT_GAINS.limit, [100.0, 100.0, 0.25]);
     assert_eq!(RUDDER_TOL, 0.2);
 
-    // M01's own records: `wingman_1` carries the -1.0 sentinel in the six
-    // optional override slots.
+    // M01's own records: `wingman_1` carries the -1.0 sentinel in its own
+    // optional slots. The spawn copy reads the definition's words, not these
+    // (finding §3); the fields are pinned so the instance's shape stays the
+    // one the finding measured.
     let (aiv, source) = member_document(&root, "zbd/c3/m01/zrdr.zbd", "aiv.zrd");
     let aircraft = read_aircraft_records("zbd/c3/m01", &aiv, &source).expect("read");
     let betty = aircraft
@@ -425,7 +462,7 @@ fn accept_m01_wingman_gains_retail_pins_m01_wingman_values() {
         };
         assert_eq!(
             number, &-1.0,
-            "field {field} is the -1.0 'unset' sentinel, so the definition's words apply"
+            "field {field} is the record's own unset slot"
         );
     }
 }
