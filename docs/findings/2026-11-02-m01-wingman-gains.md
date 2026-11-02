@@ -2,7 +2,8 @@
 
 Date: 2026-11-02. Task #2266, follow-up of #2263
 (`2026-11-02-m01-wingman-stick-law.md`); §6 answers added by task #2276
-(same date, implementer `swe2-max-1`). Implementer: `deepseek-1`. Static
+(same date, implementer `swe2-max-1`); §7 added by task #2277
+(same date, implementer `sonnet-2`). Implementer: `deepseek-1`. Static
 claims are `static`, read from the owner image with `llvm-objdump -d -M intel`
 and `r2`; retail claims are reads of `$CS_GAME_DIR`. The original executable
 was **not** run: nothing here is `verified_original`, and the flight numbers
@@ -309,3 +310,107 @@ this law; together with §6.1's `bl = 0` this is the measured set.
 
 Nothing here is `verified_original`; the numbers are static reads and the
 flight numbers are port behaviour.
+
+## 7. The station goal, and what holds altitude with a dead pitch word (#2277)
+
+Static reads of `0x41e760`, `0x41b560`, `0x41f810` and the vehicle update at
+`0x489a60`; claim id `OWNER-STATIC-2026-10-29`, nothing `verified_original`.
+`accept_m01_wingman_station_goal_` (image-gated) re-reads every window below.
+
+### 7.1 The goal `[esi+0xe0]`, per phase
+
+The phase is `[esi+0xd8]`, re-dispatched at `0x41ea95` (`jmp [eax*4+0x41f020]`).
+`ebx` is the slot vector: **`0x61fb88` = (6, 0, 18)** when the leader `edi` is
+the player vehicle (`cmp edi,[0x71c298]` at `0x41e78a`, `mov ebx,0x61fb88` at
+`0x41e792`), else **`0x61fb98` = (8, -2, -8)** (`0x41e7a6`). For the AI
+leader `0x41e7b0` also stores phase 2 and `[esi+0xdd] = 1` on every call.
+
+| phase | body | goal written to `[esi+0xe0]` | reference velocity |
+| --- | --- | --- | --- |
+| 0 | `0x41ea9c` | route object `[esi+0x948]` present and within `0x6035c8` (1800 m squared): route-derived point (`0x41eab8`..`0x41eb91`, vtable calls, not decoded); **otherwise the leader position (`edi+0x204`) with `+200.0` on y** (`0x41eb96`..`0x41ebbe`, `0x6035c4`) | the zero default `0x75d1b8` |
+| 1 | `0x41ebc9` | **slot**: `x*row0 + y*row1 + z*row2 + t` (below) | the leader's, `call [edi->vtable+4]` (`0x41ec52`) |
+| 2 | `0x41ec5a` | route-derived point (`[esi+0x948]` vtable `+0xc`/`+0x8`, a speed-banded scalar times a vector, added to the route point; `0x41ec5a`..`0x41ed2b`) | the route object's (`0x41ed25`) |
+| 3 | `0x41edd2` | **none**: the previous goal is flown | zero default |
+| 4 | `0x41ed35` | identical to phase 1 (`0x41ed4d`..`0x41edbe`) | the leader's |
+
+The first table (`0x41f00c`) moves the phase: 0 -> 1 when the leader is awake
+(`[edi+0x91d]`), within 700 m (`0x6035e0`) and own speed `[esi+0x934]` >
+20.576; 2 -> 1 at once without a route object (`0x41e8d1`), else on the route
+distance (`0x41e992`..); 3 -> 4 and 4 -> 1 inside 50 m (`0x6035cc`, 2500
+squared) of the held goal.
+
+**Frame.** The slot is rotated by **all nine floats at `leader+0x180`** (the
+`lea edx,[edi+0x180]` of `0x41ebe1`/`0x41ed4d`; rows `+0x00`, `+0x0c`,
+`+0x18`) and translated by **the triple at `leader+0x1a4`**
+(`fadd [ebx+0x24/0x28/0x2c]`, `0x41ec37`..`0x41ec41`): the leader's full
+orientation, so the slot banks and pitches with the leader, not a
+heading-only frame. This is the shape the port already uses
+(`station_point` = `leader_position + leader_orientation * offset`).
+
+**Signs.** The table values are raw, along rows 0/1/2. Row 2 is the component
+the control law tests as "ahead" (`bz > 0`, the player-leader finding §4), so
+the player slot is **18 m along the nose** (ahead of the player), 6 along
+row 0, 0 along row 1, and the AI slot is 8 along row 0, 2 along **minus**
+row 1, 8 **against** row 2 (astern). The sign of row 0 (left/right) and of
+row 1 (up/down) is not decided by anything read here; the law's own `bz`
+convention is the only evidence for row 2, an inference, not a measurement.
+The port flies `(6, 0, -18)` / `(8, -2, +8)` (nose is `-Z`, `+x` right, `+y`
+up), which is this reading and **agrees on magnitude and on the ahead/astern
+split**; it is unproven only on the row 0/row 1 signs.
+
+**The 80 m push** (`0x41edd2`..`0x41eeba`) runs after every phase. It reads
+`Δ = own - leader` into `[ebp-0x4c]` (`0x41edde`), tests `0 < |Δ|² < 6400`,
+and then scales the vector at **`[ebp-0x40]`** by `80/|Δ|` (`0x41ee74`,
+`0x41ee65`: `fdivr [0x6035bc]`) and adds it to the goal. `[ebp-0x40]` is a
+different local than `Δ`; the routine stores nothing to it (see
+`2026-10-18-m01-wingman-player-leader.md` §3), so the push direction is
+stale stack data. This is why the push cannot be ported: it is not
+`own - leader`. Still unknown: what the caller chain leaves there.
+
+### 7.2 What moves altitude when the pitch word is dead
+
+1. **The follower routine itself stores no stick or throttle word.** No
+   `[reg+0x108/0x10c/0x114/0x11c/0x120/0x124/0x128]` operand exists in
+   `0x41e760..0x41f00a`; after the shared call at `0x41eed3` it returns when
+   there is no route object (`0x41eed8`, `je 0x41eff9`). The AI step
+   `0x41c270` adds only `0x41fe10` (state upkeep; its only stick writes are the
+   stunned zeroing at `0x42015a`..`0x420173`) before the follower.
+2. **The law's pitch is `0.0` on the station call.** The recovery stores
+   `+0x108 = ±1.0` (`0x41be28`/`0x41be34`, speed under `0x603510`), but step 7
+   multiplies the word by `+0x8c8` (`0x41be80`/`0x41be97`), which is `0.0`
+   for M01's wingman (§6.2). Altitude therefore comes from the bank/yaw
+   words, the throttle `+0x124`, and the ground blow (the AI blow of
+   `2026-11-02-m01-wingman-hillside-divergence.md`), none of which steers a
+   climb to a goal.
+3. **The escape climb is the pitch authority.** The vehicle update calls
+   `0x41f810` at `0x489abc` each tick for an AI flagged `[esi+0x944]` in modes
+   0/1/4 (gates `0x489a65`..`0x489aa2`; `+0x358 != 5`, `+0x91f == 0`, call only
+   while `+0x358 <= 3`). It latches `+0x358 = 3` (`0x41f98e`) when the vehicle's
+   y is under the world floor `[0x71c3f0]` (`0x41f827`), or, between the
+   floor and the ceiling `[0x71c3f4]` (`0x41f83e`), when the probe `0x4c8f70`
+   from the position to the position plus **velocity x 4.5** (`0x603644`,
+   `0x41f8b5`) hits the world; the latch clears at `0x41f9a6` once nothing is
+   hit. While it is 3 the follower flies `0x41e7ff` with the goal "own
+   position + 1000.0 up" and `bl = 1`, so the law uses the **emergency**
+   words: pitch scale `+0x8e0` (`def+0x280`, `0x47d355`) and limit `+0x8ec`
+   (`def+0x28c`, `0x47d3ca`), the `ai_emerg_input_*` block, inherited as
+   3.5 / 1.0 (§6.2), not `0.0`. That is the one non-zero pitch path in the
+   follower's step, and the only thing in the original that turns a
+   terrain-bound wingman up the hillside.
+
+### 7.3 Port gap, and what is left
+
+The port has no terrain look-ahead (`0x41f810`) and no escape climb: with
+`original_stick` on it flies the dead pitch word with nothing to replace it,
+which matches the 662 m drift of §5. The port was not changed in this task
+(the probe needs the world query behind `0x4c8f70`, not a number): the
+follow-up is filed as its own task, and `original_stick` stays off.
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| row 0/row 1 signs of the `leader+0x180` basis | which side/height the slot lies on | the pose-to-basis writer, or a capture (#358) |
+| what `[ebp-0x40]` holds at `0x41ee80` | the push direction | caller stack trace, or a capture |
+| the world query `0x4c8f70` and `[0x71c3f0]`/`[0x71c3f4]` values | when the escape climb latches | decode the query; read the world setup |
+| whether M01's wingmen hold a route object `[esi+0x948]` | phases 0/2 goals | already open in §5 |
+
+Nothing here is `verified_original`.
