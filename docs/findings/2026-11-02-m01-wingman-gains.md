@@ -479,3 +479,20 @@ and leaves the player behind (4102 m). Neither holds station, so
 and the stick's `+0x358 == 3` interplay with the follower's phases.
 
 Nothing here is `verified_original`.
+
+### 7.6 Integration check of the terrain look-ahead (task #2278)
+
+The parent of #2279-#2281 re-ran the pieces together on retail M01
+(`accept_m01_wingman_stick`, `accept_m01_escape` and `accept_m01_ai_terrain`
+tests with `--include-ignored`, 13 passed; the hillside re-fly alone takes
+about 445 s). Results are the §7.5 table: closest 80 m / worst 688 m / final
+688 m for the merged gains, 119 m / 4102 m / 4102 m for `ai_input_*`.
+
+Acceptance read against the task text: the latch and escape goal are ported
+behind `original_stick` (default off), the default M01 follower, pins and
+smoke are unchanged, and the re-fly is recorded. The re-fly does **not**
+recover the station, so `original_stick` stays off. Open, unchanged from §7.5:
+the cell-grid contents for M01, the image-read floor/ceiling globals and the
+`+0x358 == 3` interplay with the follower's phases.
+
+Nothing here is `verified_original`.
