@@ -413,4 +413,33 @@ follow-up is filed as its own task, and `original_stick` stays off.
 | the world query `0x4c8f70` and `[0x71c3f0]`/`[0x71c3f4]` values | when the escape climb latches | decode the query; read the world setup |
 | whether M01's wingmen hold a route object `[esi+0x948]` | phases 0/2 goals | already open in §5 |
 
+
+### 7.4 The escape-climb latch is ported (task #2280)
+
+`MissionAircraftAi::escape` (`EscapeClimbLatch`) ports `0x41f810` with the
+terrain probe injected (`TerrainProbe`, `MissionTerrainProbe`; default: never
+hits). Re-read from the image:
+
+- Order: `y < [0x71c3f0]` latches at once; else `y >= [0x71c3f4]` clears; else,
+  only when the clock `[0x71c470] >= [esi+0xf0]`, it re-arms
+  `+0xf0 = (rand * 0x603598 + 1.0) * 0.5 + clock` and probes
+  `pos -> pos + velocity * 4.5`; a hit sets `+0x358 = 3`, no hit clears it.
+- **Correction to §7.2/the task text**: `[0x71c470]` is an accumulated
+  clock, not the step `dt` (`0x4897cb`..`0x4897e4`: `[0x71c470] += [0x9ad744]`),
+  and the caller seeds `+0xf0` with it when `+0x944` was just raised
+  (`0x489aab`), so the first call probes at once and the re-arm is 0.5-1.0 s.
+- The probe `0x4c8f70` reports a hit as a **zero return with a non-zero out
+  byte** (`0x41f95b`..`0x41f96b`); the injected trait is the boolean hit.
+- Latched, the port flies goal "own position + 1000 up" with
+  `PILOT_GAINS_AI_INPUT_KEYS` (3.5 / 1.0, the `bl = 1` words).
+- `rand()` is a deterministic stand-in (not the CRT sequence): only the
+  0.5-1.0 s re-arm spread is original. The floor 20 m / ceiling 7000 m are
+  runtime globals (zero in the image) taken from the task's reading of the
+  world setup; they are not re-read from the image.
+
+`original_stick` stays off and the default M01 follower is unchanged (the
+default probe never hits). Still needed for the hillside re-fly (#2281): the
+decoded `0x4c8f70` wired to the runtime terrain, and the world setup that
+writes `[0x71c3f0]`/`[0x71c3f4]`.
+
 Nothing here is `verified_original`.
