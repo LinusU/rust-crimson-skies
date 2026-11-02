@@ -443,3 +443,39 @@ decoded `0x4c8f70` wired to the runtime terrain, and the world setup that
 writes `[0x71c3f0]`/`[0x71c3f4]`.
 
 Nothing here is `verified_original`.
+
+### 7.5 The look-ahead is wired to the runtime colliders (task #2281)
+
+`WorldSegmentProbe` (`playtest/world_sweep.rs`) answers the latch's probe
+from the port's colliders: the same population and face rule as the
+ground-blow sweep (`target_of`, `nearest_contact`; scenery, sea tiles, other
+aircraft, never the caster). `MissionTerrainProbe` stays the injection point
+and wins when set; unset, the decision system uses the world probe, which is
+only reached when `original_stick` is on, so the default M01 follower, the
+pins and the owner-command smoke are unchanged.
+
+**This is an approximation, not the decoded query.** `0x4c8f70` walks a cell
+grid whose builder is undecoded and tests node bounds
+(`2026-11-02-ai-terrain-query-4c8f70.md` §8); the port tests the segment
+against collider faces. The 32-record cap, stop-at-first mode and the cell
+walk are not reproduced. `[0x71c3f0]`/`[0x71c3f4]` are still the task's
+20 m / 7000 m, not image-read.
+
+Re-fly of `accept_m01_wingman_stick_betty_over_the_hillside` (retail M01,
+45 s at 120 Hz, `original_stick` on, port behaviour only, not
+`verified_original`):
+
+| gains | closest | worst after 30 s | final | latched |
+| --- | --- | --- | --- | --- |
+| merged (0.6 / 0.0 / 0.15, 100 / 100 / 0.25) | 80 m | 688 m | 688 m | 741 / 5400 ticks |
+| `ai_input_*` (3.5 / 1.0) | 119 m | 4102 m | 4102 m | 4646 / 5400 ticks |
+
+The merged reading was a 662 m drift without the probe; with the world probe
+it is 688 m, so the escape climb as probed against the port's colliders does
+not recover the station. The fallback reading is latched for most of the run
+and leaves the player behind (4102 m). Neither holds station, so
+`original_stick` stays off. What is still open: the grid contents for M01
+(whether the hillside is in the original's grid), the floor/ceiling globals,
+and the stick's `+0x358 == 3` interplay with the follower's phases.
+
+Nothing here is `verified_original`.

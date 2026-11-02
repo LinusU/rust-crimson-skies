@@ -135,6 +135,7 @@ use crate::mission_session::{
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch};
 use crate::physics::{BodyMode, set_body_mode};
 use crate::playtest::scene::PlaytestOriginalFlight;
+use crate::playtest::world_sweep::{SweepColliders, WorldSegmentProbe};
 use crate::targeting::TargetingSession;
 use crate::weapons::{WeaponActorBinding, WeaponOrder, WeaponSession, WeaponTickInput};
 
@@ -703,8 +704,9 @@ pub const ESCAPE_GOAL_UP_M: f32 = 1000.0;
 
 /// The world query behind `0x4c8f70`: does the segment `from -> to` touch
 /// the world. The original's call reports a hit as a zero return with a
-/// non-zero out byte (`0x41f95b`..`0x41f96b`); the runtime wiring of the
-/// real query is a follow-up (#2281), so the latch takes it injected.
+/// non-zero out byte (`0x41f95b`..`0x41f96b`); the runtime wiring
+/// ([`WorldSegmentProbe`], #2281) is an approximation over the port's
+/// colliders, so the latch takes it injected.
 pub trait TerrainProbe {
     /// Whether the segment hits the world.
     fn hits(&self, from: Vec3, to: Vec3) -> bool;
@@ -726,7 +728,9 @@ impl<F: Fn(Vec3, Vec3) -> bool> TerrainProbe for F {
     }
 }
 
-/// The probe the mission AI uses; `None` is [`NoTerrainProbe`].
+/// An injected probe for the mission AI. `None` (the default) means the
+/// runtime colliders answer ([`WorldSegmentProbe`]); tests inject
+/// [`NoTerrainProbe`] or a closure.
 #[derive(Resource, Default)]
 pub struct MissionTerrainProbe(pub Option<Box<dyn TerrainProbe + Send + Sync>>);
 
@@ -1559,6 +1563,7 @@ impl Plugin for MissionAiPlugin {
 fn decide_mission_aircraft_ai(
     time: Res<Time>,
     probe: Res<MissionTerrainProbe>,
+    colliders: SweepColliders,
     mut report: ResMut<MissionAiReport>,
     mut orders: ResMut<MissionAiFireOrders>,
     mut aircraft: Query<(
@@ -1608,7 +1613,7 @@ fn decide_mission_aircraft_ai(
                 )
             });
 
-    for (_entity, mut ai, mut flight, position, rotation, own_velocity, script) in &mut aircraft {
+    for (entity, mut ai, mut flight, position, rotation, own_velocity, script) in &mut aircraft {
         ai.cooldown = ai.cooldown.saturating_sub(1);
         let behaviour = ai.behaviour.clone();
         let here = position.0;
@@ -1716,8 +1721,17 @@ fn decide_mission_aircraft_ai(
             Some(error) => {
                 let clock = time.elapsed_secs();
                 let rand = (ai.decisions.wrapping_mul(2_654_435_761) >> 7) as u32 & 0x7fff;
-                let noprobe = NoTerrainProbe;
-                let probe: &dyn TerrainProbe = probe.0.as_deref().unwrap_or(&noprobe);
+                // An injected probe wins; otherwise the look-ahead is
+                // answered by the runtime colliders (an approximation of
+                // `0x4c8f70`, see `WorldSegmentProbe`).
+                let world_probe = WorldSegmentProbe {
+                    colliders: &colliders,
+                    prober: entity,
+                };
+                let probe: &dyn TerrainProbe = match probe.0.as_deref() {
+                    Some(injected) => injected,
+                    None => &world_probe,
+                };
                 ai.escape.step(here, own_velocity.0, clock, rand, probe);
                 let pilot_gains = ai.pilot_gains;
                 let (goal, gains) = ai.escape.goal(error, pilot_gains);
@@ -2744,5 +2758,55 @@ mod tests {
             ai.range_m,
             (station - here).length()
         );
+    }
+
+    /// The runtime wiring of the look-ahead: a scenery collider on the
+    /// segment answers, one beside it does not, and the casting aircraft
+    /// never hits itself.
+    #[test]
+    fn accept_m01_escape_probe_world_segment_hits_scenery_not_itself() {
+        use avian3d::prelude::Collider;
+        use cs_sim::collision::CollisionLayer;
+
+        use crate::mission_session::WorldSceneryCollider;
+        use crate::physics::BodyLayer;
+
+        let mut world = World::new();
+        let hill = world
+            .spawn((
+                Collider::cuboid(100.0, 100.0, 100.0),
+                Position(Vec3::new(0.0, 0.0, -500.0)),
+                Rotation::default(),
+                BodyLayer(CollisionLayer::StaticWorld),
+                WorldSceneryCollider { node_slot: 0 },
+            ))
+            .id();
+        let prober = world
+            .spawn((
+                Collider::cuboid(100.0, 100.0, 100.0),
+                Position(Vec3::new(0.0, 0.0, -2000.0)),
+                Rotation::default(),
+                BodyLayer(CollisionLayer::StaticWorld),
+                WorldSceneryCollider { node_slot: 1 },
+            ))
+            .id();
+        let answers = world
+            .run_system_once(
+                move |colliders: crate::playtest::world_sweep::SweepColliders| {
+                    let probe = WorldSegmentProbe {
+                        colliders: &colliders,
+                        prober,
+                    };
+                    let ahead =
+                        |x: f32| probe.hits(Vec3::new(x, 0.0, 0.0), Vec3::new(x, 0.0, -520.0));
+                    (
+                        ahead(0.0),
+                        ahead(400.0),
+                        probe.hits(Vec3::new(0.0, 0.0, -1900.0), Vec3::new(0.0, 0.0, -2100.0)),
+                    )
+                },
+            )
+            .expect("system runs");
+        assert_eq!(answers, (true, false, false), "hill {hill:?}");
     }
 }

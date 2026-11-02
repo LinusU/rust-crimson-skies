@@ -174,6 +174,52 @@ pub fn ground_blow_segment(
     }
 }
 
+impl GroundBlowSegment {
+    /// The segment `from -> to` (the escape-climb look-ahead's shape,
+    /// `0x41f931`..`0x41f94a`); a zero-length segment is degenerate.
+    #[must_use]
+    pub fn between(from: Vec3, to: Vec3) -> Self {
+        let delta = to - from;
+        let length = delta.length();
+        let axis = if length > 0.0 && length.is_finite() {
+            delta / length
+        } else {
+            Vec3::ZERO
+        };
+        let wide = |v: Vec3| [f64::from(v.x), f64::from(v.y), f64::from(v.z)];
+        Self {
+            from_m: wide(from),
+            to_m: wide(to),
+            axis: wide(axis),
+            length_m: f64::from(length),
+        }
+    }
+}
+
+/// The escape-climb look-ahead `0x41f810` casts through `0x4c8f70`, answered
+/// by the same node population the ground-blow sweep reads ([`target_of`]:
+/// terrain, scenery, sea tiles and aircraft other than the prober).
+///
+/// **Approximation, not the original query**: `0x4c8f70` walks a cell grid
+/// whose builder is undecoded and tests node bounds (`2026-11-02-ai-terrain-
+/// query-4c8f70.md` section 8); this tests the segment against the port's
+/// colliders with the sweep's exact face rule. It reports a hit as the
+/// original's caller does: something was touched.
+pub struct WorldSegmentProbe<'a, 'w, 's> {
+    /// The colliders the sweep reads.
+    pub colliders: &'a SweepColliders<'w, 's>,
+    /// The aircraft casting; it never hits itself.
+    pub prober: Entity,
+}
+
+impl crate::mission_ai::TerrainProbe for WorldSegmentProbe<'_, '_, '_> {
+    fn hits(&self, from: Vec3, to: Vec3) -> bool {
+        self.colliders
+            .nearest(&GroundBlowSegment::between(from, to), self.prober)
+            .is_some()
+    }
+}
+
 /// One contact of the sweep: the facts the original's record carries that its
 /// readers use, plus the collider that answered.
 #[derive(Clone, Copy, Debug, PartialEq)]

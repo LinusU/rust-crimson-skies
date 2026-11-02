@@ -147,8 +147,9 @@ fn position_of(app: &mut App, entity: Entity) -> Vec3 {
 }
 
 /// One hillside flight of the real M01 with the ported stick law and the
-/// given pilot gains: `(spawn gap, closest, worst after 30 s, final)`.
-fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32) {
+/// given pilot gains: `(spawn gap, closest, worst after 30 s, final, ticks the
+/// escape climb was latched)`.
+fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32, u64) {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plans");
     let stage = stage_for(&root, &plan).expect("stage reads");
@@ -182,12 +183,20 @@ fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32) {
     let timestep = app.world().resource::<Time<bevy::time::Fixed>>().timestep();
     let hz = u64::from(BASELINE_FIXED_HZ);
     let (mut closest, mut worst_after) = (f32::MAX, 0.0_f32);
+    let mut climbing_ticks = 0_u64;
     for tick in 1..=45 * hz {
         *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
             TimeUpdateStrategy::ManualDuration(timestep);
         app.update();
         let gap = position_of(&mut app, betty).distance(position_of(&mut app, player));
         closest = closest.min(gap);
+        if app
+            .world()
+            .get::<MissionAircraftAi>(betty)
+            .is_some_and(|ai| ai.escape.climbing)
+        {
+            climbing_ticks += 1;
+        }
         if tick > 30 * hz {
             worst_after = worst_after.max(gap);
         }
@@ -207,7 +216,7 @@ fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32) {
     assert!(flown.original_stick && flown.follow_engaged && flown.decisions >= 45 * hz);
     assert_eq!(flown.pilot_gains, gains);
     teardown(&mut app);
-    (spawn_gap, closest, worst_after, final_gap)
+    (spawn_gap, closest, worst_after, final_gap, climbing_ticks)
 }
 
 /// Betty flies the hillside of the real M01 with the AI ground blow on and
@@ -225,10 +234,12 @@ fn accept_m01_wingman_stick_betty_over_the_hillside() {
         ),
         ("ai_input_* fallback (3.5 / 1.0)", PILOT_GAINS_AI_INPUT_KEYS),
     ] {
-        let (spawn_gap, closest, worst_after, final_gap) = fly_hillside(gains);
+        let (spawn_gap, closest, worst_after, final_gap, climbing) = fly_hillside(gains);
         println!(
             "stick law [{label}]: spawn gap {spawn_gap:.0} m, closest {closest:.0} m, \
-             worst after 30 s {worst_after:.0} m, final {final_gap:.0} m"
+             worst after 30 s {worst_after:.0} m, final {final_gap:.0} m, \
+             escape climb latched {climbing} of {} ticks",
+            45 * u64::from(BASELINE_FIXED_HZ)
         );
         assert!(worst_after.is_finite() && closest.is_finite());
     }
