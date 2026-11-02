@@ -38,6 +38,7 @@ mod campaign {
     mod f29_c_3c_extraction;
     mod f37_c_fu1;
     mod m01_ai_aircraft_damage;
+    mod m01_ai_terrain_contact;
     mod m01_ai_terrain_grid;
     mod m01_ai_terrain_query;
     mod m01_bridge_convoy_spawn;
