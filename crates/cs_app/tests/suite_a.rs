@@ -84,6 +84,7 @@ mod campaign {
     mod m01_wingman_formation;
     mod m01_wingman_gains;
     mod m01_wingman_hillside;
+    mod m01_wingman_station_goal;
     mod m01_wingman_stick;
     mod m01_world_actor_child_targets;
     mod parity2_dmg_fx_b;
