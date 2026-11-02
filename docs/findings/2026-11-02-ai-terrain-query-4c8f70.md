@@ -546,8 +546,10 @@ The dispatch is on `[obj+0x34] - 1` through the table at `0x4c9de0`
 before the switch. The call's second argument is **not a depth**: the cell
 walk passes the entry's ordinal + 1 (`inc edx; push edx` at `0x4c9357`,
 entry stride 12 at `0x4c9384`), and the child loops pass the parent's
-child count (`movsx edx, word [esi+0x56]` at `0x4c9c4c` / `0x4c9fb3`). Every
-handler opens with the same gate on it:
+child count (`movsx edx, word [esi+0x56]` at `0x4c9c4c` / `0x4c9fb3`). The
+AABB-stage handlers share this gate on it — types 5, 8 and 9 open with it,
+types 6/7 reach the same shape after their own pre-gates (§13.8), and the
+type-1 handler has no `0x4cc010` stage at all:
 
 ```asm
 004c9ae5  mov eax, dword ptr [esp + 0x18]   ; arg2
@@ -591,8 +593,9 @@ returning 0 on the first separated axis:
 (`[0x63b35c]` is a call tally like the other `0x63b2xx` counters.) The box
 layout is `min(x,y,z)` at `+0..+0xb`, `max(x,y,z)` at `+0xc..+0x17`.
 Contact on a face alone does not overlap (strict `>`), so a grazing segment
-is not a hit. The quadtree walker `0x4c9880` already uses it on the tree's
-interior boxes (`§5`); the object bounds path uses it below.
+is not a hit. Its only call site is `0x4c98a9`, inside the quadtree walker
+`0x4c9880` (`§5`); the object bounds path inlines the same compares inside
+`0x4cc010` instead of calling it (§13.4).
 
 ### 13.4 `0x4cc010`: which bounds the object is tested against
 
@@ -618,25 +621,46 @@ and which form it takes:
   corners transformed by the current matrix stack — for objects whose
   flag word already carries `0x20` (the "box suffices" bit) it still
   measures the full transformed box.
-* Both feed `0x4cbf80`; nonzero return rejects the node (`0x4c9ddb`).
+* The overlap test itself is **inlined** in `0x4cc010` — an image-wide
+  `e8`/`e9` scan shows no call edge from `0x4cc010` (or either provider)
+  to `0x4cbf80`, whose only caller is the quadtree walker at `0x4c98a9`.
+  A seven-count loop (`mov edx, 7` at `0x4cc093`, `add ecx, 0xc; dec edx;
+  jnz` at `0x4cc112`) first merges the returned box componentwise against
+  a second stack box — the min/max selects look like an intersection or
+  clamp; which operand is which is not decoded — and then runs the same
+  strict `fcomp` shape `0x4cbf80` uses: six comparisons of the merged box
+  against the segment globals `0x71e8d0`..`0x71e8e4`
+  (`0x4cc11e`..`0x4cc1b6`), `return 1` on the first separated axis.
+* For flag-`0x20` objects whose box overlaps, `0x4cc010` additionally
+  calls `0x55d270(&local_box, rec = [0x71e9f4], &seg_start, &seg_end)` at
+  `0x4cc1da` — a segment-vs-box contact writer that clears `rec+0x20`
+  (the surface word; a box face has no material) and copies the box into
+  the same `0xa05e84` scratch the triangle tester uses. Nonzero returns
+  `0`; zero rejects. `0x20`-clear objects skip that call (`test byte
+  [esi+0x24], 0x20; je` at `0x4cc1be`) and return `0` so the caller can
+  run the exact test.
 
 So the broad phase is a world-space **AABB overlap**, optionally of the
-transformed corner box — never a sphere and never a heightfield.
+transformed corner box — never a sphere and never a heightfield — and a
+flag-`0x20` object's hit record comes from an exact segment-vs-box test
+inside `0x4cc010`, not from the AABB alone.
 
 ### 13.5 Type 5 end to end (`0x4c9adf`..`0x4c9c71`)
 
 Putting the case together (`static`):
 
 1. `arg2 > 1` or flag `0x20` → `0x4cc010`; reject on nonzero.
-2. Flag `0x20` set → `0x4c7f50(obj)` records the node on the AABB alone,
-   return 0.
+2. Flag `0x20` set → `0x4c7f50(obj)` completes a record the box test
+   inside `0x4cc010` already filled (§13.4) — no triangle test — return 0.
 3. Flag `0x20` clear → `edi = [obj+0x38]` (the node's data record). If
    `[edi]` bit 8 is set the transform stage is skipped (`ebp = 0`, no pop
    owed). Otherwise a transform level is pushed, with `[obj+0x24]` bit
    `0x80000` selecting the form: bit clear → `0x539270(edi + 0x60)` +
    `0x53a3c0(edi + 0x30, 3)`; bit set and `[edi]` bit `0x20` set →
    `0x539270(edi + 0x60)` + `0x53a3c0(edi + 0x30, 1)` followed by a
-   consume-once clear of `[edi]` bit `0x20` (`0x4c9b55`..`0x4c9b5e`);
+   consume-once clear of `[edi]` bit `0x20` that runs only when `[edi]`
+   bit `0x01` is also clear (`test al, 0x01; jnz` skips the
+   `and eax, ~0x20; mov [edi], eax` at `0x4c9b55`..`0x4c9b5e`);
    bit set and `[edi]` bit `0x20` clear → the stored matrix is pushed
    directly (flag word `0`, matrix pointer `edi + 0x60`,
    `0x4c9b60`..`0x4c9b85`). `0x539270` pushes a (flag, matrix-pointer)
@@ -787,9 +811,12 @@ hillside path and stays **unknown**):
 | `+0x00..+0x0b` | `0x55d6c0`/`0x55db90`, normalised by `0x422690` | unit contact normal, world space when a transform is stacked |
 | `+0x0c..+0x17` | `0x55d6c0`/`0x55db90` | world contact point |
 | `+0x18..+0x1f` | — | unknown (no writer measured on this path) |
-| `+0x20` | `0x55c9c0` | `[[group+0x14]]` — the surface/material word |
+| `+0x20` | `0x55c9c0` on a triangle hit; `0x55d270` writes `0` on a box-suffices hit | `[[group+0x14]]` — the surface/material word, `0` for a box face |
 | `+0x24` | `0x4c7f50` (or its inline copy) | the object node |
 | `+0x28` | `0x4c7f50` (or its inline copy) | owner word: `[obj+0x40]`; when the node carries flag `0x200000` the code walks `parent_array[0]` up while the current node keeps the bit, has `[+0x40] == 0` and has a parent, and records the `[+0x40]` of where it stops (`0x4c9e68`..`0x4c9e8a`) |
+
+On the box-suffices path (`0x55d270`, §13.4) the same slots are filled
+from the box test instead of the polygon testers.
 
 `0x41f810` reads **only** the count byte `buf[0]` (and the query's return):
 the record fields exist for other callers. The escape latch cannot see the
@@ -835,6 +862,7 @@ candidates at all (§11). Nothing here changes `original_stick`.
 | --- | --- | --- |
 | `rec+0x18..+0x1f` writers | other callers of the same query | instrument or decode a consumer |
 | `0x53dfc0` mode argument / full transform-stack semantics of `0x539270`/`0x53a3c0` | exact space the test runs in for nested nodes | decode the matrix-stack helpers |
+| the `0x4cc010` merge pass's second operand; `0x55d270`'s record fields beyond `+0x20 = 0` | box-suffices hit records | decode the helper and the merge operands |
 | the runtime patch that turns `mesh_index` into `[obj+0x3c]` | certainty that `g28604`'s pointer is null | `gClsReadNode` / loader fixup |
 | `[0x71e8ac]`/`[0x71e8b4]`/`[0x9be6f8]` defaults | non-follower calls | their setters, as before |
 | `0x4c8ec0` (the sibling entry point `0x5b0520` wraps) | the other query mode | separate decode |
