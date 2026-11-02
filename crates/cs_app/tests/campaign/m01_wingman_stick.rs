@@ -290,3 +290,34 @@ fn accept_m01_escape_latch_constants_match_the_image() {
     // The clock the timer rides on: [0x71c470] += [0x9ad744] at 0x4897cb.
     window(0x4897cb, &[0xd9, 0x05, 0x70, 0xc4, 0x71, 0x00]);
 }
+
+/// The escape-climb ceiling is the image's word: `0x474151` stores
+/// `0x45fa0000` (8000.0) into `[0x71c3f4]` and `0x47415b` stores 20.0 into
+/// `[0x71c3f0]` (`docs/findings/2026-11-02-ai-terrain-query-4c8f70.md`
+/// section 10).
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m01_escape_probe_grid_ceiling_is_the_image_word() {
+    use cs_app::mission_ai::{ESCAPE_WORLD_CEILING_M, ESCAPE_WORLD_FLOOR_M};
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let at = |va: u64| usize::try_from(va - 0x40_0000).expect("image offset");
+    let window = |va: u64, bytes: &[u8]| {
+        assert_eq!(
+            &loaded.bytes[at(va)..at(va) + bytes.len()],
+            bytes,
+            "window at {va:#x}"
+        );
+    };
+    // mov dword [0x71c3f4], 0x45fa0000 ; mov dword [0x71c3f0], 0x41a00000
+    window(
+        0x47_4151,
+        &[0xc7, 0x05, 0xf4, 0xc3, 0x71, 0x00, 0x00, 0x00, 0xfa, 0x45],
+    );
+    window(
+        0x47_415b,
+        &[0xc7, 0x05, 0xf0, 0xc3, 0x71, 0x00, 0x00, 0x00, 0xa0, 0x41],
+    );
+    assert_eq!(ESCAPE_WORLD_CEILING_M.to_bits(), 0x45fa_0000);
+    assert_eq!(ESCAPE_WORLD_CEILING_M, 8000.0);
+    assert_eq!(ESCAPE_WORLD_FLOOR_M.to_bits(), 0x41a0_0000);
+}

@@ -690,9 +690,10 @@ pub const M01_WINGMAN_PILOT_GAINS: PilotInputGains = PILOT_GAINS_SPAWN_WORDS;
 /// (#2280), not re-read from the image.
 pub const ESCAPE_WORLD_FLOOR_M: f32 = 20.0;
 /// **Measured (static)**: the world ceiling above which the look-ahead is
-/// skipped and the latch clears (`[0x71c3f4]`, `0x41f83e`); same provenance
-/// as [`ESCAPE_WORLD_FLOOR_M`].
-pub const ESCAPE_WORLD_CEILING_M: f32 = 7000.0;
+/// skipped and the latch clears (`[0x71c3f4]`, `0x41f83e`). The world setup
+/// stores `0x45fa0000` (8000.0) there at `0x474151` (#2290, finding section
+/// 10); pinned by `accept_m01_escape_probe_grid_ceiling_is_the_image_word`.
+pub const ESCAPE_WORLD_CEILING_M: f32 = 8000.0;
 /// **Measured (static)**: the look-ahead multiplier on the velocity
 /// (`0x603644` = `0x40900000`, `0x41f8b5`..`0x41f8d9`).
 pub const ESCAPE_LOOKAHEAD_S: f32 = 4.5;
@@ -2048,7 +2049,7 @@ mod tests {
         let mut latch = EscapeClimbLatch::default();
         assert!(latch.step(Vec3::new(0.0, 10.0, 0.0), fast, 0.0, 0, &miss));
         // Above the ceiling: cleared without asking the probe.
-        assert!(!latch.step(Vec3::new(0.0, 7000.0, 0.0), fast, 0.0, 0, &hit));
+        assert!(!latch.step(Vec3::new(0.0, 8000.0, 0.0), fast, 0.0, 0, &hit));
         // Between: a hit latches, a miss clears.
         let mid = Vec3::new(0.0, 500.0, 0.0);
         assert!(latch.step(mid, fast, 0.0, 0, &hit));
