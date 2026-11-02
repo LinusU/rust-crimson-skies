@@ -80,6 +80,7 @@ mod campaign {
     mod m01_window_fire;
     mod m01_window_world_draw;
     mod m01_window_world_import;
+    mod m01_wingman_callsite;
     mod m01_wingman_formation;
     mod m01_wingman_gains;
     mod m01_wingman_hillside;
