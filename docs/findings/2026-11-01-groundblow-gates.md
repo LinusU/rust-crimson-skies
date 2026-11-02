@@ -137,10 +137,20 @@ The "Not wired" item above is wired (static, `OWNER-STATIC-2026-10-29`):
 `collision_grace::sweep_skipped` is `now < V+0xac`, and the player's terrain
 contact judge (`fatal_contact::judge_terrain_contacts`) and the aircraft
 contact writer skip a vehicle inside its grace (`0x48d7fd`). A contact
-between two vehicles both inside their grace is not seen and does not renew
-it; one vehicle outside its grace still sees it and renews both. Pins:
+renews the grace only while a vehicle whose step can write it sees it: the
+sweep is blind inside that vehicle's own grace, and the response writes
+nothing when the stepping vehicle is the player (`0x48d2ed`, "Settled by
+#2255"), so a fresh player meeting a still-graced AI renews nothing while
+an ungraced AI renews both vehicles of the pair. Pins:
 `accept_sweep_grace_skip_*`. Only the player and class 0/4 aircraft pairs
 have a port consumer; other contact reactions are unported.
+
+Limit (affected content: a sustained aircraft contact that straddles the
+deadline; no resolving task yet): `ContactReports` reports a pair once per
+contact episode, so a contact whose start met only blind sweeps — or that
+outlives the deadline while still touching — is never re-seen. The
+original's per-tick sweep would find it again on the first tick after the
+grace ends.
 
 ## Wired by #2252 (`V+0x358`)
 

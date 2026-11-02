@@ -311,13 +311,24 @@ fn accept_sweep_grace_skip_contact_between_two_vehicles_in_grace_is_not_seen() {
 }
 
 #[test]
-fn accept_sweep_grace_skip_one_vehicle_outside_its_grace_still_sees_the_contact() {
+fn accept_sweep_grace_skip_an_ungraced_ai_sees_the_contact_and_renews_both() {
     let far = 1.0e6;
-    let scene = scene_with_graces(Some(far), None);
+    let scene = scene_with_graces(None, Some(far));
     let dt_s = fixed_timestep_s(&scene.app);
     let ai_until = grace(&scene.app, scene.ai).expect("the AI has a grace");
     let player_until = grace(&scene.app, scene.player).expect("the player got one");
     assert_eq!(ai_until, player_until);
     assert!(ai_until < far);
     assert!(ai_until - COLLISION_GRACE_S >= dt_s);
+}
+
+/// The response writes nothing when the stepping vehicle is the player
+/// (`0x48d2ed`), so a contact only the player is free to see renews nothing:
+/// the graced AI keeps its old deadline and the player stays ungraced.
+#[test]
+fn accept_sweep_grace_skip_only_the_player_outside_its_grace_writes_nothing() {
+    let far = 1.0e6;
+    let scene = scene_with_graces(Some(far), None);
+    assert_eq!(grace(&scene.app, scene.ai), Some(far));
+    assert_eq!(grace(&scene.app, scene.player), None);
 }

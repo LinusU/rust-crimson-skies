@@ -15,7 +15,7 @@
 //! clock, so the driver hands it the session time and the deadline
 //! ([`overlay_collision_grace`]).
 
-use bevy::prelude::{Commands, Component, Fixed, Query, Res, Time, With};
+use bevy::prelude::{Commands, Component, Fixed, Query, Res, Time};
 use cs_sim::collision::{CollisionLayer, ContactKind};
 use cs_sim::flight::original::OriginalInput;
 
@@ -52,14 +52,17 @@ pub fn sweep_skipped(grace: Option<&CollisionGrace>, now_s: f64) -> bool {
 }
 
 /// Writes [`CollisionGrace`] on both aircraft of every aircraft-into-aircraft
-/// contact reported this tick. A contact is found by either vehicle's own
-/// sweep, so one whose two vehicles are both inside their grace is not seen
-/// and does not renew it.
+/// contact reported this tick. A contact renews the grace only while a
+/// vehicle whose step can write it sees it: the sweep does not run inside
+/// that vehicle's own grace (`0x48d7fd`), and the response writes nothing
+/// when the stepping vehicle is the player (`0x48d2ed`). A fresh player
+/// meeting a still-graced AI therefore renews nothing, while an ungraced AI
+/// renews both vehicles of the pair.
 pub fn write_collision_grace(
     reports: Res<ContactReports>,
     ledger: Res<PhysicsTickLedger>,
     time: Res<Time<Fixed>>,
-    flights: Query<(), With<PlaytestOriginalFlight>>,
+    flights: Query<&PlaytestOriginalFlight>,
     graces: Query<&CollisionGrace>,
     mut commands: Commands,
 ) {
@@ -72,11 +75,11 @@ pub fn write_collision_grace(
             continue;
         }
         let now_s = session_time_s(report.tick, time.timestep().as_secs_f64());
-        if report
-            .bodies
-            .iter()
-            .all(|body| sweep_skipped(graces.get(*body).ok(), now_s))
-        {
+        let seen = report.bodies.iter().any(|body| {
+            flights.get(*body).is_ok_and(|flight| !flight.is_player)
+                && !sweep_skipped(graces.get(*body).ok(), now_s)
+        });
+        if !seen {
             continue;
         }
         let until_s = now_s + COLLISION_GRACE_S;
