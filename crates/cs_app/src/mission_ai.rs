@@ -562,6 +562,175 @@ pub fn pursuit_command(orientation: Quat, to_target: Vec3, throttle: f64) -> Fli
     .expect("every term is finite and the axes are clamped")
 }
 
+/// **Measured (static)**: the stick thresholds `params[2]` and `params[3]`
+/// (`0x61fb30`, `0x61fb34`, rows `follow_params_2`/`follow_params_3`).
+pub const STICK_AIM_THRESHOLD: f32 = 0.06;
+
+/// **Measured (static)**: `params[6]`, the aim magnitude from which a target
+/// below the wings is flown with a full-scale roll (`0x61fb40`, row
+/// `follow_params_6`).
+pub const STICK_COARSE_FULL_ROLL_MIN: f32 = 0.35;
+
+/// **Measured (static)**: the wings-level assist runs only while the nose's
+/// vertical component is below this (`0x603500`, a double).
+pub const STICK_LEVEL_FORWARD_Y_MAX: f32 = 0.9;
+
+/// **Measured (static)**: the wings-level assist's multiplier (`0x6034fc`).
+pub const STICK_LEVEL_GAIN: f32 = 0.2;
+
+/// **Measured (static)**: the dive recovery runs while the nose's vertical
+/// component is below this (`0x6034f8`) and the speed below
+/// [`FOLLOW_SPEED_BAND_M_S`].
+pub const STICK_RECOVER_FORWARD_Y_MAX: f32 = -0.5;
+
+/// **Unmeasured, designed**: the original compares the aim magnitude with the
+/// definition word `def+0x260` to choose the fine-aim branch (`0x41bc83`).
+/// The normalised magnitude is 1.0 whenever the goal is ahead, so the branch
+/// is taken ahead only if the word is at least 1. Nothing in the evidence at
+/// hand gives the word's value, so this crate flies the coarse branch
+/// (`0.0`); [`wingman_stick`] takes the value as a parameter so the other
+/// reading can be flown and reported.
+pub const STICK_FINE_AIM_LIMIT: f32 = 0.0;
+
+/// The three stick words `0x41b560` writes: `vehicle+0x100`, `+0x108`,
+/// `+0x10c`, copied to `+0x114`, `+0x11c`, `+0x120` (`0x41c01e`..), which the
+/// force block reads as roll, pitch and yaw (`0x48caea`, `0x48cb07`,
+/// `0x48cbb7`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StickWords {
+    /// `+0x100`, the roll word.
+    pub a100: f32,
+    /// `+0x108`, the pitch word.
+    pub a108: f32,
+    /// `+0x10c`, the yaw word.
+    pub a10c: f32,
+    /// The dive recovery also sets the throttle target to `params[1]`.
+    pub recover_throttle: bool,
+}
+
+impl StickWords {
+    /// The flight input these words drive.
+    ///
+    /// **Designed signs**: the basis-row signs are unmeasured (finding
+    /// `2026-10-18-m01-wingman-player-leader.md` §2). Reading the rows as
+    /// right/up/nose, the decoded law is only self-consistent (a target to
+    /// the right and above gets `-bx` on `+0x100`, the wings-level assist
+    /// pushes `-row0.y` there) if a positive roll word is a roll to the
+    /// *left*, so [`FlightInput::roll`] (positive right-wing-down) takes the
+    /// negated word. Pitch (`by`, positive nose-up) and yaw (`-bx`, positive
+    /// nose-left) pass through. The pilot gains `+0x8c4..` and limits
+    /// `+0x8d4..` are unmeasured: gain 1, limit 1 (the axis range).
+    #[must_use]
+    pub fn flight_input(self, throttle: f64) -> FlightInput {
+        FlightInput::clamped(
+            f64::from(self.a108),
+            f64::from(-self.a100),
+            f64::from(self.a10c),
+            throttle,
+            false,
+        )
+        .expect("every term is finite and the axes are clamped")
+    }
+}
+
+/// **The measured stick law** of `0x41b560` for the follower (both `bool`
+/// arguments clear), `0x41bc08`..`0x41be47`.
+///
+/// `body` is `(bx, by, bz)`: the goal delta projected on the follower's
+/// own basis rows `(Δ·row0, Δ·row1, Δ·row2)` (`0x41ba2e`..). `rows` are the
+/// three world-space rows (`vehicle+0x180/0x18c/0x198`) and `speed` is
+/// `vehicle+0x934`. `fine_aim_limit` is the unmeasured `def+0x260`.
+///
+/// Not ported (unmeasured): the goal-`y` clamp to `+0x314`/`[0x71c3f0]`, the
+/// 80 m push, the pilot gains and limits (see [`StickWords::flight_input`]).
+#[must_use]
+pub fn wingman_stick(body: Vec3, rows: [Vec3; 3], speed: f32, fine_aim_limit: f32) -> StickWords {
+    let (mut bx, mut by, bz) = (body.x, body.y, body.z);
+    let mut m = bx.hypot(by);
+    // 1. Normalise when ahead (0x41bc28).
+    if bz > 0.0 {
+        if m == 0.0 {
+            by = 1.0;
+        } else {
+            bx *= 1.0 / m;
+            by *= 1.0 / m;
+        }
+        m = 1.0;
+    }
+    let mut a100: f32;
+    let mut a108 = 0.0_f32;
+    let mut a10c = 0.0_f32;
+    if m <= fine_aim_limit && bx.abs() > by.abs() {
+        // 3. Fine aim (0x41bc90).
+        if bx < 0.0 {
+            by = -by;
+        }
+        a100 = by;
+        if by.abs() < STICK_AIM_THRESHOLD {
+            a10c = -bx;
+        }
+    } else {
+        // 4. Coarse (0x41bcea).
+        if by < 0.0 {
+            if m >= STICK_COARSE_FULL_ROLL_MIN {
+                bx = if bx < 0.0 { -1.0 } else { 1.0 };
+            } else {
+                bx = -bx;
+            }
+        }
+        a100 = -bx;
+        if bx.abs() < STICK_AIM_THRESHOLD {
+            a108 = by;
+        }
+    }
+    let [row0, row1, row2] = rows;
+    // 5. Wings-level assist (0x41bd5c).
+    if bx.abs() < STICK_AIM_THRESHOLD
+        && by.abs() < STICK_AIM_THRESHOLD
+        && row2.y.abs() < STICK_LEVEL_FORWARD_Y_MAX
+    {
+        a100 = if row1.x < 0.0 {
+            if row0.y < 0.0 { 1.0 } else { -1.0 }
+        } else {
+            -row0.y
+        } * STICK_LEVEL_GAIN;
+    }
+    // 6. Dive / stall recovery (0x41bdef).
+    let recover = row2.y < STICK_RECOVER_FORWARD_Y_MAX && speed < FOLLOW_SPEED_BAND_M_S;
+    if recover {
+        a108 = if row1.x < 0.0 { 1.0 } else { -1.0 };
+    }
+    // 7. The pilot gains and limits are unmeasured: 1 and 1.
+    StickWords {
+        a100: a100.clamp(-1.0, 1.0),
+        a108: a108.clamp(-1.0, 1.0),
+        a10c: a10c.clamp(-1.0, 1.0),
+        recover_throttle: recover,
+    }
+}
+
+/// [`wingman_stick`] for an aircraft at `orientation` flying toward the
+/// world-space goal delta `to_goal`, with this crate's right/up/nose rows.
+#[must_use]
+pub fn wingman_stick_command(
+    orientation: Quat,
+    to_goal: Vec3,
+    speed: f32,
+    fine_aim_limit: f32,
+) -> StickWords {
+    let rows = [
+        orientation * Vec3::X,
+        orientation * Vec3::Y,
+        orientation * Vec3::NEG_Z,
+    ];
+    let body = Vec3::new(
+        to_goal.dot(rows[0]),
+        to_goal.dot(rows[1]),
+        to_goal.dot(rows[2]),
+    );
+    wingman_stick(body, rows, speed, fine_aim_limit)
+}
+
 /// The world-space point a wingman holds: the leader's position plus the
 /// measured [`STATION_OFFSET_M`] in the leader's own body frame (so `+Z` is
 /// astern and the station sits behind the leader).
@@ -1221,6 +1390,9 @@ fn decide_mission_aircraft_ai(
         let here = position.0;
         let orientation = rotation.0;
         let nose = orientation * Vec3::NEG_Z;
+        // Set only where a mode-4 follower flies its station: the measured
+        // stick law (`wingman_stick`) replaces the designed pursuit command.
+        let mut stick_goal: Option<Vec3> = None;
         let (aim, throttle, aim_point) = match behaviour {
             MissionAiBehaviour::Asleep => continue,
             MissionAiBehaviour::Pursue { ref target } => {
@@ -1301,6 +1473,7 @@ fn decide_mission_aircraft_ai(
                                 1.0 / f64::from(crate::physics::BASELINE_FIXED_HZ),
                             );
                             let throttle = ai.throttle_target.min(1.0);
+                            stick_goal = Some(error);
                             (error, throttle, Some(station))
                         }
                     }
@@ -1313,7 +1486,25 @@ fn decide_mission_aircraft_ai(
             }
             MissionAiBehaviour::HoldCourse => (hold_course_direction(nose), START_THROTTLE, None),
         };
-        flight.command = pursuit_command(orientation, aim, throttle);
+        flight.command = match stick_goal {
+            Some(goal) => {
+                let words = wingman_stick_command(
+                    orientation,
+                    goal,
+                    own_velocity.0.length(),
+                    STICK_FINE_AIM_LIMIT,
+                );
+                if words.recover_throttle {
+                    ai.throttle_target = FOLLOW_THROTTLE_MAX;
+                }
+                words.flight_input(if words.recover_throttle {
+                    FOLLOW_THROTTLE_MAX.min(1.0)
+                } else {
+                    throttle
+                })
+            }
+            None => pursuit_command(orientation, aim, throttle),
+        };
         ai.range_m = aim_point.map_or(f32::NAN, |point| (point - here).length());
         ai.decisions += 1;
         report.decisions += 1;
