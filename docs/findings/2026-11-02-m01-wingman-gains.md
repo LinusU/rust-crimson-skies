@@ -639,4 +639,146 @@ authority, the slot signs, the 80 m push direction and the force model.
 | launch speed of Betty at tick 1 | how long phase 0 lasts | the vehicle's launch velocity setup |
 | `0x4679cf`/`0x468e1d` stores | completeness of the writer list | classify the two functions |
 
+The last two rows are resolved in §9: neither store writes the phase word (they
+write an objective record), so the writer list of §8.2 is complete, and
+`[0x64f66e]` is the engine's debug `suspend` latch, which no M01 data sets.
+
 Nothing here is `verified_original`.
+
+## 9. The last two `[+0xd8]` stores are the objectives loader, and `[0x64f66e]` is the engine's `suspend` latch (task #2294)
+
+Static reads of the owner image (`llvm-objdump -d -M intel`) and retail
+`ZBD/C3/M01/zrdr.zbd`; claim id `OWNER-STATIC-2026-10-29`, nothing
+`verified_original`. `accept_m01_wingman_phase_writers_` (image/retail-gated)
+re-reads every window below. Implementer `deepseek-1`.
+
+§8 left two `[+0xd8]` stores unclassified and the `[0x64f66e]` gate open. Both
+resolve from the image; **neither changes the phase sequence of §8.2**, and the
+port is unchanged.
+
+### 9.1 `0x4679cf` and `0x468e1d` write an objective record's `hide_obj`, not the phase word
+
+The enclosing function is `0x466b70`..`0x469063` — one member (`ecx` = `this`,
+SEH frame, `ret 4`) of `mission.cpp`: `push -0x1; push 0x5ff49f; … ; sub
+esp,0xec; push ebx; push ebp; push esi; mov ebx,ecx` (`0x466b70`), the document
+opened **by name** from the stack argument (`mov esi,[esp+0x10c]` at
+`0x466bee`, `call 0x579c60` at `0x466bf8`), failure logging
+`"Failed to read %s"` (`0x625ee4` pushed at `0x466c0b`, `mission.cpp` text
+`0x626128` at `0x466c15`), and every key it parses is an objective directive
+(`TICK_DEPENDS_ON_OBJ` `0x6260cc` pushed `0x4679e1`, `WAKE_OBJECTIVE_WHEN_I_SLEEP`
+`0x6269c0` at `0x468dc5`, `HIDE_OBJ` `0x6269dc` at `0x468dfd`, `TIMER_ADJUST`
+`0x6269e8` at `0x468e66`, …). Both callers pass the name:
+`"objectives.zrd"` (`0x625cf8`) at `0x4647ba`/`call 0x4647c4` (inside
+`CZMission::Load`) and `"objectives.zrd"` (`0x625e2c`) at `0x46557b`/`call
+0x465582` (the mission re-start).
+
+Each numbered block is one record in the array `[this+0xc4c]`:
+
+| window | effect |
+| --- | --- |
+| `0x467956` `mov ecx,[edi+0xc4c]` | the array base |
+| `0x46795c`..`0x467967` `lea edx,[eax+2*eax]; shl edx,4; sub edx,eax; lea eax,[eax+8*edx]; shl eax,2` | byte stride `0x5e4` (377·4) |
+| `0x46796c` `call [0xa20338]` / `0x467972` `mov [edi+0xc4c],eax` | `realloc(base, 0x5e4·n)`, new base stored |
+| `0x46798e` `mov ecx,0x179; mov edi,ebp; rep stosd` | the record zeroed (377 dwords = `0x5e4`) |
+| `0x467983` `lea ebp,[eax+4*ecx]` | `ebp` = record base (`ecx` = 377·index) |
+| `0x469043` `mov [eax+0xc48],edx` | the block count |
+
+That record layout is the one `2026-10-09-m02-b-fu3-out-of-range-wake-address.md`
+already measured (one `0x5e4`-byte record per numbered block, allocated at
+`0x467956`), and `2026-10-06-m01-lc-directive-a-objective-directive-parser.md`
+already names `+0xd8` `HIDE_OBJ` and `+0xdc`
+`WAKE_OBJECTIVE_WHEN_I_SLEEP`. The two contested stores are therefore not
+writers of any vehicle field:
+
+| site | bytes | writes |
+| --- | --- | --- |
+| `0x4679cf` | `89 9d d8 00 00 00` `mov [ebp+0xd8], ebx` with `ebx = -1` (`83 cb ff` at `0x467953`) | the per-record default `hide_obj = -1`, inside the initialiser that also sets `+0x558 = 1` (`0x467997`) and `+0x580 = -1` (`0x4679db`) |
+| `0x468e1d` | `89 85 d8 00 00 00` `mov [ebp+0xd8], eax`, `eax = [edx+0xc] - 1` (`0x468e19`/`0x468e1c`) | the `HIDE_OBJ` key's value minus one, in the `HIDE_OBJ` handler |
+| `0x468e25` | `89 bd d8 00 00 00` `mov [ebp+0xd8], edi` (`edi = 0`) | the same key's **absent** branch |
+
+The `-1` default is overwritten on the straight-line path (the `HIDE_OBJ`
+lookup always runs and takes one of the two branches above). The store at
+`0x468e03` (`89 bc b5 d8 00 00 00`) is **not** a `+0xd8` write: its address is
+`ebp + 0xdc + 4·esi`, the `0` terminator of the `+0xdc` sleep-wake list.
+
+**Completeness.** A scan of `.text` for `mov dword ptr [reg+0xd8], r32` (mod 10,
+no SIB) finds 28 sites; those inside the loader are exactly the three above, all
+`[ebp+…]`, and those inside the AI code `0x41c270..0x4222ff` are exactly §8.2's
+six `[esi+…]` phase-word stores (plus the constructor's `0x4b05a3` elsewhere).
+The loader contains **no** `[esi+0xd8]` store. The record is `0x5e4` bytes and
+so has no `+0x948`/`+0x94c`/`+0x934`, while the object whose phase machine reads
+`+0xd8` has all three: the record cannot be that object.
+
+### 9.2 `[0x64f66e]` is the debug `suspend` latch — four writers, 28 readers, no phase reader
+
+A scan of `.text` for the four immediate bytes finds 32 references: **4
+writers** and 28 readers. This **corrects** §8's list, which named three
+writers and missed the automatic one.
+
+| site | bytes | effect |
+| --- | --- | --- |
+| `0x43db4d` | `a2 6e f6 64 00` `mov [0x64f66e], al` | the debug console command `suspend <bool>`: the dispatcher `0x43d640` (entered from the `execute(text)` wrapper `0x45cdf0`, `call 0x43d640` at `0x45cdf5`) matches the 8-byte key `"suspend"` (`0x622c7c`, between `gbc` `0x622c84`, `exit` `0x622c88`, `debug` `0x622c90` and the cheats `gimme` `0x622cf8`), reads the boolean with `0x5b7910(this,0)` (`0x43db46`), stores it (`0x43db4d`), and on **false** resets the deadline `[0x622bb8] = 1e9` (`0x43db5a`) |
+| `0x4a0252` | `c6 05 6e f6 64 00 01` `mov [0x64f66e], 1` | automatic: the per-frame routine `0x4a0220` sets it when the counter has reached the deadline — `mov eax,[0x9be6f8]` (`0x4a023e`), `cmp eax,[0x622bb8]` (`0x4a0247`), `jb` past (`0x4a0250`) |
+| `0x464693` | `c6 05 6e f6 64 00 00` | the mission load clears it and re-arms `[0x622bb8] = [0x622bb4] + [0x9be6f8]` (`0x464680`..`0x46469a`, in `CZMission::Load` — the surrounding text is `Begin CZMission::Load`/`Load Mission Sounds`) |
+| `0x4654fa` | `c6 05 6e f6 64 00 00` | the mission (re)start `0x4654e0` clears it, resets the sim clock `[0x71c470] = 0` (`0x4654f0`) and re-arms the same way |
+
+`[0x622bb4]` is the command line's `-suspend <n>` argument (`-suspend` text
+`0x62991c` compared in the option parser at `0x4a76c3`, stored at `0x4a76ee`);
+`[0x9be6f8]` is a counter incremented by one in `0x5a8550` (`inc eax` at
+`0x5a857b`). **Both globals start at `0x3b9aca00` (1e9)** — the "never"
+sentinel. An ordinary launch passes no `-suspend`, so the latch stays 0 for the
+whole session; `0x4a0252` only fires if the switch armed a deadline that
+elapses.
+
+The 28 readers, by region: six in the AI code (`0x41d9f9`, `0x41db73`,
+`0x41dec4`, `0x41e674`, `0x41f060`, `0x41fe1e`), eleven in the aircraft /
+AI-object tick region (`0x489ac4`, `0x48a12f`, `0x48b4ae`, `0x48b530`,
+`0x48b5b4`, `0x48c3fa`, `0x48d2db`, `0x48e632`, `0x48e6df`, `0x48e7e3`,
+`0x48ea74`), one at `0x452684`, and ten in the `0x4aad40`..`0x4bf716` region.
+The six AI readers each skip a **timer-driven** agent transition (the sleeps,
+re-arms and stun latches) and never the phase machine; the twenty-two outside
+the AI code are timer gates elsewhere in the tick and are not decoded further
+here. The two that bear on the follower:
+
+* `0x41fe1e`/`0x41fe35` — the whole upkeep `0x41fe10` returns before the scorer
+  and before `0x41f9c0`, so the target handle `+0x948` is **not** rebuilt while
+  suspended;
+* `0x489ac4`/`0x489acb` — the vehicle update skips the stun-recovery clear
+  `+0x358 = 0` (the `[esi+0xc0]` timer).
+
+**In the phase 0 -> 1 transition, the latch gates nothing.** No reader lies in
+`0x41e760..0x41f00a`: the follower routine, its two 5-entry phase tables and the
+0/2/4 -> 1 join (`0x41e834`..`0x41ea62`) run while suspended, and the transition's
+three gates are read directly (leader awake `[edi+0x91d]` at `0x41e834`, gap²
+against `490000` `0x6035e0`, own speed against `20.576` `0x603594` at
+`0x41e869`). What changes while the latch is set is phase 0's *goal* (no rebuilt
+handle ⇒ no target ⇒ leader + 200 m) and the shooting solution after the
+station call.
+
+### 9.3 What M01 reaches in its first 45 s
+
+* **The two stores run before the first tick**, because `objectives.zrd` is
+  loaded by `0x4647c4` at mission load, and the loader writes `+0xd8` for every
+  numbered block. They touch objective records only; the phase word is
+  untouched (§9.1).
+* **M01 declares neither key.** `ZBD/C3/M01/zrdr.zbd`'s `objectives.zrd` has 39
+  `OBJECTIVE<n>` blocks (the count the win-route census uses) and **no
+  `HIDE_OBJ` and no `WAKE_OBJECTIVE_WHEN_I_SLEEP`** (`TICK_DEPENDS_ON_OBJ`, 2,
+  and `NAP_OBJECTIVE_WHEN_I_COMPLETE`, 12, are present as positive controls).
+  So every M01 block takes the absent branches: `hide_obj` is left at 0 and the
+  sleep-wake list at `+0xdc` is empty. What a stored 0 means to the wake walk is
+  not decided here and does not matter for M01, which never reaches the key.
+* **M01's data cannot set `[0x64f66e]`.** Its four writers are the console
+  command, the `-suspend` deadline and the two mission-lifecycle clears; none
+  is in the objectives loader or the AI code. The exact runtime state that would
+  set it is a debug/cheat input: the `-suspend <n>` command-line switch whose
+  counter expires, or `suspend on` in the console. With neither, M01's first
+  45 s runs with the latch 0, the upkeep runs every AI step, and §8.2's sequence
+  (phase 0 -> 1 inside the first second, then 1) stands.
+
+Nothing here is `verified_original`.
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| the unit of `[0x9be6f8]` (a per-call `inc` in `0x5a8550`, not the float clock `[0x9ad744]`) | how long the debug `-suspend <n>` switch delays the freeze; no product behaviour depends on it | the caller chain of `0x5a8550` (fixed step vs frame) |
+| what a stored `hide_obj` of `0` means to the objective wake walk | the semantics of the absent-`HIDE_OBJ` branch; **no M01 block reaches it** (it declares no `HIDE_OBJ`) | the walk's `+0xd8` consumer, owned by the objective-executor line `M02-B-FU4` (#807) |
