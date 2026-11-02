@@ -82,6 +82,7 @@ mod campaign {
     mod m01_window_world_import;
     mod m01_wingman_formation;
     mod m01_wingman_hillside;
+    mod m01_wingman_stick;
     mod m01_world_actor_child_targets;
     mod parity2_dmg_fx_b;
     mod parity5_briefing_map;

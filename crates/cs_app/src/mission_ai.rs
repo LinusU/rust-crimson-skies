@@ -394,6 +394,14 @@ pub struct MissionAircraftAi {
     /// unmeasured (finding §5); until the gate fires the designed stand-in
     /// holds the spawn heading.
     pub follow_engaged: bool,
+    /// Fly the follower's station with the ported original stick law
+    /// ([`wingman_stick`]) instead of the designed [`pursuit_command`].
+    /// **Off by default**: the law's pilot gains and limits
+    /// (`vehicle+0x8c4..+0x8d4`, from words the evidence does not give) are
+    /// unmeasured, and with the stand-in gain 1 Betty does not hold station
+    /// (`docs/findings/2026-11-02-m01-wingman-stick-law.md`), which the M01
+    /// wingman pins and the owner smoke would fail.
+    pub original_stick: bool,
 }
 
 impl MissionAircraftAi {
@@ -439,6 +447,7 @@ impl MissionAircraftAi {
             shots: 0,
             throttle_target: START_THROTTLE,
             follow_engaged: false,
+            original_stick: false,
         }
     }
 
@@ -1473,7 +1482,9 @@ fn decide_mission_aircraft_ai(
                                 1.0 / f64::from(crate::physics::BASELINE_FIXED_HZ),
                             );
                             let throttle = ai.throttle_target.min(1.0);
-                            stick_goal = Some(error);
+                            if ai.original_stick {
+                                stick_goal = Some(error);
+                            }
                             (error, throttle, Some(station))
                         }
                     }
