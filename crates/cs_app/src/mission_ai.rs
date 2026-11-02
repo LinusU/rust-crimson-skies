@@ -734,6 +734,14 @@ impl<F: Fn(Vec3, Vec3) -> bool> TerrainProbe for F {
 #[derive(Resource, Default)]
 pub struct MissionTerrainProbe(pub Option<Box<dyn TerrainProbe + Send + Sync>>);
 
+/// What the decision system needs to answer the look-ahead: the injected
+/// probe, if any, and the colliders the runtime probe reads.
+#[derive(bevy::ecs::system::SystemParam)]
+struct TerrainProbeParams<'w, 's> {
+    injected: Res<'w, MissionTerrainProbe>,
+    colliders: SweepColliders<'w, 's>,
+}
+
 /// The state `0x41f810` keeps per AI vehicle: whether `+0x358 == 3` and the
 /// `+0xf0` timer. The timer is on the engine's accumulated clock
 /// (`[0x71c470] += step` at `0x4897cb`..`0x4897e4`), which the caller seeds
@@ -1562,8 +1570,7 @@ impl Plugin for MissionAiPlugin {
 /// fallback, by [`MissionPlayerBody`].
 fn decide_mission_aircraft_ai(
     time: Res<Time>,
-    probe: Res<MissionTerrainProbe>,
-    colliders: SweepColliders,
+    terrain: TerrainProbeParams,
     mut report: ResMut<MissionAiReport>,
     mut orders: ResMut<MissionAiFireOrders>,
     mut aircraft: Query<(
@@ -1725,10 +1732,10 @@ fn decide_mission_aircraft_ai(
                 // answered by the runtime colliders (an approximation of
                 // `0x4c8f70`, see `WorldSegmentProbe`).
                 let world_probe = WorldSegmentProbe {
-                    colliders: &colliders,
+                    colliders: &terrain.colliders,
                     prober: entity,
                 };
-                let probe: &dyn TerrainProbe = match probe.0.as_deref() {
+                let probe: &dyn TerrainProbe = match terrain.injected.0.as_deref() {
                     Some(injected) => injected,
                     None => &world_probe,
                 };
