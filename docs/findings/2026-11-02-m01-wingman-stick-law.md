@@ -72,10 +72,13 @@ near `0x45c0d4`, which zero-fills `+0x26c..0x274`, and whatever fills
 gains/limits, flip `original_stick` on for mode-4 followers, and re-run the
 hillside flight.
 
-**Resolved by #2266** (`docs/findings/2026-11-02-m01-wingman-gains.md`):
+**Resolved by #2266 and #2276** (`docs/findings/2026-11-02-m01-wingman-gains.md`):
 `def+0x260` is `rudder_tol` = 0.2; the six words are copied at spawn from
 `arg1+0xa8..+0xbc` (the definition's `mode_alt`/`collision_d` and three
-constructor defaults) or the `ai_input_*` block, and M01's wingman flies the
-former (`0.5`/`2.0`/`0.15` scale, `100`/`100`/`0.25` limit). With them the law
-still does not hold station (bounded around 170–464 m), so `original_stick`
-stays off.
+constructor defaults) or the `ai_input_*` block. #2276 showed `kind_of`
+merges the parent's parsed definition (`0x477b70`), so M01's wingman
+inherits `basic_airplane`'s words (`0.6`/`0.0`/`0.15` scale,
+`100`/`100`/`0.25` limit), and the mode-4 follower's station call passes
+`bl = 0` (`0x41eed3`) — the normal set, not `ai_emerg_input_*`. With them
+the law still does not hold station (closest 80 m, worst 662 m), so
+`original_stick` stays off.
