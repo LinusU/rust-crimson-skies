@@ -64,7 +64,7 @@ use crate::scene::SceneGenerations;
 use crate::weapons::SessionDamageResolver;
 
 use crate::playtest::scene::PlaytestSea;
-use crate::playtest::world_sweep::class_type_intersects;
+use crate::playtest::world_sweep::{AreaPartitionMembers, class_type_intersects};
 use crate::playtest_retail::{
     CONTACT_SWEEP_NODE_FLAGS, PlaytestConfig, WorldScenery, WorldSources, build_world_scenery,
     read_world_sources,
@@ -999,6 +999,25 @@ fn mark_world_sweep_nodes(
     }
 }
 
+/// Reads the mission world's area partition once the stage carries the world
+/// (`AreaPartitionMembers`, #2292): the nodes the original's AI terrain query
+/// can return.
+fn read_area_partition_members(
+    mut commands: Commands,
+    stage: Res<MissionStage>,
+    existing: Option<Res<AreaPartitionMembers>>,
+) {
+    if existing.is_some() {
+        return;
+    }
+    let Some(source) = &stage.world_draw else {
+        return;
+    };
+    commands.insert_resource(AreaPartitionMembers::from_nodes(
+        &source.sources().world().nodes().nodes,
+    ));
+}
+
 /// The root entity of the drawn scenery ([`MissionWorldParts::scenery`]).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct WorldSceneryRoot;
@@ -1066,7 +1085,14 @@ fn attach_world_scenery(
                 .iter()
                 .any(|part| part.image.as_deref().is_some_and(is_water_image));
             if is_water {
-                commands.spawn((collider, PlaytestSea, ChildOf(root)));
+                commands.spawn((
+                    collider,
+                    PlaytestSea,
+                    WorldSeaNode {
+                        node_slot: placement.node_slot,
+                    },
+                    ChildOf(root),
+                ));
             } else {
                 commands.spawn((
                     collider,
@@ -1079,6 +1105,13 @@ fn attach_world_scenery(
             }
         }
     }
+}
+
+/// The stored node slot of a water tile's [`PlaytestSea`] collider.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldSeaNode {
+    /// The stored slot of the node it belongs to.
+    pub node_slot: u32,
 }
 
 /// A solid collider of one scenery node below a world grouping node: the
@@ -1262,6 +1295,7 @@ impl Plugin for MissionWorldDrawPlugin {
             (
                 attach_world_parts,
                 mark_world_sweep_nodes,
+                read_area_partition_members,
                 attach_world_scenery,
                 anchor_horizon_to_camera,
                 // Ordered after the spawn so a run where the scenery attaches

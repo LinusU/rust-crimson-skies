@@ -103,7 +103,7 @@ use cs_sim::flight::original::{OriginalInput, SegmentProbeHit, SegmentProbeOwner
 use cs_types::space::Quaternion;
 
 use super::scene::{PlaytestOriginalFlight, PlaytestSea};
-use crate::mission_session::{WorldSceneryCollider, WorldSweepNode};
+use crate::mission_session::{WorldSceneryCollider, WorldSeaNode, WorldSweepNode};
 use crate::physics::BodyLayer;
 use crate::render::bevy_mesh::ColliderFaces;
 
@@ -210,13 +210,103 @@ pub struct WorldSegmentProbe<'a, 'w, 's> {
     pub colliders: &'a SweepColliders<'w, 's>,
     /// The aircraft casting; it never hits itself.
     pub prober: Entity,
+    /// The nodes the original's query can see (the world's area partition,
+    /// [`AreaPartitionMembers`]). `None` tests every collider.
+    pub members: Option<&'a AreaPartitionMembers>,
 }
 
 impl crate::mission_ai::TerrainProbe for WorldSegmentProbe<'_, '_, '_> {
     fn hits(&self, from: Vec3, to: Vec3) -> bool {
         self.colliders
-            .nearest(&GroundBlowSegment::between(from, to), self.prober)
+            .nearest_among(
+                &GroundBlowSegment::between(from, to),
+                self.prober,
+                self.members,
+            )
             .is_some()
+    }
+}
+
+/// The scene nodes the original's AI terrain query `0x4c8f70` can return: the
+/// nodes listed in the mission world node's area partition (`world1`'s 16 x 16
+/// grid, `docs/findings/2026-11-02-ai-terrain-query-4c8f70.md` section 10)
+/// and, because `0x4c9a00` recurses into a listed group's children, every
+/// descendant of a listed node. Keyed by stored node slot.
+///
+/// **Approximation**: the descendants are included because the group handler
+/// recurses; the exact per-type contact tests (`0x55c9c0`) are undecoded, so
+/// a member's collider is still tested with the sweep's face rule rather than
+/// the original's AABB overlap (`0x4cc010`).
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AreaPartitionMembers {
+    /// The nodes some cell lists themselves.
+    listed: std::collections::BTreeSet<u32>,
+    /// The listed nodes and every descendant.
+    slots: std::collections::BTreeSet<u32>,
+}
+
+impl AreaPartitionMembers {
+    /// The members of the partition recorded in `nodes` (a GameZ node array):
+    /// a node whose `AreaPartitionPm` is not the default `(-1, -1, ..)` is
+    /// listed in the cell it names (measured on C3: all 439 entries, and no
+    /// other node), and its subtree is walked with it.
+    #[must_use]
+    pub fn from_nodes(nodes: &[cs_formats::gamez::nodes::RawNode]) -> Self {
+        let mut slots = std::collections::BTreeSet::new();
+        let listed: std::collections::BTreeSet<u32> = nodes
+            .iter()
+            .filter(|node| {
+                let [x, y, ..] = node.info.area_partition;
+                x >= 0 && y >= 0
+            })
+            .map(|node| node.index)
+            .collect();
+        let mut pending: Vec<u32> = listed.iter().copied().collect();
+        while let Some(slot) = pending.pop() {
+            if !slots.insert(slot) {
+                continue;
+            }
+            if let Some(node) = nodes.iter().find(|node| node.index == slot) {
+                pending.extend(node.children.iter().copied());
+            }
+        }
+        Self { listed, slots }
+    }
+
+    /// Exactly the given slots, with no subtree walk: for a caller that has
+    /// already resolved which nodes the query reaches.
+    #[must_use]
+    pub fn from_slots(slots: impl IntoIterator<Item = u32>) -> Self {
+        let slots: std::collections::BTreeSet<u32> = slots.into_iter().collect();
+        Self {
+            listed: slots.clone(),
+            slots,
+        }
+    }
+
+    /// Whether some cell lists the node at `slot` itself (not merely through
+    /// an ancestor).
+    #[must_use]
+    pub fn is_listed(&self, slot: u32) -> bool {
+        self.listed.contains(&slot)
+    }
+
+    /// Whether the original's query can reach the node at `slot`.
+    #[must_use]
+    pub fn contains(&self, slot: u32) -> bool {
+        self.slots.contains(&slot)
+    }
+
+    /// How many nodes the query can reach.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Whether no node is listed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
     }
 }
 
@@ -709,13 +799,21 @@ pub struct SweepColliders<'w, 's> {
             Option<&'static crate::mission_actors::ScriptedAircraftActor>,
             Option<&'static WorldSweepNode>,
             Option<&'static ColliderFaces>,
+            Option<&'static WorldSceneryCollider>,
+            Option<&'static WorldSeaNode>,
         ),
     >,
 }
 
 impl SweepColliders<'_, '_> {
-    /// Every collider the sweep tests.
-    fn targets(&self, prober: Entity) -> impl Iterator<Item = SweepTarget<'_>> {
+    /// Every collider the sweep tests; with `members`, only colliders of a
+    /// scene node the original's partition lists (aircraft and anything
+    /// without a node slot are not scene nodes and drop out).
+    fn targets<'s>(
+        &'s self,
+        prober: Entity,
+        members: Option<&'s AreaPartitionMembers>,
+    ) -> impl Iterator<Item = SweepTarget<'s>> {
         self.colliders.iter().filter_map(
             move |(
                 entity,
@@ -728,7 +826,18 @@ impl SweepColliders<'_, '_> {
                 actor,
                 node,
                 faces,
+                scenery,
+                sea,
             )| {
+                if let Some(members) = members {
+                    let slot = scenery
+                        .map(|scenery| scenery.node_slot)
+                        .or_else(|| node.map(|node| node.node_slot))
+                        .or_else(|| sea.map(|sea| sea.node_slot));
+                    if !slot.is_some_and(|slot| members.contains(slot)) {
+                        return None;
+                    }
+                }
                 let kind = ColliderKind {
                     layer: layer.0,
                     is_sea,
@@ -756,7 +865,18 @@ impl SweepColliders<'_, '_> {
         segment: &GroundBlowSegment,
         prober: Entity,
     ) -> Option<WorldSweepContact> {
-        nearest_contact(segment, self.targets(prober))
+        nearest_contact(segment, self.targets(prober, None))
+    }
+
+    /// [`Self::nearest`] restricted to `members` when given.
+    #[must_use]
+    pub fn nearest_among(
+        &self,
+        segment: &GroundBlowSegment,
+        prober: Entity,
+        members: Option<&AreaPartitionMembers>,
+    ) -> Option<WorldSweepContact> {
+        nearest_contact(segment, self.targets(prober, members))
     }
 }
 

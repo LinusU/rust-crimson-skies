@@ -215,6 +215,12 @@ fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32, u64) {
         .expect("Betty's law");
     assert!(flown.original_stick && flown.follow_engaged && flown.decisions >= 45 * hz);
     assert_eq!(flown.pilot_gains, gains);
+    // The look-ahead was answered over the original's partition members.
+    let members = app
+        .world()
+        .get_resource::<cs_app::playtest::world_sweep::AreaPartitionMembers>()
+        .expect("the world's partition was read");
+    assert!(members.len() >= 439 && members.contains(2882));
     teardown(&mut app);
     (spawn_gap, closest, worst_after, final_gap, climbing_ticks)
 }
@@ -320,4 +326,52 @@ fn accept_m01_escape_probe_grid_ceiling_is_the_image_word() {
     assert_eq!(ESCAPE_WORLD_CEILING_M.to_bits(), 0x45fa_0000);
     assert_eq!(ESCAPE_WORLD_CEILING_M, 8000.0);
     assert_eq!(ESCAPE_WORLD_FLOOR_M.to_bits(), 0x41a0_0000);
+}
+
+/// The membership set read from C3's world node: the hillside's nodes are in
+/// the original's partition, the shipwreck mountain ring and the east cliffs
+/// are not.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_escape_probe_grid_membership_reads_the_retail_partition() {
+    use cs_app::playtest::world_sweep::AreaPartitionMembers;
+    use cs_formats::ParseContext;
+    use cs_formats::gamez::nodes::read_gamez_nodes;
+
+    let path = game_dir().join("ZBD/C3/gamez.zbd");
+    let bytes = std::fs::read(&path).expect("the C3 container reads");
+    let mut ctx = ParseContext::with_defaults("ZBD/C3/gamez.zbd");
+    let nodes = read_gamez_nodes(&mut ctx, &bytes).expect("the node array reads");
+    let members = AreaPartitionMembers::from_nodes(&nodes.nodes);
+
+    // The hillside group in cell (4, 12) and its mesh-bearing child, plus two
+    // direct entries of that cell.
+    for slot in [2874, 2882, 829, 871] {
+        assert!(members.contains(slot), "hillside slot {slot} is listed");
+    }
+    // The ring (`g28637`, slot 2994) and the east cliffs (`g28911`, slot
+    // 2965) are themselves in no cell, as are the hillside's mesh node 2882
+    // and every other leaf under a group.
+    for slot in [2994, 2965, 2882] {
+        assert!(!members.is_listed(slot), "slot {slot} is in no cell");
+    }
+    // But their parent groups (`craterlake` 2985, `g28609` 2963) are listed
+    // exactly as the hillside's group 2874 is, so the walk that reaches 2882
+    // through 2874 reaches the ring and the cliffs through those: the data
+    // does not separate them (finding section 13).
+    for slot in [2874, 2985, 2963] {
+        assert!(members.is_listed(slot), "group {slot} is listed");
+    }
+    for slot in [2994, 2965] {
+        assert!(
+            members.contains(slot),
+            "slot {slot} is reached via its group"
+        );
+    }
+    // 439 listed entries, plus whatever their groups contain.
+    assert!(members.len() >= 439, "{} members", members.len());
+    assert!(
+        members.len() < nodes.nodes.len(),
+        "not every node is a member"
+    );
 }

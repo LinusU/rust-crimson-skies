@@ -135,7 +135,7 @@ use crate::mission_session::{
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch};
 use crate::physics::{BodyMode, set_body_mode};
 use crate::playtest::scene::PlaytestOriginalFlight;
-use crate::playtest::world_sweep::{SweepColliders, WorldSegmentProbe};
+use crate::playtest::world_sweep::{AreaPartitionMembers, SweepColliders, WorldSegmentProbe};
 use crate::targeting::TargetingSession;
 use crate::weapons::{WeaponActorBinding, WeaponOrder, WeaponSession, WeaponTickInput};
 
@@ -746,6 +746,7 @@ pub struct MissionTerrainProbe(pub Option<Box<dyn TerrainProbe + Send + Sync>>);
 struct TerrainProbeParams<'w, 's> {
     injected: Res<'w, MissionTerrainProbe>,
     colliders: SweepColliders<'w, 's>,
+    members: Option<Res<'w, AreaPartitionMembers>>,
 }
 
 /// The state `0x41f810` keeps per AI vehicle: whether `+0x358 == 3` and the
@@ -1746,6 +1747,7 @@ fn decide_mission_aircraft_ai(
                 let world_probe = WorldSegmentProbe {
                     colliders: &terrain.colliders,
                     prober: entity,
+                    members: terrain.members.as_deref(),
                 };
                 let probe: &dyn TerrainProbe = match terrain.injected.0.as_deref() {
                     Some(injected) => injected,
@@ -2815,6 +2817,7 @@ mod tests {
                     let probe = WorldSegmentProbe {
                         colliders: &colliders,
                         prober,
+                        members: None,
                     };
                     let ahead =
                         |x: f32| probe.hits(Vec3::new(x, 0.0, 0.0), Vec3::new(x, 0.0, -520.0));
@@ -2827,5 +2830,56 @@ mod tests {
             )
             .expect("system runs");
         assert_eq!(answers, (true, false, false), "hill {hill:?}");
+    }
+
+    /// A collider of a node the original's partition does not list is not hit,
+    /// even with the segment straight through it; a listed one still is.
+    #[test]
+    fn accept_m01_escape_probe_grid_non_member_collider_is_not_hit() {
+        use crate::playtest::world_sweep::AreaPartitionMembers;
+        use avian3d::prelude::{Collider, Position, Rotation};
+        use bevy::ecs::system::RunSystemOnce;
+        use cs_sim::collision::CollisionLayer;
+
+        use crate::mission_session::WorldSceneryCollider;
+        use crate::physics::BodyLayer;
+
+        let mut world = World::new();
+        let spawn = |world: &mut World, x: f32, slot: u32| {
+            world
+                .spawn((
+                    Collider::cuboid(100.0, 100.0, 100.0),
+                    Position(Vec3::new(x, 0.0, -500.0)),
+                    Rotation::default(),
+                    BodyLayer(CollisionLayer::StaticWorld),
+                    WorldSceneryCollider { node_slot: slot },
+                ))
+                .id()
+        };
+        spawn(&mut world, 0.0, 7);
+        spawn(&mut world, 400.0, 8);
+        let prober = world.spawn_empty().id();
+        let answers = world
+            .run_system_once(
+                move |colliders: crate::playtest::world_sweep::SweepColliders| {
+                    let members = AreaPartitionMembers::from_slots([7]);
+                    let probe = |members| WorldSegmentProbe {
+                        colliders: &colliders,
+                        prober,
+                        members,
+                    };
+                    let through = |x: f32, members| {
+                        probe(members).hits(Vec3::new(x, 0.0, 0.0), Vec3::new(x, 0.0, -520.0))
+                    };
+                    (
+                        through(0.0, None),
+                        through(400.0, None),
+                        through(0.0, Some(&members)),
+                        through(400.0, Some(&members)),
+                    )
+                },
+            )
+            .expect("system runs");
+        assert_eq!(answers, (true, true, true, false));
     }
 }
