@@ -259,3 +259,248 @@ query; `cs_assets` has no loader for the grid. Nothing loads this today.
 | `[0x71c3f0]`, `[0x71c3f4]` | the floor/ceiling latch | world setup |
 
 Nothing here is `verified_original`.
+
+---
+
+# §9-§12: the builder, the data, and M01's hillside (#2290)
+
+Date: 2026-11-02. Task #2290 (`M01-AI-TERRAIN-GRID-BUILDER`), follow-up of
+#2279/#2281. Implementer: `deepseek-1`. Same conventions as above: `static`
+claims read from the owner image with capstone (`VA = file offset + 0x400000`),
+retail claims read from the owner installation with the workspace's own
+readers; the original executable was **not** run, so nothing here is
+`verified_original`. Sections 9-12 **supersede** the last paragraph of §7, the
+statement in §3 that the grid's builder is unknown, and the first, third and
+fifth rows of §8's table. The byte windows are re-read by
+`accept_m01_ai_terrain_grid_*`
+(`crates/cs_app/tests/campaign/m01_ai_terrain_grid.rs`, ignored without
+`CS_ENGINE_IMAGE` / `CS_GAME_DIR`).
+
+## 9. The builder: `cls_world.c`'s area partition, not a heightfield
+
+`[holder+0x38]` is not a world-only grid: the same two asserts the query
+raises (`0x62cc14` "Null node pointer." for a null holder, `0x62cbfc` "Null
+class data pointer" for a null `[holder+0x38]`) are `Class.c`'s
+node/class-data pair, so `holder` is a GameZ **node** and `[holder+0x38]` is
+*that node's class data*. For the node the mission calls `world1` the class
+data is an **area partition** (`cls_world.c`, the source string at
+`0x62ddd0`), and the query walks its cells.
+
+The partition is created by `0x4daa20(node, cell_size_x, cell_size_z)`, and
+its parameters are set by seven mission-script commands. The command table is
+`Script.c`'s native dispatcher (the string at `0x63e27c` and onward); each
+line below is the pushed length + name pointer and the handler the branch
+calls:
+
+| script command (name VA, length) | handler | stores |
+| --- | --- | --- |
+| `WorldOrigin` (`0x63e328`, 11) | `0x4da960(node, x, z)` | `+0x34 = x`, `+0x38 = z`; far x/z `+0x44/0x48 = origin + width/depth`; padded bounds `+0x4c..+0x58` |
+| `WorldExtents` (`0x63e334`, 12) | `0x4da9c0(node, w, d)` | `+0x3c = w`, `+0x40 = d`; far x/z and padded bounds |
+| `WorldPartition` (`0x63e2b8`, 14) | `0x4daa20(node, sx, sz)` | the whole grid (below) |
+| `WorldPartitionInclusionTolerance` (`0x63e304`, 32) | `0x4dadf0(node, px, pz)` | `+0x90 = px`, `+0x94 = pz`; recompute padded bounds |
+| `WorldPartitionMaxDECFeatureCount` (`0x63e2e0`, 32) | `0x4dae40(node, n)` | byte `+0x5c = min(n, 255)`, message `0x62de24` above 255 |
+| `WorldSetVirtualPartition` (`0x63e154`, 24) | `0x4da150(node, flag)` | `+0x60 = flag`; if non-zero, `0x4da070(node)` and `0x4da180(node, [+0x64], [+0x68])` |
+| `WorldSetVirtualPartitionMapSize` (`0x63e170`, 31) | `0x4da180(node, x, z)` | `+0x64 = x`, `+0x68 = z`, `+0x6c = cols - x`, `+0x70 = rows - z` |
+| `WorldPartitionSetActive` (`0x63e2c8`, 23) | `0x4db790(node, flag, x0, z0, x1, z1)` | no membership change: it clamps the rectangle to cell indices and calls `0x4cca30(node, flag)` for every node listed in those cells (the class "active" bit) |
+
+`0x4daa20` in order (each step is one of the windows the task test re-reads):
+
+1. if `[grid+0xa0]` is set, destroy the old partition with `0x4dacb0(node)`;
+2. `+0x74 = cell_size_x`, `+0x78 = cell_size_z`; `+0x90 = cell_size_x *
+   [0x60802c]` and `+0x94 = cell_size_z * [0x608dc8]` (the default inclusion
+   tolerance; the constants are `0.125` and `-0.125`), then recompute the
+   padded bounds `+0x4c..+0x58` from them;
+3. `+0x7c = cell_size_x * 0.5`, `+0x80 = cell_size_z * 0.5`;
+4. `+0x84 = 1.0 / cell_size_x`, `+0x88 = 1.0 / cell_size_z` (so a negative z
+   cell size really is allowed: the C3/M01 data uses `-1024`);
+5. `+0x8c` = the fast-inverse-square-root half diagonal, `-0.5 *
+   f(cell_size_x^2 + cell_size_z^2)` (`sar eax,1; add eax,0x1fc00000` then
+   `* [0x6034f8]` = `-0.5`), i.e. `-768` for a 1024 m cell;
+6. `+0x98 = ceil([+0x3c] / [+0x74])` columns, `+0x9c = ceil([+0x40] /
+   [+0x78])` rows, each refused above `0x7fff` with the message at
+   `0x62ddf4` ("Error: too many world area partitions: %d %d.");
+7. `[grid+0xa0] = calloc(rows, 4)`, then `calloc(cols, 0x58)` per row — the
+   row table is `+0xa0`, the cell stride `0x58`, and the allocation is zeroed;
+8. for every cell: `[cell] |= 0x100`, `[cell+0x04] = -1`, the min corner at
+   `+0x08` (x) / `+0x0c` (z) from `origin + col*size`, the same corner at
+   `+0x10/+0x24`, the far corner at `+0x18` (z) / `+0x1c` (x), then
+   `0x4d8b50(cell+0x10, cell+0x28, cell+0x34)` derives the cell's AABB in the
+   fields the hit test `0x4cbf80` reads.
+
+Filling. Two paths exist and they agree in the retail data:
+
+* `0x4db0c0(world, node)` — insert a node. The node's bounds come from its
+  class data by node type (`5` -> class data `+0x30`, `1` -> `+0x80`, `8` ->
+  `+0x08`, else the world origin/extents pair `[0x75d1b8..c0]`), the cell
+  rectangle is computed by `0x4da500(world, &box, &range)` (grow the box by
+  `+0x90/+0x94`, `floor((v - origin) * inverse)`, clamp to the padded bounds,
+  sort min/max), and `0x4dae80(world, flags_word, node, &range)` inserts it.
+  A node whose `[node+0x24]` has bit `0x80` is inserted over the **whole**
+  grid (`-1 .. cols-1`, `-1 .. rows-1`, `0x4db1d5`).
+* `0x4dae80` — for a single cell it `realloc`s `([cell+0x3a] + 1) * 12` bytes
+  at `[cell+0x3c]`, writes `entry[0] = node` and the box's two y words to
+  `entry[1]`/`entry[2]` (measured on the retail file: `entry[1]` is the box's
+  min y and `entry[2]` its max y), increments the `int16` count at
+  `[cell+0x3a]`, and
+  caches the cell at `[node+0x4c..+0x58]` (cell x/y and the extra-cell list
+  for a node that spans several cells). The 12-byte entry is therefore
+  `(node, min y, max y)`: measured on the retail file, a flag node at
+  `y = 113.54` stores `103.98 .. 123.10` and a terrain group stores exactly
+  the y range of its subtree's mesh.
+
+The reader takes the shipped grid from the file rather than inserting nodes:
+`gClsReadNode` (`cls_zbd.c`) at `0x4e2f4a` runs the world case — `malloc(0xcc)`
+and read the 204-byte header, read the light/sound arrays at `+0xb0/+0xb4`
+and `+0xbc/+0xc0`, `calloc([+0x9c], 4)` the row table, `calloc([+0x98],
+0x58)` each row, then per cell read `0x58` bytes and, when `[cell+0x3a] > 0`,
+`malloc(count * 12)` at `[cell+0x3c]` and `0x4e3360` reads the entries,
+turning each entry's first word from a node index into a node pointer and
+keeping words 1 and 2 as stored. `0x4e1be0` is the matching writer. So the
+partition contents are **authored/saved data**, not a load-time build; the
+builder is the script path that produced the saved numbers in the first place
+and that a script-authored world would use.
+
+## 10. Which retail data feeds it (C3/M01)
+
+**Parameters: `ZBD/INTERP.ZBD`, script `support\c3\load.gw`.** The container
+is a plain INTERP image (signature `0x08971119`, version 7, 98 scripts); its
+script 61 (`support\c3\load.gw`, entry offset 7820, script offset 112696)
+holds, token for token and at these absolute offsets:
+
+| line | data offset | size | tokens |
+| --- | --- | --- | --- |
+| 4 | 112847 | 25 | `WorldOrigin` `-16384.0` `0.0` |
+| 5 | 112880 | 30 | `WorldExtents` `16384.0` `-16384.0` |
+| 6 | 112918 | 26 | `WorldPartition` `1024` `-1024` |
+| 7 | 112952 | 41 | `WorldPartitionInclusionTolerance` `3.0` `3.0` |
+| 11 | 113100 | 28 | `WorldSetVirtualPartition` `on` |
+| 12 | 113136 | 36 | `WorldSetVirtualPartitionMapSize` `1` `1` |
+
+Script 62 (`support\c3\m01.gw`, line 1 at offset 120825) then calls
+`WorldPartitionSetActive off -15360 -7168 -8192 -14336`: M01 turns the class
+"active" bit **off** in that rectangle. `support\c3\ia1.gw` (script 59) turns
+three other rectangles on; none of these calls change cell membership.
+
+**Contents: `ZBD/C3/gamez.zbd`, the world node's own record.** Node 0 is
+`world1`, `node_type` 2, data offset `4808244` (`0x495e34`), 28 060 bytes:
+a 204-byte header, one `u32`, the 16 x 16 grid and 14 child slots. Measured
+fields and their agreement with the script:
+
+| header field | offset | value | agrees with |
+| --- | --- | --- | --- |
+| origin x, origin z | `+0x34`, `+0x38` | `-16384.0`, `0.0` | `WorldOrigin` |
+| width, depth | `+0x3c`, `+0x40` | `16384.0`, `-16384.0` | `WorldExtents` |
+| far x, far z | `+0x44`, `+0x48` | `0.0`, `-16384.0` | origin + extents |
+| cell size x, z | `+0x74`, `+0x78` | `1024.0`, `-1024.0` | `WorldPartition 1024 -1024` |
+| half cell | `+0x7c`, `+0x80` | `512.0`, `-512.0` | builder step 3 |
+| inverse cell | `+0x84`, `+0x88` | `1/1024`, `-1/1024` | builder step 4 |
+| half diagonal | `+0x8c` | `-768.0` | builder step 5 |
+| tolerance x, z | `+0x90`, `+0x94` | `3.0`, `3.0` | `WorldPartitionInclusionTolerance 3.0 3.0` |
+| max DEC features | `+0x5c` (byte) | 16 | not set by `support\c3\load.gw`; default or earlier data |
+| virtual partition | `+0x60` | 1 | `WorldSetVirtualPartition on` |
+| map size / tile origin | `+0x64/+0x68`, `+0x6c/+0x70` | 1/1, 15/15 | `WorldSetVirtualPartitionMapSize 1 1` (`15 = 16 - 1`) |
+| columns, rows | `+0x98`, `+0x9c` | 16, 16 | `ceil(16384 / 1024)` |
+
+The cell walk is exact over the whole block: 256 cells of `0x58` bytes, each
+cell's own x/z min corner equals `origin + index * size` for every cell, and
+`16*16*0x58 + 439*12 = 27 796` bytes is exactly `partition_bytes`; the block
+ends exactly at the record's child slots. There are 439 entries in 256 cells;
+no node occupies more than one cell in this container.
+
+Every entry's first word is a node's **info-array index**, and the node's own
+208-byte info record stores the same cell in the reference's `AreaPartitionPm`
+(`[i16; 4]` = cell x, cell y, virtual x, virtual y): for all 439 entries the
+listed cell `(row, col)` equals `AreaPartitionPm` with
+`x = col`, `y = row`, `virtual_x = col`, `virtual_y = row`. A node with
+`AreaPartitionPm == (-1, -1, 0, 0)` is in no cell.
+
+Which flag bits decide membership: the file's `flags` word of every node that
+is listed in a cell has bits `0x04` and `0x10` set (the query's two required
+bits, §4) and 430 of the 439 also carry `0x8000` — the bit
+`WorldSetVirtualPartition` sets on every cell object (`0x4da070`, the
+`0x4dae80`-time marker the wrapped copy requires at `0x4c9334`). **No node
+outside the grid carries `0x8000`**, and the nine grid nodes without it are
+cell members by the file's own entry list. The runtime insertion gate is
+separate: `[node+0x24] & 0x80` (bit 7) sends a node to the whole grid
+(`0x4db0cd`, `0x4cea31`), so bit `0x8000` marks "has partition coordinates"
+while bit `0x80` means "spans everything".
+
+**The floor/ceiling globals `[0x71c3f0]`/`[0x71c3f4]`: #2277 is confirmed.**
+Inside the mission/world setup `0x4735b0`, `0x474151` stores `0x45fa0000`
+(`8000.0`) into `[0x71c3f4]` and `0x47415b` stores `0x41a00000` (`20.0`) into
+`[0x71c3f0]`, immediately before the setup's config lookups. A scan of the
+whole `.text` for writes to those two words finds only this pair and the
+save/restore in `0x4216e0` (which sets `[0x71c3f0]` to `0x7f7fffff` and the
+vehicle ceiling `+0x314` to `0x7f7fffff` around one call to `0x41b560`, then
+restores both). So the world floor is **20 m** and the ceiling **8000 m**, and
+nothing in the image overrides them for a normal mission frame.
+
+## 11. M01's hillside is in the grid; the shipwreck ring and the cliffs are not
+
+The hillside the wingman crosses in
+`accept_m01_wingman_stick_betty_over_the_hillside` is the terrain of cell
+**(row 4, col 12)** — x in `[-4096, -3072]`, z in `[-5120, -4096]`. Betty's
+flight (port trace with `CS_STICK_TRACE`, 120 Hz, `original_stick` and the
+merged `kind_of` gains) descends from `(-3969, 97, -4614)` at t = 4620 to
+`(-4035, 8, -4605)` at t = 5400 and stays inside that cell while the escape
+climb latches; the port is the only source for the positions, and the cell is
+computed with the retail grid's own origin and cell size, so the *cell index*
+is the retail fact.
+
+Cell (4, 12) and its neighbour (5, 12) hold, by the file's own entry list:
+
+| cell | entry | name | mesh | listed y range |
+| --- | --- | --- | --- | --- |
+| (4, 12) | 829 | `g28596` | 516 | ~0 |
+| (4, 12) | 871 | `g28471` | 559 | ~0 |
+| (4, 12) | 2874 | `g28604` | group (`-1`), child 2882 `g28982` carries mesh 762 | `-3.57 .. 180.47` |
+| (5, 12) | 830 / 881 | `g28598` / `g28474` | 517 / 562 | ~0 |
+| (5, 12) | 2873 | `g28603` | 761 | `-16.71 .. 287.94` |
+
+The entry's two floats equal the mesh's own local y range exactly
+(`g28982`: `-3.5746138 .. 180.47455`; `g28603`: `-16.713 .. 287.93655`), so the
+listed range is the node subtree's y extent, not a cell bound. The hillside
+is therefore an ordinary partition object: the original's look-ahead walks
+that cell, tests the listed object's AABB against the segment box and can
+latch the escape climb there. It needs no heightfield to do so.
+
+The contrast is the shipwreck's mountain ring, node slot 2994 `g28637` (1024 m
+tile, mesh 795, y up to 144.6 m) and the east cliffs slot 2965 `g28911`
+(mesh 776): both have `AreaPartitionPm = (-1, -1, 0, 0)`, flags word
+`0x308031c` without `0x8000`, and **no cell in the file lists them**. They are
+drawn (they hang under the world's direct children) but the AI terrain query
+can never return them.
+
+## 12. What this settles for the port, and what it does not
+
+* **Settled (static + retail):** the query's `[holder+0x38]` is a world node's
+  area partition; its builder is `0x4daa20`; its parameters are the world
+  script's `World*` commands (`ZBD/INTERP.ZBD`, `support\c3\load.gw`); its
+  contents are the world record's own 16 x 16 grid in `ZBD/C3/gamez.zbd`,
+  with `(node index, subtree min y, subtree max y)` per entry and the cell
+  mirrored in each node's `AreaPartitionPm`; C3/M01's cell size is
+  `1024 x -1024` over `x in [-16384, 0]`, `z in [-16384, 0]`; the hillside is
+  in cell (4, 12); the mountain ring and the east cliffs are not in the grid;
+  the floor/ceiling writer is `0x474151`/`0x47415b` (8000 / 20).
+* **Not settled:** whether `0x4c9a00` records the hillside group as a hit
+  depends on the type-5 handler's exact tests (`0x4cc010`, `0x55c9c0`) and on
+  the group handlers for node types 6/7, none of which is decoded here. The
+  port's collider-face approximation (#2281) is in the right direction at the
+  hillside (the original does see that geometry) and in the wrong direction at
+  the mountain ring and cliffs (the original never sees them); no production
+  behaviour is changed by this task and `original_stick` stays off.
+* **Not settled:** the nine grid nodes whose flags word lacks `0x8000` may be
+  skipped when the query walks a folded (out-of-grid) copy of their cell; the
+  file lists them, the wrapped-copy gate at `0x4c9334` would not. None of them
+  is in cell (4, 12).
+* **Not settled:** whether the runtime `[node+0x24]` equals the file's `flags`
+  word bit for bit. Bits `0x04`, `0x10`, `0x80`, `0x8000` and `0x02000000`
+  line up between the two readings, which is the extent of what is measured.
+
+| unknown (remaining) | affects | resolving step |
+| --- | --- | --- |
+| exact tests `0x55c9c0`, `0x4cbf80`, `0x4c9fe0`, `0x4c9e10`, `0x4ca140` | does a listed terrain object count as a hit | decode each |
+| defaults of `0x71e8ac`/`0x71e8b4`/`0x9be6f8` | filter in non-follower calls | their setters |
+| runtime `[node+0x24]` vs file `flags` for the nine `0x8000`-clear grid nodes | folded-copy visibility of 9 scenery nodes | a capture or the flag fixup in `gClsReadNode` |
+
+Nothing here is `verified_original`.
