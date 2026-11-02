@@ -134,6 +134,15 @@ fn fly(
             rule.crash = None;
         }
         e.insert(avian3d::prelude::RigidBody::Dynamic);
+        // This test asks whether the scenery is solid, not what the law's
+        // ground blow (#2107) does to a body 400 m from a wall: with the term
+        // on, the az 6 / h 110 run is lifted over the cliff ring and never
+        // touches it (contacts 0, furthest 475.5 m, no crossing). The term has
+        // its own pins (`accept_ground_blow_*`, `m01_collision`), so it is
+        // switched off here and the wall is met as a plain obstacle.
+        if let Some(mut flight) = e.get_mut::<cs_app::playtest::scene::PlaytestOriginalFlight>() {
+            flight.model.globals.groundblow_mag = 0.0;
+        }
     }
     let rot = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
     {
