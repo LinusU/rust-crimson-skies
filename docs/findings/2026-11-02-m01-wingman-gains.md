@@ -496,3 +496,147 @@ the cell-grid contents for M01, the image-read floor/ceiling globals and the
 `+0x358 == 3` interplay with the follower's phases.
 
 Nothing here is `verified_original`.
+
+## 8. The "route object" is the hostile target handle, and the phase an M01 wingman flies (task #2289)
+
+Static reads of the owner image (`llvm-objdump -d -M intel`, `r2`) and
+retail `vehicle.zrd`; claim id `OWNER-STATIC-2026-10-29`, nothing
+`verified_original`. `accept_m01_wingman_route_phase_` (image/retail-gated)
+re-reads every window below. Implementer `sonnet-1`.
+
+### 8.1 What `[esi+0x948]` is, and where it comes from
+
+**Correction to §7.1/§7.3: it is not a route.** `[esi+0x948]` is the AI's
+current **target handle**, a 0x14-byte reference object (`[+4]` the target
+entity reference, `[+8]` a use count, vtable slot `+0x48` releases it). The
+phase bodies' "route-derived point" (phases 0 and 2) is the target's point,
+and the code after the station call (`0x41eed8`..`0x41eff9`, aim and lead
+through `0x460be0`) is the shooting solution against it — which is why the
+routine returns right after the station call without one.
+
+| step | window | effect |
+| --- | --- | --- |
+| constructor | `xor ebx,ebx` `0x4affaf`; stores `0x4b039f` (`+0x948`), `0x4b03b6` (`+0x94c`), `0x4b05a3` (`+0xd8`), `0x4b08bf` (`+0x358`), `0x4b00e8` (`+0x2fc`), `0x4b05a9`/`0x4b05af` (`+0xdc`/`+0xdd`) | handle null, timer 0, phase 0, sub-state 0 at spawn |
+| per-tick upkeep | AI step `0x41c270`: `cmp byte [esi+0xcc],0` / `jne 0x41c361` (`0x41c273`..`0x41c27b`), then `call 0x41fe10` at `0x41c281` (its only caller) | runs every AI step unless `+0xcc` (the parked-on-a-path byte) is set; returns at once while the global byte `[0x64f66e]` is set (`0x41fe1e`, `0x41fe35`; written at `0x43db4d` from the result of `0x5b7910`, cleared at `0x464693`/`0x4654fa`, not decoded further) |
+| scorer | mode 0/4 → local with vtable `0x603544` (slot 0 `0x421ad0`), every other mode `0x60354c` (`0x421950`) (`0x41fe75`..`0x41fe8f`); built by `0x422850`/`0x421e00` with the AI's team (`lea eax,[esi+8]`, `0x41fe3f`) at scorer `+0x10` | candidate cost |
+| follower path | mode 4 skips the leader branch (`cmp eax,4 / je 0x41ff8e`, `0x41feb0`); a null handle (`0x41ff8e`) or an expired timer `[esi+0x94c] <= [0x71c470]` (`0x41ff98`) calls `0x41f9c0(scorer, [esi+0x344], 0x420070(esi,1))` at `0x420014` and stores the result at `0x420031` | rebuild |
+| re-arm | `0x4b0f20`: `+0x94c = [0x71c470] + [0x6035e4]` (20.0 s) | at `0x41ff60` and `0x42003b` |
+
+`0x41f9c0` walks four candidate sets — the vehicle list `[0x71dabc]`, the list
+`[0x71d914]`, the vector `[0x71d33c]..[0x71d340]` and the list `[0x64f78c]` —
+scores each with the scorer (`0x422890` first asks the candidate's virtual
+`+0x34` with the scorer's `+0x10`, the AI's **team**: a hostility test; an
+invalid candidate scores `1e21`, `[0x6034bc]`), adds the AI's bias
+(`+0x340` to vehicles, `+0x344` to structures) and keeps the lowest score under
+`1e20` (`[0x6034c0]`); it returns a new handle, or null when nothing
+qualifies. The scorer `0x421ad0` is a range gate (horizontal squared distance
+against `+0x328`, y against `+0x32c`/`+0x330`) followed by a priority
+weighting (+ a bonus when the candidate is a mode-4 follower, `0x421c26`;
+a bonus when the candidate is the player vehicle, `0x421bea`; angular terms
+below `0x421c3b`, not decoded).
+
+**Retail data.** Those AI fields are *definition* words, copied by the loader
+(`0x475a5f`..`0x475c8e`, `ebp` = the definition): `def+0xa4` → mode `+0x67c`,
+`def+0x44/+0x48/+0x4c` → `+0x328/+0x32c/+0x330`, `def+0x138/+0x13c` →
+`+0x340/+0x344`. The parser writes them from the keys `attack`
+(`0x627e30`, `0x479d11`..`0x479d49`), `target_bias` (`0x627e7c`,
+`0x479e56`) and `struct_bias` (`0x627e88`, `0x479e74`); constructor defaults
+`160000`/`-400`/`400` and `0`/`0` (`0x478a69`..`0x478a77`). In retail
+`ZBD/zrdr.zbd` `vehicle.zrd`: `basic_airplane` has `attack = [2000.0]`
+(→ band ±2000 m, squared range 4,000,000), `wingman` has
+`target_bias = [-100.0]` and `struct_bias = [-200.0]` (negative = preferred),
+`devastator` none, and no record in the chain declares `pursuit_range`.
+`wingman_1` (aiv.zrd member of `ZBD/C3/M01/zrdr.zbd`) carries none of these:
+they are not mission data. So **no M01 wingman is given a handle by the
+retail mission data**; it holds one exactly while a hostile candidate sits in
+its 2000 m band and scores under `1e20`, re-evaluated every 20 s.
+
+What static reading cannot decide: whether a hostile candidate is in that
+band during the first 45 s, which depends on the hostile roster and
+positions at run time (team ids, `0x41ae40`'s cost, the `0x71d914`/`0x64f78c`
+populations) and on the `[0x64f66e]` gate. The port has no hostile search, so
+its hillside re-fly says nothing about it either way.
+
+### 8.2 The phase word `[esi+0xd8]`
+
+Initial value **0** (`0x4b05a3`). Inside the AI code (`0x41c270..0x4222ff`,
+scanned for every `[esi+0xd8]` store) the only stores are:
+
+| site | stores | condition |
+| --- | --- | --- |
+| `0x41e7b0` | 2 (`ecx`) and `+0xdd = 1` | the leader is not the player vehicle (`0x41e78a`..`0x41e7a6`), every call |
+| `0x41e8d1` | 1 | phase 2, no target |
+| `0x41e9f6` | 2 (`ecx`, set by `mov ecx,2` at `0x41e79a`/`0x41e7a1`) | phase 3 with a target |
+| `0x41ea21` | 4 | phase 3, no target, within 2500 (`0x6035cc`) of the held goal |
+| `0x41ea37` | 2 (`ecx`) | phase 4 with a target |
+| `0x41ea62` | 1 | phase 4 within 2500 of the goal; phase 2 with a target farther than the range test (`0x41e9dc`..`0x41e9ea`); phase 0 once leader awake, gap² < 490000, own speed > 20.576 |
+
+(Other `[reg+0xd8]` stores in the image sit in other classes: `0x402b72`,
+`0x4578bd` (a HUD-style reader of `[obj+0x948]`), `0x4c0b09`/`0x4c0c12`,
+`0x59be3a`, `0x5b58f4`/`0x5b5970`, `0x4d21e1`, `0x55025c` and the aiv
+document copies at `0x436e7e`..`0x439053`; `0x4679cf`/`0x468e1d` touch no
+vehicle field within ±120 lines and were not classified further.)
+
+**Phase 3 is stored nowhere**, so 3 and 4 are unreachable from the
+constructor's 0; phase 1 has no exit in the first table (`0x41f010` is the
+join).
+
+**What an M01 wingman flies.** Betty's leader resolves to the player vehicle
+(`primary target` absent → the literal `player`, finding
+`2026-10-15-m01-aiv-layout.md` §2 field 6), so the forced-2 store does not
+run and the table is the player-leader one:
+
+* tick 1: phase 0. Its body (`0x41ea9c`) without a target flies the stick law
+  at **leader position + 200 m on y** (`0x41eb96`..`0x41ebbe`); with a target
+  within 1800² (`0x6035c8`) the target's point.
+* 0 → 1 on the first call where the player is awake (`[edi+0x91d] == 0`),
+  the squared gap is under 490000 (700 m) and own speed `[esi+0x934]` exceeds
+  20.576 m/s. The spawn gap is 118 m. In the port the speed gate opens at tick
+  58 (decision 60, about half a second).
+* then phase 1 (the slot, §7.1) for the rest of the 45 s: nothing leaves it.
+
+So the **phase sequence over 45 s is 0 → 1 inside the first second, then 1**,
+provided the player stays awake and inside the table's conditions; phases 2,
+3 and 4 are not reached by a player-led wingman. The runtime state the
+sequence depends on is the speed at tick 1 (the port's value; the original's
+is the vehicle's launch velocity, not read here), the player's asleep flag
+`+0x91d` and nothing about targets once in phase 1.
+
+### 8.3 The port's `original_stick` branch against this
+
+* Phase 1 (station): the same slot, frame and 20.576/700 m gate as the port
+  (§7.1) — no difference found beyond the unproven row 0/row 1 signs.
+* **Gap found and corrected:** before the engage gate the port held course
+  with the designed law even with `original_stick` on; the original flies the
+  stick law at leader + 200 m on y. The port now does so behind
+  `original_stick` (`PHASE0_LEADER_CLIMB_M`, default off, so the default M01
+  follower, its pins and the smoke are unchanged). It affects the first
+  ~0.5 s only.
+* The port has no target handle (no hostile search), so phases 0/2 with a
+  target and the shooting solution after the station call are not modelled.
+  Phase 2 is never reached by a player-led wingman, so this changes only
+  phase 0's goal, and only while a hostile is inside the band.
+
+Re-fly of `accept_m01_wingman_stick_betty_over_the_hillside` with that change
+(retail M01, 45 s at 120 Hz, `original_stick` on, port behaviour only):
+
+| gains | closest | worst after 30 s | final | latched |
+| --- | --- | --- | --- | --- |
+| merged (0.6 / 0.0 / 0.15, 100 / 100 / 0.25) | 84 m | 577 m | 577 m | 193 / 5400 ticks |
+| `ai_input_*` (3.5 / 1.0) | 119 m | 4131 m | 4131 m | 4687 / 5400 ticks |
+
+Before the change: 80 / 688 / 688 and 741 latched (§7.5). The drift moves but
+the station (19 m) is not held, so **`original_stick` stays off**; with a
+chaotic dependence (the latch count changed 741 → 193 from a half-second
+change) the numbers are not evidence of convergence either way. The largest
+remaining unknowns are therefore not the phase: the pitch-dead law's
+authority, the slot signs, the 80 m push direction and the force model.
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| hostile roster/positions in M01's first 45 s | whether a target handle exists (phase 0 goal; shooting) | the M01 spawn population and `0x41ae40` / `0x421ad0` angular terms decoded, or a capture (#358) |
+| `[0x64f66e]` | whether the upkeep runs at all | decode `0x5b7910` and its caller `0x43db4d` |
+| launch speed of Betty at tick 1 | how long phase 0 lasts | the vehicle's launch velocity setup |
+| `0x4679cf`/`0x468e1d` stores | completeness of the writer list | classify the two functions |
+
+Nothing here is `verified_original`.
