@@ -86,6 +86,7 @@ mod campaign {
     mod m01_wingman_formation;
     mod m01_wingman_gains;
     mod m01_wingman_hillside;
+    mod m01_wingman_phase_writers;
     mod m01_wingman_route_phase;
     mod m01_wingman_station_goal;
     mod m01_wingman_stick;
