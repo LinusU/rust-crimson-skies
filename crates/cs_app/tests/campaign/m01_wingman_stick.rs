@@ -5,7 +5,9 @@
 //! decoded in `docs/findings/2026-10-18-m01-wingman-player-leader.md` §4 and
 //! re-read from the image for this task; the result of re-flying the
 //! hillside with it is in
-//! `docs/findings/2026-11-02-m01-wingman-stick-law.md`.
+//! `docs/findings/2026-11-02-m01-wingman-stick-law.md`, and the pilot
+//! gains/limits it is flown with in
+//! `docs/findings/2026-11-02-m01-wingman-gains.md` (#2266).
 
 use avian3d::prelude::Position;
 use bevy::prelude::{App, Entity, Quat, Vec3, With};
@@ -15,6 +17,7 @@ use cs_app::engine_facts::engine_facts;
 use cs_app::mission_actors::ScriptedAircraftActor;
 use cs_app::mission_ai::MissionAircraftAi;
 use cs_app::mission_ai::{
+    M01_WINGMAN_PILOT_GAINS, PILOT_GAINS_AI_INPUT_KEYS, PilotInputGains, RUDDER_TOL,
     STICK_AIM_THRESHOLD, STICK_COARSE_FULL_ROLL_MIN, STICK_LEVEL_FORWARD_Y_MAX, STICK_LEVEL_GAIN,
     STICK_RECOVER_FORWARD_Y_MAX, wingman_stick, wingman_stick_command,
 };
@@ -29,7 +32,8 @@ use crate::campaign::vs_m01_rt_window::game_dir;
 const LEVEL_ROWS: [Vec3; 3] = [Vec3::X, Vec3::Y, Vec3::NEG_Z];
 
 /// Coarse branch, goal ahead: the aim is normalised, a goal up and to the
-/// right gets a full right roll and no yaw, a level goal ahead only pitch.
+/// right gets a right roll (scaled by the pilot's roll word) and no yaw, a
+/// level goal ahead only pitch.
 #[test]
 fn accept_m01_wingman_stick_coarse_branch_rolls_toward_the_goal() {
     // 3 m right, 3 m above, 10 m ahead.
@@ -38,10 +42,13 @@ fn accept_m01_wingman_stick_coarse_branch_rolls_toward_the_goal() {
     assert!((words.a100 + norm).abs() < 1e-6, "A100 = -bx: {words:?}");
     assert_eq!(words.a10c, 0.0, "the coarse branch writes no yaw word");
     let input = words.flight_input(0.7);
+    let expected_roll = norm * M01_WINGMAN_PILOT_GAINS.scale[0];
     assert!(
-        input.roll > 0.5,
-        "right-wing-down toward a goal on the right"
+        (input.roll - f64::from(expected_roll)).abs() < 1e-6,
+        "right-wing-down by the roll word times its scale ({expected_roll}), got {}",
+        input.roll
     );
+    assert!(input.roll > 0.0, "toward a goal on the right");
     // A goal straight ahead is the degenerate by := 1 case.
     let ahead = wingman_stick(Vec3::new(0.0, 0.0, 10.0), LEVEL_ROWS, 60.0, 0.0);
     assert_eq!(ahead.a108, 1.0);
@@ -63,14 +70,23 @@ fn accept_m01_wingman_stick_goal_below_flips_the_roll_by_magnitude() {
     );
 }
 
-/// Fine branch: only with the unmeasured `def+0x260` at least the aim.
+/// Fine branch: gated by the definition's `rudder_tol` (`def+0x260`), which
+/// the constructor sets to `0.2` and the retail `wingman` record does not
+/// override — so a goal ahead (normalised magnitude 1.0) never takes it.
 #[test]
-fn accept_m01_wingman_stick_fine_branch_needs_the_unmeasured_limit() {
+fn accept_m01_wingman_stick_fine_branch_needs_the_measured_rudder_tol() {
     let body = Vec3::new(-0.9, 0.02, 10.0);
-    let coarse = wingman_stick(body, LEVEL_ROWS, 60.0, 0.0);
+    let coarse = wingman_stick(body, LEVEL_ROWS, 60.0, RUDDER_TOL);
     let fine = wingman_stick(body, LEVEL_ROWS, 60.0, 1.0);
     assert_ne!(coarse, fine);
     assert!(fine.a10c > 0.5, "A10c = -bx in the fine branch: {fine:?}");
+    // The normalised magnitude of a goal ahead is exactly 1.0, above the
+    // measured 0.2, so the branch is never taken there.
+    let ahead = Vec3::new(-9.0, 1.0, 10.0);
+    assert_eq!(
+        wingman_stick(ahead, LEVEL_ROWS, 60.0, RUDDER_TOL),
+        wingman_stick(ahead, LEVEL_ROWS, 60.0, 0.0)
+    );
 }
 
 /// Wings-level assist and dive recovery.
@@ -130,12 +146,9 @@ fn position_of(app: &mut App, entity: Entity) -> Vec3 {
     app.world().get::<Position>(entity).expect("a pose").0
 }
 
-/// Betty flies the hillside of the real M01 with the AI ground blow on and
-/// the ported stick law. The gaps are printed and bounded loosely; the
-/// finding records them against the 118 m spawn gap.
-#[test]
-#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_m01_wingman_stick_betty_over_the_hillside() {
+/// One hillside flight of the real M01 with the ported stick law and the
+/// given pilot gains: `(spawn gap, closest, worst after 30 s, final)`.
+fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32) {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plans");
     let stage = stage_for(&root, &plan).expect("stage reads");
@@ -145,6 +158,7 @@ fn accept_m01_wingman_stick_betty_over_the_hillside() {
         let world = app.world_mut();
         for mut ai in world.query::<&mut MissionAircraftAi>().iter_mut(world) {
             ai.original_stick = true;
+            ai.pilot_gains = gains;
         }
     }
     let player = {
@@ -184,18 +198,38 @@ fn accept_m01_wingman_stick_betty_over_the_hillside() {
         }
     }
     let final_gap = position_of(&mut app, betty).distance(position_of(&mut app, player));
-    println!(
-        "stick law: spawn gap {spawn_gap:.0} m, closest {closest:.0} m, \
-         worst after 30 s {worst_after:.0} m, final {final_gap:.0} m"
-    );
-    // Not a pin on the outcome: with the unmeasured pilot gains at 1 the
-    // law does not hold station (see the finding). The run must have been
-    // flown by the ported law, with Betty actually moving.
+    // The run must have been flown by the ported law, with Betty actually
+    // moving.
     let flown = app
         .world()
         .get::<MissionAircraftAi>(betty)
         .expect("Betty's law");
     assert!(flown.original_stick && flown.follow_engaged && flown.decisions >= 45 * hz);
-    assert!(worst_after.is_finite() && closest.is_finite());
+    assert_eq!(flown.pilot_gains, gains);
     teardown(&mut app);
+    (spawn_gap, closest, worst_after, final_gap)
+}
+
+/// Betty flies the hillside of the real M01 with the AI ground blow on and
+/// the ported stick law, once with each reading of the pilot gains/limits
+/// (`docs/findings/2026-11-02-m01-wingman-gains.md`). Not a pin on the
+/// outcome: the law does not hold station with either reading, which is why
+/// `original_stick` stays off for the M01 pins.
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_stick_betty_over_the_hillside() {
+    for (label, gains) in [
+        (
+            "spawn words (0.5 / 2.0 / 0.15, 100 / 100 / 0.25)",
+            M01_WINGMAN_PILOT_GAINS,
+        ),
+        ("ai_input_* fallback (3.5 / 1.0)", PILOT_GAINS_AI_INPUT_KEYS),
+    ] {
+        let (spawn_gap, closest, worst_after, final_gap) = fly_hillside(gains);
+        println!(
+            "stick law [{label}]: spawn gap {spawn_gap:.0} m, closest {closest:.0} m, \
+             worst after 30 s {worst_after:.0} m, final {final_gap:.0} m"
+        );
+        assert!(worst_after.is_finite() && closest.is_finite());
+    }
 }

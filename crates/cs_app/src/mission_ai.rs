@@ -396,12 +396,17 @@ pub struct MissionAircraftAi {
     pub follow_engaged: bool,
     /// Fly the follower's station with the ported original stick law
     /// ([`wingman_stick`]) instead of the designed [`pursuit_command`].
-    /// **Off by default**: the law's pilot gains and limits
-    /// (`vehicle+0x8c4..+0x8d4`, from words the evidence does not give) are
-    /// unmeasured, and with the stand-in gain 1 Betty does not hold station
-    /// (`docs/findings/2026-11-02-m01-wingman-stick-law.md`), which the M01
-    /// wingman pins and the owner smoke would fail.
+    /// **Off by default**: the law's pilot gains and limits are now measured
+    /// ([`M01_WINGMAN_PILOT_GAINS`]), but with them Betty's station flight
+    /// neither closes nor settles (it oscillates around 170–464 m while the
+    /// designed follower closes to the slot), so the M01 wingman pins and the
+    /// owner smoke still fly the designed law — see
+    /// `docs/findings/2026-11-02-m01-wingman-gains.md` §5.
     pub original_stick: bool,
+    /// The pilot's per-axis input scale and limit the stick law applies
+    /// (`vehicle+0x8c4..+0x8d8`, [`M01_WINGMAN_PILOT_GAINS`] for the retail
+    /// M01 wingman).
+    pub pilot_gains: PilotInputGains,
 }
 
 impl MissionAircraftAi {
@@ -448,6 +453,7 @@ impl MissionAircraftAi {
             throttle_target: START_THROTTLE,
             follow_engaged: false,
             original_stick: false,
+            pilot_gains: M01_WINGMAN_PILOT_GAINS,
         }
     }
 
@@ -592,14 +598,68 @@ pub const STICK_LEVEL_GAIN: f32 = 0.2;
 /// [`FOLLOW_SPEED_BAND_M_S`].
 pub const STICK_RECOVER_FORWARD_Y_MAX: f32 = -0.5;
 
-/// **Unmeasured, designed**: the original compares the aim magnitude with the
-/// definition word `def+0x260` to choose the fine-aim branch (`0x41bc83`).
-/// The normalised magnitude is 1.0 whenever the goal is ahead, so the branch
-/// is taken ahead only if the word is at least 1. Nothing in the evidence at
-/// hand gives the word's value, so this crate flies the coarse branch
-/// (`0.0`); [`wingman_stick`] takes the value as a parameter so the other
-/// reading can be flown and reported.
-pub const STICK_FINE_AIM_LIMIT: f32 = 0.0;
+/// **Measured (static)**: `def+0x260`, the definition word the fine-aim
+/// branch compares the aim magnitude with (`0x41bc83`).
+///
+/// The definition parser stores it from the key `rudder_tol`
+/// (`0x47b366`/`0x47b37e`, key text `0x6281a4`), and the definition
+/// constructor defaults it to `0.2` (`0x478dcb`/`0x478dd6`). The retail
+/// `wingman` `vehicle.zrd` record carries no `rudder_tol` key, so M01's
+/// wingman flies the default. Because the aim is normalised to 1.0 whenever
+/// the goal is ahead, the fine branch is only reachable with the goal behind
+/// and within `0.2` m — i.e. effectively never, which is why the coarse
+/// branch is the one Betty flies.
+pub const RUDDER_TOL: f32 = 0.2;
+
+/// The pilot's per-axis input scale and limit: `vehicle+0x8c4/+0x8c8/+0x8cc`
+/// (roll, pitch, yaw) and `vehicle+0x8d0/+0x8d4/+0x8d8` (the same axes).
+///
+/// The spawn copy (`0x47d1e9`..`0x47d334`) takes each word from `arg1+0xa8..`
+/// when it is not `-1.0` and else from the definition's `ai_input_*` words:
+/// `def+0x264` (`ai_input_scale_roll`), `+0x268` (`ai_input_scale_pitch`),
+/// `+0x26c` (`ai_input_scale_yaw`), `+0x270` (`ai_input_limit_roll`),
+/// `+0x274` (`ai_input_limit_pitch`) and `+0x278` (`ai_input_limit_yaw`).
+/// See [`PILOT_GAINS_SPAWN_WORDS`] and [`PILOT_GAINS_AI_INPUT_KEYS`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PilotInputGains {
+    /// `+0x8c4/+0x8c8/+0x8cc`: roll, pitch, yaw.
+    pub scale: [f32; 3],
+    /// `+0x8d0/+0x8d4/+0x8d8`: roll, pitch, yaw.
+    pub limit: [f32; 3],
+}
+
+/// **Measured (static)**: the words the spawn copy reads first, `def+0xa8`,
+/// `+0xac`, `+0xb0`, `+0xb4`, `+0xb8` and `+0xbc`, mapped in that order to
+/// the pitch scale, the roll scale, the yaw scale, the pitch limit, the roll
+/// limit and the yaw limit (`0x47d1e9`..`0x47d334`).
+///
+/// The definition parser fills only the first three from config keys —
+/// `mode_alt` at `+0xa8` (`0x47b0a6`) and `collision_d`'s two components at
+/// `+0xac`/`+0xb0` (`0x47b0c4`/`0x47b0d0`) — and leaves the three limits at
+/// the constructor's values. The definition constructor's defaults are
+/// `2.0`, `0.5`, `0.15`, `100.0`, `100.0`, `0.25` (`0x478b10`..`0x478b44`),
+/// and the retail `wingman` record sets neither key, so its definition keeps
+/// them. `docs/findings/2026-11-02-m01-wingman-gains.md` records the
+/// `kind_of` question this leaves open.
+pub const PILOT_GAINS_SPAWN_WORDS: PilotInputGains = PilotInputGains {
+    scale: [0.5, 2.0, 0.15],
+    limit: [100.0, 100.0, 0.25],
+};
+
+/// **Measured (static)**: the definition's `ai_input_*` scales and limits
+/// (`def+0x264..def+0x278`), the constructor defaults the spawn copy falls
+/// back to when the first source is the record document's `-1.0` sentinel
+/// (`0x478de0`..`0x478dfe`: `3.5` on each scale from `0x40600000`, `1.0` on
+/// each limit from `0x3f800000`). No retail vehicle record overrides them.
+pub const PILOT_GAINS_AI_INPUT_KEYS: PilotInputGains = PilotInputGains {
+    scale: [3.5, 3.5, 3.5],
+    limit: [1.0, 1.0, 1.0],
+};
+
+/// **Measured (static), the port's choice for M01's wingman**: the spawn
+/// copy's first source, since the retail `wingman` definition carries neither
+/// `mode_alt` nor `collision_d` and so keeps the constructor's words.
+pub const M01_WINGMAN_PILOT_GAINS: PilotInputGains = PILOT_GAINS_SPAWN_WORDS;
 
 /// The three stick words `0x41b560` writes: `vehicle+0x100`, `+0x108`,
 /// `+0x10c`, copied to `+0x114`, `+0x11c`, `+0x120` (`0x41c01e`..), which the
@@ -618,7 +678,8 @@ pub struct StickWords {
 }
 
 impl StickWords {
-    /// The flight input these words drive.
+    /// The flight input these words drive with the words M01's wingman gets
+    /// ([`M01_WINGMAN_PILOT_GAINS`]).
     ///
     /// **Designed signs**: the basis-row signs are unmeasured (finding
     /// `2026-10-18-m01-wingman-player-leader.md` §2). Reading the rows as
@@ -627,18 +688,46 @@ impl StickWords {
     /// pushes `-row0.y` there) if a positive roll word is a roll to the
     /// *left*, so [`FlightInput::roll`] (positive right-wing-down) takes the
     /// negated word. Pitch (`by`, positive nose-up) and yaw (`-bx`, positive
-    /// nose-left) pass through. The pilot gains `+0x8c4..` and limits
-    /// `+0x8d4..` are unmeasured: gain 1, limit 1 (the axis range).
+    /// nose-left) pass through.
     #[must_use]
     pub fn flight_input(self, throttle: f64) -> FlightInput {
+        self.flight_input_with(throttle, M01_WINGMAN_PILOT_GAINS)
+    }
+
+    /// The flight input these words drive after the pilot's scale and limit
+    /// (step 7 of the law, `0x41be53`..`0x41bf8e`).
+    ///
+    /// Each axis is multiplied by its scale (plus the `0x64ee4c` bonus
+    /// `0.5`, `0x6032e0`, which this crate flies clear) and then clamped to
+    /// the axis limit (plus the bonus `0.25`, `0x6034f4`, likewise clear) —
+    /// the order the original applies them in. `scale` and `limit` are
+    /// `(roll, pitch, yaw)`.
+    #[must_use]
+    pub fn flight_input_with(self, throttle: f64, gains: PilotInputGains) -> FlightInput {
+        let scaled = self.scaled(gains);
         FlightInput::clamped(
-            f64::from(self.a108),
-            f64::from(-self.a100),
-            f64::from(self.a10c),
+            f64::from(scaled.a108),
+            f64::from(-scaled.a100),
+            f64::from(scaled.a10c),
             throttle,
             false,
         )
         .expect("every term is finite and the axes are clamped")
+    }
+
+    /// Step 7 alone: the three words after their scale and limit.
+    #[must_use]
+    pub fn scaled(self, gains: PilotInputGains) -> Self {
+        let axis = |word: f32, scale: f32, limit: f32| {
+            let scaled = word * scale;
+            scaled.clamp(-limit.abs(), limit.abs())
+        };
+        Self {
+            a100: axis(self.a100, gains.scale[0], gains.limit[0]),
+            a108: axis(self.a108, gains.scale[1], gains.limit[1]),
+            a10c: axis(self.a10c, gains.scale[2], gains.limit[2]),
+            recover_throttle: self.recover_throttle,
+        }
     }
 }
 
@@ -709,11 +798,12 @@ pub fn wingman_stick(body: Vec3, rows: [Vec3; 3], speed: f32, fine_aim_limit: f3
     if recover {
         a108 = if row1.x < 0.0 { 1.0 } else { -1.0 };
     }
-    // 7. The pilot gains and limits are unmeasured: 1 and 1.
+    // 7. The words go out raw; the pilot's scale and limit are step 7 of
+    // `wingman_stick`'s caller (`0x41be53`..) and live in [`StickWords`].
     StickWords {
-        a100: a100.clamp(-1.0, 1.0),
-        a108: a108.clamp(-1.0, 1.0),
-        a10c: a10c.clamp(-1.0, 1.0),
+        a100,
+        a108,
+        a10c,
         recover_throttle: recover,
     }
 }
@@ -1499,20 +1589,19 @@ fn decide_mission_aircraft_ai(
         };
         flight.command = match stick_goal {
             Some(goal) => {
-                let words = wingman_stick_command(
-                    orientation,
-                    goal,
-                    own_velocity.0.length(),
-                    STICK_FINE_AIM_LIMIT,
-                );
+                let words =
+                    wingman_stick_command(orientation, goal, own_velocity.0.length(), RUDDER_TOL);
                 if words.recover_throttle {
                     ai.throttle_target = FOLLOW_THROTTLE_MAX;
                 }
-                words.flight_input(if words.recover_throttle {
-                    FOLLOW_THROTTLE_MAX.min(1.0)
-                } else {
-                    throttle
-                })
+                words.flight_input_with(
+                    if words.recover_throttle {
+                        FOLLOW_THROTTLE_MAX.min(1.0)
+                    } else {
+                        throttle
+                    },
+                    ai.pilot_gains,
+                )
             }
             None => pursuit_command(orientation, aim, throttle),
         };
