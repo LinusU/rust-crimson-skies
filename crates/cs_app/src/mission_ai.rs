@@ -398,10 +398,10 @@ pub struct MissionAircraftAi {
     /// ([`wingman_stick`]) instead of the designed [`pursuit_command`].
     /// **Off by default**: the law's pilot gains and limits are now measured
     /// ([`M01_WINGMAN_PILOT_GAINS`]), but with them Betty's station flight
-    /// neither closes nor settles (it oscillates around 170–464 m while the
-    /// designed follower closes to the slot), so the M01 wingman pins and the
-    /// owner smoke still fly the designed law — see
-    /// `docs/findings/2026-11-02-m01-wingman-gains.md` §5.
+    /// neither closes nor settles while the designed follower closes to the
+    /// slot, so the M01 wingman pins and the owner smoke still fly the
+    /// designed law — see `docs/findings/2026-11-02-m01-wingman-gains.md`
+    /// §5–§6.
     pub original_stick: bool,
     /// The pilot's per-axis input scale and limit the stick law applies
     /// (`vehicle+0x8c4..+0x8d8`, [`M01_WINGMAN_PILOT_GAINS`] for the retail
@@ -640,13 +640,22 @@ pub struct PilotInputGains {
 /// The definition parser fills only the first three from config keys —
 /// `mode_alt` at `+0xa8` (`0x47b0a6`) and `collision_d`'s two components at
 /// `+0xac`/`+0xb0` (`0x47b0c4`/`0x47b0d0`) — and leaves the three limits at
-/// the constructor's values. The definition constructor's defaults are
-/// `2.0`, `0.5`, `0.15`, `100.0`, `100.0`, `0.25` (`0x478b10`..`0x478b44`),
-/// and the retail `wingman` record sets neither key, so its definition keeps
-/// them. `docs/findings/2026-11-02-m01-wingman-gains.md` records the
-/// `kind_of` question this leaves open.
+/// the constructor's `100.0`, `100.0`, `0.25` (`0x478b10`..`0x478b44`).
+/// `kind_of` merges at the definition level: the registry loader builds the
+/// child's definition as a deep copy of the parent's *parsed* definition
+/// (`0x477b70` copies `def+0xa0`..`+0x294` including `+0xa8`..`+0xbc` at
+/// `0x477fe2`..`0x478024` and `+0x260`..`+0x294` at `0x4788dd`..`0x4789d2`)
+/// before `0x479240` parses the child's own record keys over it
+/// (`0x474c25`/`0x474c82`). The retail chain is `wingman` → `devastator` →
+/// `basic_airplane`, only `basic_airplane` declares `mode_alt` = `0.0` and
+/// `collision_d` = `[0.6, 0.15]`, and neither descendant overrides them — so
+/// a `wingman` definition's six words are `0.0`, `0.6`, `0.15`, `100.0`,
+/// `100.0`, `0.25`. Read as gains that is roll scale `0.6`, **pitch scale
+/// `0.0`** and yaw scale `0.15`: the original's AI pitch axis is inert on
+/// this law, which is part of why `original_stick` stays off
+/// (`docs/findings/2026-11-02-m01-wingman-gains.md` §6).
 pub const PILOT_GAINS_SPAWN_WORDS: PilotInputGains = PilotInputGains {
-    scale: [0.5, 2.0, 0.15],
+    scale: [0.6, 0.0, 0.15],
     limit: [100.0, 100.0, 0.25],
 };
 
@@ -660,9 +669,9 @@ pub const PILOT_GAINS_AI_INPUT_KEYS: PilotInputGains = PilotInputGains {
     limit: [1.0, 1.0, 1.0],
 };
 
-/// **Measured (static), the port's choice for M01's wingman**: the spawn
-/// copy's first source, since the retail `wingman` definition carries neither
-/// `mode_alt` nor `collision_d` and so keeps the constructor's words.
+/// **Measured (static), M01's wingman**: the spawn copy's first source. The
+/// mode-4 follower's station call passes `bl = 0` (`0x41eed3`, finding §6),
+/// so the law applies this set — never the `ai_emerg_input_*` set.
 pub const M01_WINGMAN_PILOT_GAINS: PilotInputGains = PILOT_GAINS_SPAWN_WORDS;
 
 /// The three stick words `0x41b560` writes: `vehicle+0x100`, `+0x108`,

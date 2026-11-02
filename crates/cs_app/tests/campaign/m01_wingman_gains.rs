@@ -18,8 +18,10 @@
 //!   from `arg1+0xa8..+0xbc` (the definition, `0x47c2b4`'s kind test) and
 //!   falls back to `def+0x264..+0x278` on the `-1.0` sentinel, plus the
 //!   `+0x8dc..+0x8f0` `ai_emerg_input_*` set that step 7's `bl` argument
-//!   selects instead; the finding records which reading the retail data
-//!   supports and what stays unmeasured;
+//!   selects instead; the `kind_of` merge (`0x477b70`) means the retail
+//!   `wingman` definition inherits `basic_airplane`'s parsed words —
+//!   `0.0/0.6/0.15/100/100/0.25` — and the finding records which reading the
+//!   retail data supports and what stays unmeasured;
 //! * step 7 of the stick law (`0x41be53`..`0x41bf8e`) that scales each word
 //!   and clamps it to the limit.
 
@@ -36,40 +38,41 @@ use cs_types::asset_id::SourceSpan;
 use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// A test-local assertion helper: the four bytes at `va` in the owner image.
-fn f32_at(bytes: &[u8], va: u64) -> f32 {
+pub(crate) fn f32_at(bytes: &[u8], va: u64) -> f32 {
     let at = usize::try_from(va - 0x400000).expect("image offset");
     f32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
 }
 
 /// The raw bytes of `count` instructions starting at `va`.
-fn bytes_at(bytes: &[u8], va: u64, count: usize) -> &[u8] {
+pub(crate) fn bytes_at(bytes: &[u8], va: u64, count: usize) -> &[u8] {
     let at = usize::try_from(va - 0x400000).expect("image offset");
     &bytes[at..at + count]
 }
 
 /// The null-terminated text at `va` in the owner image.
-fn text_at(bytes: &[u8], va: u64) -> String {
+pub(crate) fn text_at(bytes: &[u8], va: u64) -> String {
     let at = usize::try_from(va - 0x400000).expect("image offset");
     let end = bytes[at..].iter().position(|byte| *byte == 0).expect("NUL") + at;
     String::from_utf8(bytes[at..end].to_vec()).expect("ASCII key")
 }
 
 /// The measured pilot words: the spawn copy's first source (which is what
-/// M01's `wingman` definition holds) and the `ai_input_*` fallback it never
-/// reaches, plus the two numbers the ported law's step 7 applies to each
-/// word — its scale first, then its limit.
+/// M01's `wingman` definition holds after the `kind_of` merge — the
+/// `accept_m01_wingman_callsite_` tests pin that mechanism) and the
+/// `ai_input_*` fallback it never reaches, plus the two numbers the ported
+/// law's step 7 applies to each word — its scale first, then its limit.
 #[test]
 fn accept_m01_wingman_gains_scale_then_limit_shape_each_word() {
     assert_eq!(RUDDER_TOL, 0.2);
-    assert_eq!(M01_WINGMAN_PILOT_GAINS.scale, [0.5, 2.0, 0.15]);
+    assert_eq!(M01_WINGMAN_PILOT_GAINS.scale, [0.6, 0.0, 0.15]);
     assert_eq!(M01_WINGMAN_PILOT_GAINS.limit, [100.0, 100.0, 0.25]);
     assert_eq!(PILOT_GAINS_AI_INPUT_KEYS.scale, [3.5, 3.5, 3.5]);
     assert_eq!(PILOT_GAINS_AI_INPUT_KEYS.limit, [1.0, 1.0, 1.0]);
     assert_eq!(M01_WINGMAN_PILOT_GAINS, PILOT_GAINS_SPAWN_WORDS);
 
-    // The M01 words: roll is halved, pitch is doubled, yaw is scaled to
-    // 0.15 and capped at 0.25; the roll and pitch limits are the flight
-    // input's own range.
+    // The M01 words: roll is scaled to 0.6, the inherited `mode_alt` 0.0
+    // zeroes the pitch axis outright, yaw is scaled to 0.15 and capped at
+    // 0.25; the roll and pitch limits are the flight input's own range.
     let small = StickWords {
         a100: 0.1,
         a108: 0.1,
@@ -77,8 +80,8 @@ fn accept_m01_wingman_gains_scale_then_limit_shape_each_word() {
         recover_throttle: false,
     };
     let scaled = small.scaled(M01_WINGMAN_PILOT_GAINS);
-    assert!((scaled.a100 - 0.05).abs() < 1e-6, "{scaled:?}");
-    assert!((scaled.a108 - 0.2).abs() < 1e-6, "{scaled:?}");
+    assert!((scaled.a100 - 0.06).abs() < 1e-6, "{scaled:?}");
+    assert_eq!(scaled.a108, 0.0, "0.1 * 0.0");
     assert!((scaled.a10c - 0.015).abs() < 1e-6, "{scaled:?}");
 
     let big = StickWords {
@@ -88,8 +91,8 @@ fn accept_m01_wingman_gains_scale_then_limit_shape_each_word() {
         recover_throttle: false,
     };
     let scaled = big.scaled(M01_WINGMAN_PILOT_GAINS);
-    assert_eq!(scaled.a100, 0.25, "0.5 * 0.5");
-    assert_eq!(scaled.a108, -1.0, "-0.5 * 2.0");
+    assert_eq!(scaled.a100, 0.3, "0.5 * 0.6");
+    assert_eq!(scaled.a108, 0.0, "-0.5 * 0.0");
     assert_eq!(scaled.a10c, 0.15, "1.0 * 0.15");
     let pinned = StickWords { a10c: 2.0, ..big }.scaled(M01_WINGMAN_PILOT_GAINS);
     assert_eq!(pinned.a10c, 0.25, "the yaw limit binds at 0.25");
@@ -106,7 +109,7 @@ fn accept_m01_wingman_gains_scale_then_limit_shape_each_word() {
     // The flight input negates the roll word and passes pitch and yaw.
     let input = small.flight_input(0.7);
     assert!(input.roll < 0.0, "a100 drives a left roll word");
-    assert!(input.pitch > 0.0);
+    assert_eq!(input.pitch, 0.0, "the inherited mode_alt 0.0 zeroes pitch");
     assert!(input.yaw > 0.0);
     assert_eq!(input.throttle, 0.7);
 }
@@ -118,7 +121,7 @@ fn accept_m01_wingman_gains_constants_are_the_measured_ones() {
     assert_eq!(
         PILOT_GAINS_SPAWN_WORDS,
         PilotInputGains {
-            scale: [0.5, 2.0, 0.15],
+            scale: [0.6, 0.0, 0.15],
             limit: [100.0, 100.0, 0.25],
         }
     );
@@ -320,7 +323,11 @@ fn accept_m01_wingman_gains_image_pins_the_writer_windows() {
 
 /// A test-local walk to one member's decoded document, the same production
 /// path `m01_aiv_layout` uses.
-fn member_document(root: &Path, container_key: &str, member: &str) -> (ZrdValue, SourceSpan) {
+pub(crate) fn member_document(
+    root: &Path,
+    container_key: &str,
+    member: &str,
+) -> (ZrdValue, SourceSpan) {
     let found = cs_assets::install::discover(root).expect("the installation discovers");
     let record = found
         .manifest
@@ -358,7 +365,7 @@ fn member_document(root: &Path, container_key: &str, member: &str) -> (ZrdValue,
 }
 
 /// The `(name, record)` pairs of the retail `vehicle.zrd` document.
-fn vehicle_records(document: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
+pub(crate) fn vehicle_records(document: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
     let top = document.as_list().expect("the vehicle document is a list");
     let records = top
         .first()
@@ -378,7 +385,7 @@ fn vehicle_records(document: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
 }
 
 /// The value node of `key` in a flat record list.
-fn record_field<'a>(record: &'a ZrdValue, key: &str) -> Option<&'a ZrdValue> {
+pub(crate) fn record_field<'a>(record: &'a ZrdValue, key: &str) -> Option<&'a ZrdValue> {
     let fields = record.as_list()?;
     let mut index = 0;
     while index + 1 < fields.len() {
@@ -390,7 +397,7 @@ fn record_field<'a>(record: &'a ZrdValue, key: &str) -> Option<&'a ZrdValue> {
     None
 }
 
-const AI_INPUT_KEYS: [&str; 7] = [
+pub(crate) const AI_INPUT_KEYS: [&str; 7] = [
     "rudder_tol",
     "ai_input_scale_pitch",
     "ai_input_scale_roll",
@@ -401,11 +408,12 @@ const AI_INPUT_KEYS: [&str; 7] = [
 ];
 
 /// **The values M01's wingman actually gets.** The retail `wingman` record
-/// declares none of the seven keys, so the definition keeps the constructor's
-/// words. M01's `wingman_1` document carries `-1.0` in its own six optional
-/// slots (fields 44..49); the spawn copy reads the definition, not those
-/// slots (finding §3), so they pin the record's shape rather than override
-/// the words.
+/// declares none of the seven keys, but its `kind_of` chain merges
+/// `basic_airplane`'s parsed definition — the `accept_m01_wingman_callsite_`
+/// tests pin that mechanism and the resulting words. M01's `wingman_1`
+/// document carries `-1.0` in its own six optional slots (fields 44..49);
+/// the spawn copy reads the definition, not those slots (finding §3), so
+/// they pin the record's shape rather than override the words.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_wingman_gains_retail_pins_m01_wingman_values() {
@@ -425,10 +433,11 @@ fn accept_m01_wingman_gains_retail_pins_m01_wingman_values() {
             record_field(wingman, key)
         );
     }
-    // With neither key the definition keeps the constructor's words, which
-    // are the ones M01's wingman flies.
+    // The `kind_of` merge seeds the definition with the parent's parsed
+    // words: `basic_airplane`'s `mode_alt` 0.0 and `collision_d` [0.6, 0.15]
+    // land on the scale slots and the constructor's limits survive.
     assert_eq!(M01_WINGMAN_PILOT_GAINS, PILOT_GAINS_SPAWN_WORDS);
-    assert_eq!(M01_WINGMAN_PILOT_GAINS.scale, [0.5, 2.0, 0.15]);
+    assert_eq!(M01_WINGMAN_PILOT_GAINS.scale, [0.6, 0.0, 0.15]);
     assert_eq!(M01_WINGMAN_PILOT_GAINS.limit, [100.0, 100.0, 0.25]);
     assert_eq!(RUDDER_TOL, 0.2);
 

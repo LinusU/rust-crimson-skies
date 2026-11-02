@@ -220,7 +220,7 @@ fn fly_hillside(gains: PilotInputGains) -> (f32, f32, f32, f32) {
 fn accept_m01_wingman_stick_betty_over_the_hillside() {
     for (label, gains) in [
         (
-            "spawn words (0.5 / 2.0 / 0.15, 100 / 100 / 0.25)",
+            "merged kind_of words (0.6 / 0.0 / 0.15, 100 / 100 / 0.25)",
             M01_WINGMAN_PILOT_GAINS,
         ),
         ("ai_input_* fallback (3.5 / 1.0)", PILOT_GAINS_AI_INPUT_KEYS),
