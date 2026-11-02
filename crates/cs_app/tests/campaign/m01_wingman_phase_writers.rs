@@ -118,12 +118,37 @@ fn accept_m01_wingman_phase_writers_are_the_objectives_loader_not_the_ai_phase_w
         &[0x68, 0xf8, 0x5c, 0x62, 0x00]
     );
     assert_eq!(call_target(bytes, 0x4647c4), 0x466b70);
+    // The first caller's enclosing function is the mission-data loader: it logs
+    // "Load Mission Sounds" / "Finish LoadMissionData", and the function that
+    // logs "Begin CZMission::Load" calls it at `0x4653b0`.
+    assert_eq!(text_at(bytes, 0x625ca0), "Load Mission Sounds");
+    assert_eq!(
+        bytes_at(bytes, 0x4646f3, 5),
+        &[0x68, 0xa0, 0x5c, 0x62, 0x00]
+    );
+    assert_eq!(text_at(bytes, 0x625d94), "Finish LoadMissionData");
+    assert_eq!(
+        bytes_at(bytes, 0x464951, 5),
+        &[0x68, 0x94, 0x5d, 0x62, 0x00]
+    );
+    assert_eq!(call_target(bytes, 0x4653b0), 0x463f40);
+    assert_eq!(text_at(bytes, 0x625e14), "Begin CZMission::Load");
+    assert_eq!(
+        bytes_at(bytes, 0x465395, 5),
+        &[0x68, 0x14, 0x5e, 0x62, 0x00]
+    );
     assert_eq!(text_at(bytes, 0x625e2c), "objectives.zrd");
     assert_eq!(
         bytes_at(bytes, 0x46557b, 5),
         &[0x68, 0x2c, 0x5e, 0x62, 0x00]
     );
     assert_eq!(call_target(bytes, 0x465582), 0x466b70);
+    // The second caller is the (re)start, which also pushes NEW_GAME_START.
+    assert_eq!(text_at(bytes, 0x625e50), "NEW_GAME_START");
+    assert_eq!(
+        bytes_at(bytes, 0x46564d, 5),
+        &[0x68, 0x50, 0x5e, 0x62, 0x00]
+    );
 
     // One `0x5e4`-byte record per numbered block:
     //   edx = n*3; edx <<= 4 (= 48n); edx -= n (= 47n); eax = n + 8*edx
@@ -350,6 +375,11 @@ fn accept_m01_wingman_phase_writers_suspend_latch_has_four_writers_and_no_phase_
     // The automatic writer: the per-frame routine `0x4a0220` sets the byte when
     // the counter `[0x9be6f8]` has reached the deadline `[0x622bb8]`.
     assert_eq!(
+        bytes_at(bytes, 0x4a0220, 10),
+        &[0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x2a, 0x03, 0x60, 0x00],
+        "the automatic writer's routine prologue"
+    );
+    assert_eq!(
         bytes_at(bytes, 0x4a023e, 21),
         &[
             0xa1, 0xf8, 0xe6, 0x9b, 0x00, 0x53, 0x56, 0x8b, 0xf1, 0x3b, 0x05, 0xb8, 0x2b, 0x62,
@@ -414,6 +444,9 @@ fn accept_m01_wingman_phase_writers_suspend_latch_has_four_writers_and_no_phase_
         ],
         "the (re)start's clear, clock reset and re-arm"
     );
+    // The clear's enclosing function is `0x464680`, invoked from the function
+    // that logs "Begin CZMission::Load" (pinned in the loader test).
+    assert_eq!(call_target(bytes, 0x4653be), 0x464680);
 
     // No reader lies in the follower routine: the phase tables, the 0/2/4 -> 1
     // join and its three gates are not gated by the latch.
@@ -501,10 +534,12 @@ fn accept_m01_wingman_phase_writers_m01_objectives_declare_no_hide_or_sleep_keys
         2,
         "the block's neighbour key is present"
     );
-    assert!(
+    assert_eq!(
         all.iter()
-            .any(|key| key.as_str() == "NAP_OBJECTIVE_WHEN_I_COMPLETE"),
-        "the neighbouring nap key is present"
+            .filter(|key| key.as_str() == "NAP_OBJECTIVE_WHEN_I_COMPLETE")
+            .count(),
+        12,
+        "the neighbouring nap key is present (the count §9.3 records)"
     );
     assert_eq!(
         all.iter().filter(|key| key.as_str() == "HIDE_OBJ").count(),

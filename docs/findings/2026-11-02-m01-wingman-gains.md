@@ -668,9 +668,12 @@ opened **by name** from the stack argument (`mov esi,[esp+0x10c]` at
 (`TICK_DEPENDS_ON_OBJ` `0x6260cc` pushed `0x4679e1`, `WAKE_OBJECTIVE_WHEN_I_SLEEP`
 `0x6269c0` at `0x468dc5`, `HIDE_OBJ` `0x6269dc` at `0x468dfd`, `TIMER_ADJUST`
 `0x6269e8` at `0x468e66`, …). Both callers pass the name:
-`"objectives.zrd"` (`0x625cf8`) at `0x4647ba`/`call 0x4647c4` (inside
-`CZMission::Load`) and `"objectives.zrd"` (`0x625e2c`) at `0x46557b`/`call
-0x465582` (the mission re-start).
+`"objectives.zrd"` (`0x625cf8`) at `0x4647ba`/`call 0x4647c4` (inside the
+mission-data loader `0x463f40`, which logs `"Load Mission Sounds"` at
+`0x4646f3` and `"Finish LoadMissionData"` at `0x464951`, and which the function
+logging `"Begin CZMission::Load"` calls at `0x4653b0`) and `"objectives.zrd"`
+(`0x625e2c`) at `0x46557b`/`call 0x465582` (the mission re-start `0x4654e0`,
+which also pushes `NEW_GAME_START` at `0x46564d`).
 
 Each numbered block is one record in the array `[this+0xc4c]`:
 
@@ -698,16 +701,25 @@ writers of any vehicle field:
 
 The `-1` default is overwritten on the straight-line path (the `HIDE_OBJ`
 lookup always runs and takes one of the two branches above). The store at
-`0x468e03` (`89 bc b5 d8 00 00 00`) is **not** a `+0xd8` write: its address is
-`ebp + 0xdc + 4·esi`, the `0` terminator of the `+0xdc` sleep-wake list.
+`0x468e03` (`89 bc b5 d8 00 00 00`) is **not** a `+0xd8` write: it is
+`mov [ebp + 4·esi + 0xd8], edi`, where `esi` is the *1-based* list index (set
+to 1 at `0x468dcb`; the loop at `0x468dea` writes item `i` at
+`ebp + 0xd8 + 4·i`, i.e. from `+0xdc`, for `i = 1..n-1`). After the loop
+`esi = n`, so the store lands at `+0xdc + 4·(n-1)` — the `0` terminator of the
+`+0xdc` sleep-wake list, never a plain `+0xd8` field and never `[esi+0xd8]`.
 
-**Completeness.** A scan of `.text` for `mov dword ptr [reg+0xd8], r32` (mod 10,
-no SIB) finds 28 sites; those inside the loader are exactly the three above, all
-`[ebp+…]`, and those inside the AI code `0x41c270..0x4222ff` are exactly §8.2's
-six `[esi+…]` phase-word stores (plus the constructor's `0x4b05a3` elsewhere).
-The loader contains **no** `[esi+0xd8]` store. The record is `0x5e4` bytes and
-so has no `+0x948`/`+0x94c`/`+0x934`, while the object whose phase machine reads
-`+0xd8` has all three: the record cannot be that object.
+**Completeness.** A scan of `.text` for every `+0xd8` dword store form (`89 /r`
+and `c7 /0` with a `disp32` of `0xd8`, any base register, SIB byte or not)
+finds 32 sites. Three are stack slots (`89 84 24 d8 …`, `[esp+0xd8]`, at
+`0x45ab48`, `0x4793d8`, `0x5720a9`) and one is the `+0xdc` list terminator above
+(`0x468e03`), leaving **28 object-field stores**; those inside the loader are
+exactly the three above, all `[ebp+…]`, and those inside the AI code
+`0x41c270..0x4222ff` are exactly §8.2's six `[esi+…]` phase-word stores (plus
+the constructor's `0x4b05a3` elsewhere). The loader contains **no** `[esi+0xd8]`
+store, and the AI window contains no store through a register other than `esi`.
+The record is `0x5e4` bytes and so has no `+0x948`/`+0x94c`/`+0x934`, while the
+object whose phase machine reads `+0xd8` has all three: the record cannot be
+that object.
 
 ### 9.2 `[0x64f66e]` is the debug `suspend` latch — four writers, 28 readers, no phase reader
 
@@ -719,7 +731,7 @@ writers and missed the automatic one.
 | --- | --- | --- |
 | `0x43db4d` | `a2 6e f6 64 00` `mov [0x64f66e], al` | the debug console command `suspend <bool>`: the dispatcher `0x43d640` (entered from the `execute(text)` wrapper `0x45cdf0`, `call 0x43d640` at `0x45cdf5`) matches the 8-byte key `"suspend"` (`0x622c7c`, between `gbc` `0x622c84`, `exit` `0x622c88`, `debug` `0x622c90` and the cheats `gimme` `0x622cf8`), reads the boolean with `0x5b7910(this,0)` (`0x43db46`), stores it (`0x43db4d`), and on **false** resets the deadline `[0x622bb8] = 1e9` (`0x43db5a`) |
 | `0x4a0252` | `c6 05 6e f6 64 00 01` `mov [0x64f66e], 1` | automatic: the per-frame routine `0x4a0220` sets it when the counter has reached the deadline — `mov eax,[0x9be6f8]` (`0x4a023e`), `cmp eax,[0x622bb8]` (`0x4a0247`), `jb` past (`0x4a0250`) |
-| `0x464693` | `c6 05 6e f6 64 00 00` | the mission load clears it and re-arms `[0x622bb8] = [0x622bb4] + [0x9be6f8]` (`0x464680`..`0x46469a`, in `CZMission::Load` — the surrounding text is `Begin CZMission::Load`/`Load Mission Sounds`) |
+| `0x464693` | `c6 05 6e f6 64 00 00` | the mission load clears it and re-arms `[0x622bb8] = [0x622bb4] + [0x9be6f8]` (`0x464680`..`0x46469a`): the small function `0x464680`, which the caller logging `"Begin CZMission::Load"` (`0x465395`) invokes at `0x4653be`, and which also sets `[mission+0x6fc] = 1` at `0x4646a1` |
 | `0x4654fa` | `c6 05 6e f6 64 00 00` | the mission (re)start `0x4654e0` clears it, resets the sim clock `[0x71c470] = 0` (`0x4654f0`) and re-arms the same way |
 
 `[0x622bb4]` is the command line's `-suspend <n>` argument (`-suspend` text
@@ -737,8 +749,9 @@ AI-object tick region (`0x489ac4`, `0x48a12f`, `0x48b4ae`, `0x48b530`,
 `0x48ea74`), one at `0x452684`, and ten in the `0x4aad40`..`0x4bf716` region.
 The six AI readers each skip a **timer-driven** agent transition (the sleeps,
 re-arms and stun latches) and never the phase machine; the twenty-two outside
-the AI code are timer gates elsewhere in the tick and are not decoded further
-here. The two that bear on the follower:
+the AI code are clock- and state-gated updates in other routines (sampled here,
+not decoded exhaustively) and none lies in the follower routine. The two that
+bear on the follower:
 
 * `0x41fe1e`/`0x41fe35` — the whole upkeep `0x41fe10` returns before the scorer
   and before `0x41f9c0`, so the target handle `+0x948` is **not** rebuilt while
@@ -765,9 +778,10 @@ station call.
   `OBJECTIVE<n>` blocks (the count the win-route census uses) and **no
   `HIDE_OBJ` and no `WAKE_OBJECTIVE_WHEN_I_SLEEP`** (`TICK_DEPENDS_ON_OBJ`, 2,
   and `NAP_OBJECTIVE_WHEN_I_COMPLETE`, 12, are present as positive controls).
-  So every M01 block takes the absent branches: `hide_obj` is left at 0 and the
-  sleep-wake list at `+0xdc` is empty. What a stored 0 means to the wake walk is
-  not decided here and does not matter for M01, which never reaches the key.
+  So every M01 block takes the absent branches: `hide_obj` ends at 0 (the
+  `0x468e25` store, after the `-1` default) and the sleep-wake list at `+0xdc`
+  is empty. What a stored 0 means to the wake walk is not decided here and does
+  not matter for M01, which never reaches the key.
 * **M01's data cannot set `[0x64f66e]`.** Its four writers are the console
   command, the `-suspend` deadline and the two mission-lifecycle clears; none
   is in the objectives loader or the AI code. The exact runtime state that would
