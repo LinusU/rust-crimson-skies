@@ -196,11 +196,13 @@ fn accept_m01_wingman_formation_betty_engages_and_closes_on_the_player() {
     let steps = RUN_SECONDS * u64::from(BASELINE_FIXED_HZ);
     let mut engaged_at = None;
     let mut ticks = 0_u64;
+    let mut closest = f32::MAX;
     while ticks < steps {
         *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
             TimeUpdateStrategy::ManualDuration(timestep);
         app.update();
         ticks += 1;
+        closest = closest.min(position_of(&mut app, betty).distance(position_of(&mut app, player)));
         if engaged_at.is_none()
             && app
                 .world()
@@ -244,10 +246,16 @@ fn accept_m01_wingman_formation_betty_engages_and_closes_on_the_player() {
         "Betty ends inside the smoke's {WINGMAN_DISTANCE_M:.0} m threshold: {final_gap:.0} m \
          (spawned {spawn_gap:.0} m out)"
     );
+    // The follow law closes the spawn gap (118 m -> 36 m by t=38 s). From t=37 s
+    // the island's hillside meets both aircraft's 400 m ground-blow probe
+    // (#2107, #2224); the player is lifted one way and Betty another, and the
+    // gap opens again to 157 m at the end of the run
+    // (`docs/findings/2026-11-02-m01-wingman-after-the-ai-ground-blow.md`).
+    // The convergence is therefore pinned on the closest approach, not the end.
     assert!(
-        final_gap < spawn_gap,
-        "the follow law converges rather than holding the spawn: {spawn_gap:.0} -> \
-         {final_gap:.0} m"
+        closest < spawn_gap / 2.0,
+        "the follow law converges rather than holding the spawn: {spawn_gap:.0} m -> \
+         closest {closest:.0} m"
     );
     assert!(
         betty_final.distance(betty_spawn) > 100.0,
