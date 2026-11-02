@@ -32,7 +32,8 @@ use avian3d::prelude::{
     AngularVelocity, Collisions, LinearVelocity, Position, RigidBody, Rotation,
 };
 use bevy::prelude::{
-    Component, Entity, Message, MessageWriter, Or, Quat, Query, Res, ResMut, Resource, Vec3, With,
+    Component, Entity, Fixed, Message, MessageWriter, Or, Quat, Query, Res, ResMut, Resource, Time,
+    Vec3, With,
 };
 use cs_content::world::WorldCollisionRole;
 use cs_sim::collision::CollisionLayer;
@@ -41,6 +42,7 @@ use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent};
 use cs_types::Tick;
 use cs_types::net::EventId;
 
+use super::collision_grace::{CollisionGrace, session_time_s, sweep_skipped};
 use super::retail::PlaytestAreaBody;
 use super::scene::{PlaytestAircraft, PlaytestGround, PlaytestSea};
 use crate::airframe_damage::AirframeDamageRegion;
@@ -269,9 +271,11 @@ pub fn judge_terrain_contacts(
             &mut LinearVelocity,
             &mut AngularVelocity,
             &mut FatalContactRule,
+            Option<&CollisionGrace>,
         ),
         With<PlaytestAircraft>,
     >,
+    time: Res<Time<Fixed>>,
     victim: Option<Res<PlayerVictim>>,
     damage: Option<ResMut<SessionDamageResolver>>,
     mut commands: bevy::prelude::Commands,
@@ -280,15 +284,18 @@ pub fn judge_terrain_contacts(
     mut smoke: Option<ResMut<PendingOrdnanceBursts>>,
 ) {
     let (Some(victim), Some(mut damage)) = (victim, damage) else {
-        for (_, _, _, velocity, _, mut rule) in &mut aircraft {
+        for (_, _, _, velocity, _, mut rule, _) in &mut aircraft {
             rule.approach = velocity.0;
         }
         return;
     };
-    for (entity, position, rotation, mut velocity, mut angular, mut rule) in &mut aircraft {
+    let now_s = session_time_s(ledger.ticks, time.timestep().as_secs_f64());
+    for (entity, position, rotation, mut velocity, mut angular, mut rule, grace) in &mut aircraft {
         let before = rule.approach;
         rule.approach = velocity.0;
-        if rule.crash.is_some() {
+        // The sweep's first act (0x48d7fd): inside its grace the player's own
+        // contact search does not run.
+        if rule.crash.is_some() || sweep_skipped(grace, now_s) {
             continue;
         }
         let session = damage.resolver().session();

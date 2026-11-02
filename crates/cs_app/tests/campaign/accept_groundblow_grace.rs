@@ -274,3 +274,50 @@ fn accept_groundblow_grace_player_blows_inside_its_own_grace() {
     assert!((fixed_ticks(&probed.app) as f64 + 2.0) * dt_s < until);
     assert!(differs(&probed, &bare, player_of));
 }
+
+/// A scene whose bodies carry `ai_until` / `player_until` before the first
+/// frame, so the first contact meets vehicles already inside (or outside) a
+/// grace.
+fn scene_with_graces(ai_until: Option<f64>, player_until: Option<f64>) -> Scene {
+    let mut scene = scene(5.0);
+    for (entity, until_s) in [(scene.ai, ai_until), (scene.player, player_until)] {
+        if let Some(until_s) = until_s {
+            scene
+                .app
+                .world_mut()
+                .entity_mut(entity)
+                .insert(CollisionGrace { until_s });
+        }
+    }
+    scene.app.update();
+    scene
+}
+
+#[test]
+fn accept_sweep_grace_skip_boundary_is_strictly_before_the_deadline() {
+    use cs_app::playtest::collision_grace::sweep_skipped;
+    let grace = CollisionGrace { until_s: 2.0 };
+    assert!(sweep_skipped(Some(&grace), 1.999));
+    assert!(!sweep_skipped(Some(&grace), 2.0));
+    assert!(!sweep_skipped(None, 0.0));
+}
+
+#[test]
+fn accept_sweep_grace_skip_contact_between_two_vehicles_in_grace_is_not_seen() {
+    let far = 1.0e6;
+    let scene = scene_with_graces(Some(far), Some(far));
+    assert_eq!(grace(&scene.app, scene.ai), Some(far));
+    assert_eq!(grace(&scene.app, scene.player), Some(far));
+}
+
+#[test]
+fn accept_sweep_grace_skip_one_vehicle_outside_its_grace_still_sees_the_contact() {
+    let far = 1.0e6;
+    let scene = scene_with_graces(Some(far), None);
+    let dt_s = fixed_timestep_s(&scene.app);
+    let ai_until = grace(&scene.app, scene.ai).expect("the AI has a grace");
+    let player_until = grace(&scene.app, scene.player).expect("the player got one");
+    assert_eq!(ai_until, player_until);
+    assert!(ai_until < far);
+    assert!(ai_until - COLLISION_GRACE_S >= dt_s);
+}

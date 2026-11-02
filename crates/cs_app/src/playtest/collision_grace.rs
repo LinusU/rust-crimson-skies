@@ -42,13 +42,25 @@ pub fn session_time_s(ticks: u64, timestep_s: f64) -> f64 {
     ticks as f64 * timestep_s
 }
 
+/// Whether the vehicle is inside its grace, the `now < [V+0xac]` the contact
+/// sweep opens with (`0x48d7f0` / `0x48d7fd`): it returns without searching,
+/// so the vehicle's own contact reaction does not run. Symmetric: there is no
+/// seat test, and a player in its grace skips its own sweep too.
+#[must_use]
+pub fn sweep_skipped(grace: Option<&CollisionGrace>, now_s: f64) -> bool {
+    grace.is_some_and(|grace| now_s < grace.until_s)
+}
+
 /// Writes [`CollisionGrace`] on both aircraft of every aircraft-into-aircraft
-/// contact reported this tick.
+/// contact reported this tick. A contact is found by either vehicle's own
+/// sweep, so one whose two vehicles are both inside their grace is not seen
+/// and does not renew it.
 pub fn write_collision_grace(
     reports: Res<ContactReports>,
     ledger: Res<PhysicsTickLedger>,
     time: Res<Time<Fixed>>,
     flights: Query<(), With<PlaytestOriginalFlight>>,
+    graces: Query<&CollisionGrace>,
     mut commands: Commands,
 ) {
     for report in reports.reports() {
@@ -59,8 +71,15 @@ pub fn write_collision_grace(
         {
             continue;
         }
-        let until_s =
-            session_time_s(report.tick, time.timestep().as_secs_f64()) + COLLISION_GRACE_S;
+        let now_s = session_time_s(report.tick, time.timestep().as_secs_f64());
+        if report
+            .bodies
+            .iter()
+            .all(|body| sweep_skipped(graces.get(*body).ok(), now_s))
+        {
+            continue;
+        }
+        let until_s = now_s + COLLISION_GRACE_S;
         for body in report.bodies {
             commands.entity(body).insert(CollisionGrace { until_s });
         }

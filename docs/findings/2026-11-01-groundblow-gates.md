@@ -131,6 +131,17 @@ no resolving task yet): the port does not skip a vehicle's own contact
 reaction while its `V+0xac` is live (`0x48d807`); it only feeds the law's
 ground-blow gate.
 
+## Wired by #2258 (the sweep's grace skip)
+
+The "Not wired" item above is wired (static, `OWNER-STATIC-2026-10-29`):
+`collision_grace::sweep_skipped` is `now < V+0xac`, and the player's terrain
+contact judge (`fatal_contact::judge_terrain_contacts`) and the aircraft
+contact writer skip a vehicle inside its grace (`0x48d7fd`). A contact
+between two vehicles both inside their grace is not seen and does not renew
+it; one vehicle outside its grace still sees it and renews both. Pins:
+`accept_sweep_grace_skip_*`. Only the player and class 0/4 aircraft pairs
+have a port consumer; other contact reactions are unported.
+
 ## Wired by #2252 (`V+0x358`)
 
 Static claims only, not `verified_original`; the bytes are the ones in
