@@ -238,14 +238,12 @@ fn accept_m01_wingman_goal_y_never_binds_on_the_hillside_trace() {
             r.engaged,
             r.slot_dy
         );
-        // And the port's own helper is the identity on this row's delta.
-        let error = bevy::prelude::Vec3::new(0.0, r.vert, 0.0);
-        let here_y = r.leader_alt + r.slot_dy - r.vert;
-        let clamped = goal_y_clamped(
-            bevy::prelude::Vec3::new(0.0, here_y, 0.0),
-            error,
-            M01_WINGMAN_GOAL_Y_CEILING_M,
-        );
+        // And the port's own helper is the identity on this row's delta:
+        // `here` is Betty's own position and the delta is `goal - here`,
+        // which is `vert` only on the engaged rows.
+        let here = bevy::prelude::Vec3::new(0.0, r.betty_alt, 0.0);
+        let error = bevy::prelude::Vec3::new(0.0, goal_y - r.betty_alt, 0.0);
+        let clamped = goal_y_clamped(here, error, M01_WINGMAN_GOAL_Y_CEILING_M);
         assert_eq!(clamped, error, "t={} the clamp moves the delta", r.t);
     }
     // The re-flown 45 s row still reads the §10 numbers: the ported clamp
