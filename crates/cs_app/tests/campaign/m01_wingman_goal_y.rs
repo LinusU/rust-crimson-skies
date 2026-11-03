@@ -3,7 +3,7 @@
 //! of `0x41b560` — its byte windows, its data source and its M01 value.
 //!
 //! Task test prefix: `accept_m01_wingman_goal_y_`. The decode is in
-//! `docs/findings/2026-11-02-m01-wingman-gains.md` §12.5:
+//! `docs/findings/2026-11-02-m01-wingman-gains.md` §13:
 //!
 //! * `vehicle+0x314` is the vehicle definition's `flight_ceiling` key:
 //!   the `0x479240` parser looks it up (`push 0x627e14` at `0x479c5b`) and
@@ -30,7 +30,7 @@ use crate::campaign::m01_wingman_gains::{
 };
 use crate::campaign::vs_m01_rt_window::game_dir;
 
-/// The image windows §12.5 rests on: the clamp itself, the floor's writer,
+/// The image windows §13.2 rests on: the clamp itself, the floor's writer,
 /// the `flight_ceiling` key's parse site, the constructor default, the
 /// spawn copy into `vehicle+0x314`, and the one caller that disables the
 /// clamp around its own `0x41b560` call.
