@@ -437,6 +437,16 @@ fn accept_m01_wingman_altitude_windows_match_the_image() {
     window(0x48cc6a, &[0xd8, 0x8e, 0x84, 0x01, 0x00, 0x00]);
     window(0x48ccc1, &[0xd9, 0xe1]);
     window(0x48ccc3, &[0xd8, 0x0d, 0xfc, 0x89, 0x62, 0x00]);
+
+    // 7. The second AI law at `0x41c080` writes `+0x110` from `+0xfc` and
+    //    `+0x118` from `+0x104` through the same identity curve. Neither is a
+    //    control input of the force block, which reads only
+    //    `+0x114`/`+0x11c`/`+0x120` (pinned above), so this law has no pitch
+    //    authority either (§11.6).
+    window(0x41c201, &[0x8b, 0x96, 0xfc, 0x00, 0x00, 0x00]); // mov edx,[esi+0xfc]
+    window(0x41c21f, &[0xd9, 0x9e, 0x10, 0x01, 0x00, 0x00]); // fstp [esi+0x110]
+    window(0x41c241, &[0x8b, 0x8e, 0x04, 0x01, 0x00, 0x00]); // mov ecx,[esi+0x104]
+    window(0x41c257, &[0xd9, 0x9e, 0x18, 0x01, 0x00, 0x00]); // fstp [esi+0x118]
 }
 
 /// No AI path gives the pitch input `+0x11c` a non-zero value: the writers
@@ -480,9 +490,10 @@ fn accept_m01_wingman_altitude_has_no_ai_pitch_authority() {
         "the vehicle reset zeroes it"
     );
 
-    // `0x4209b0` (the only other AI law) is reached from the two bodies the
-    // mode-4 dispatch does not call, and writes +0x108 from `∓0.05`, which the
-    // same zero pitch scale would zero anyway.
+    // `0x4209b0` (the only other AI routine that writes the pitch word) is
+    // reached from the two bodies the mode-4 dispatch does not call, and
+    // writes +0x108 from `∓0.05`, which the same zero pitch scale would zero
+    // anyway.
     assert_eq!(
         within(&writers, 0x4209b0, 0x421800),
         [0x420ff9],

@@ -907,13 +907,14 @@ Implementer: `deepseek-1`.
 
 ### 11.1 Answer
 
-**No such term exists.** Nothing outside the follower law gives an AI vehicle pitch authority, and the port
-reproduces every term that acts with a zero pitch word. §10.3's three candidates are not force coefficients at
-all: `+0x114`, `+0x11c` and `+0x120` are **the three stick words themselves** — the force block's roll, pitch and
-yaw torque inputs — so a zero pitch word means the pitch torque term is skipped outright (`0x48cafb`). The one
-term in the block gated on both inputs being zero is the Level-Off assist, and it needs a per-vehicle byte
-`+0x12c` that only the **player vehicle's** `Shift+L` handler ever sets; every AI vehicle is constructed with it
-clear and no AI code touches it.
+**No such term exists.** Nothing outside the AI flight laws gives this wingman pitch authority — the only two
+AI routines that write the force block's pitch input are the follower law itself and `0x4209b0`'s `∓0.05`
+(§11.2) — and the port reproduces every term that acts with a zero pitch word. §10.3's three candidates are not
+force coefficients at all: `+0x114`, `+0x11c` and `+0x120` are **the three stick words themselves** — the force
+block's roll, pitch and yaw torque inputs — so a zero pitch word means the pitch torque term is skipped outright
+(`0x48cafb`). The one term in the block gated on both inputs being zero is the Level-Off assist, and it needs a
+per-vehicle byte `+0x12c` that only the **player vehicle's** `Shift+L` handler ever sets; every AI vehicle is
+constructed with it clear and no AI code touches it.
 
 What holds an M01 wingman's altitude is therefore the **lift law**, not a pitch term: the AI's lift target is
 always its own nose (`0x48c6e9`), the demanded acceleration is `lift_accel_rate * (Vt - V) + (0, g, 0)`
@@ -935,9 +936,9 @@ are untouched, and `original_stick` stays off.
 | pitch | `+0x11c` (`fld` `0x48caea`, `fcomp 0.0` `0x48caf0`, `jne 0x48cba0` `0x48cafb`) | `+0x648` (`0x48cb07`) | body X `+0x180` (`0x48cb0d`) | `d9 86 1c 01 00 00`, `d8 8e 48 06 00 00`, `8d 86 80 01 00 00` |
 | yaw | `+0x120` (`fld` `0x48cba0`, `fcomp` `0x48cba6`, `jne 0x48cc56` `0x48cbb1`) | `+0x64c` (`0x48cbb7`) | body Y `+0x18c` (`0x48cbc6`) | `d9 86 20 01 00 00`, `d9 86 4c 06 00 00`, `8d 86 8c 01 00 00` |
 
-The skip is a jump over the whole term, not a multiply by zero: for the pitch word the two instructions between
-the test and the axis load (`fmul [esi+0x648]` at `0x48cb07`, `fmul [esi+0x11c]` at `0x48cb1f`) are simply not
-executed. The torque word names are the definition keys, read from the `vehicle.zrd` parser and loader:
+The skip is a jump over the whole term, not a multiply by zero: for the pitch word the term's multiplies
+(`fmul [esi+0x648]` at `0x48cb07` and `fmul [esi+0x11c]` at `0x48cb1f`, with the axis load between them) are
+simply not executed. The torque word names are the definition keys, read from the `vehicle.zrd` parser and loader:
 
 | key (text VA) | parser slot | loader → vehicle slot | windows |
 | --- | --- | --- | --- |
@@ -1069,7 +1070,7 @@ unchanged.
 | --- | --- | --- |
 | `veh+0xf4`, whose `> 0` value also clears the assist hands-off (`0x487d83`..`0x487d96`) | the player's assist lifecycle, nothing on the AI seat | its writers (`0x4b05df` clears it at spawn) and readers |
 | the `+0x974` scale's record key and `veh+0xb4` clock value | how fast the stick words ramp in, never a zero word | the key table around `0x479240`, and `+0xb4`'s setup |
-| what `+0x110`/`+0x118` (written by `0x41c080` from `+0xfc`/`+0x104`) feed | a second AI law's output path; the force block reads none of the four | the consumer of `+0x110`/`+0x118`, in another flight model |
+| what `+0x110`/`+0x118` (written by the second AI law at `0x41c080` from `+0xfc`/`+0x104`) feed | a second AI law's output path; the force block reads neither (its only control reads are `+0x114`/`+0x11c`/`+0x120`) | the consumer of `+0x110`/`+0x118`, in another flight model |
 | whether the *shipped* wingman really tracks the player's altitude | whether "holds altitude" means "does not sink" or "follows the leader" — the static reading only supports the first | an original capture (#358) of Betty's altitude against the player's |
 | the 14 non-vehicle `[reg+0x11c]` stores (pane rects, aiv documents, other classes) | completeness of the writer scan for other classes only | not reached by this law |
 
