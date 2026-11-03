@@ -893,7 +893,190 @@ follower (§1) and was not decoded here.
 | unknown | affects | resolving step |
 | --- | --- | --- |
 | what supplies the follower's altitude authority in the original with `+0x8c8` = 0 | whether `original_stick` can ever hold station | the force block's use of `+0x114/+0x11c/+0x120` (`0x48caea`, `0x48cb07`, `0x48cbb7`) against the port's flight model |
-| the role of `0x4209b0` (callers `0x41d4e9`, `0x41da69`) | whether it flies M01's wingman in any phase | decode its callers' mode gates |
+| the role of `0x4209b0` (callers `0x41d4e9`, `0x41da69`) | whether it flies M01's wingman in any phase | **resolved in §11 (task #2297): no — it is the mode-0 scripted attitude-program driver, gated behind `+0x67c` = 0 and `+0x358` = 1, which the mode-4 follower never reaches** |
+
+Nothing here is `verified_original`.
+
+## 11. `0x4209b0` is the mode-0 scripted attitude-program driver — it cannot fly M01's wingman (task #2297)
+
+Static reads of the owner image; claim id `OWNER-STATIC-2026-10-29`,
+nothing `verified_original`. Every claimed byte window is pinned by an
+`accept_m01_wingman_4209b0_*` test in
+`crates/cs_app/tests/campaign/m01_wingman_4209b0.rs`. Implementer
+`swe2-max-1`. This section answers §10.3's open row: what `0x4209b0`
+computes, which goal it steers toward, what the ∓0.05 writes mean, the
+mode gates at both callers, and whether M01's player-led wingman in
+phase 0 or 1 can reach either one.
+
+### 11.1 The two call sites are the `+0x358` = 1 slot of a mode-0 switch
+
+A byte scan of `.text` for `e8` rel32 call sites reaching `0x4209b0`
+finds exactly two:
+
+| caller | containing routine | gate chain to the call |
+| --- | --- | --- |
+| `0x41d4e9` | `0x41d1f0` (the mode-0 maneuver law) | the AI step `0x41c270` requires `+0x67c` ≠ 4 and `+0x2f0` ∈ {0,2} (`0x41c2dd`..`0x41c305`); inside `0x41d1f0`, `+0x67c` must be 0 (`0x41d2a6`: `jne 0x41d671`) and `+0x358` is dispatched through the four-entry table `0x41d8d4` = {`0x41d30b`, `0x41d4e7`, `0x41d4f0`, `0x41d2ca`}; slot 1 lands on the call site at `0x41d4e7` |
+| `0x41da69` | `0x41d9f0` (the mode-0 pursuit law) | the AI step requires `+0x67c` ≠ 4 and `+0x2f0` = 1 (`0x41c2f9`); inside `0x41d9f0`, `+0x67c` must be 0 (`0x41da4b`: `jne 0x41e2f5`) and `+0x358` is dispatched through the four-entry table `0x41e744` = {`0x41dac1`, `0x41da67`, `0x41da73`, `0x41da80`}; slot 1 lands on the call site at `0x41da67` |
+
+Both tables share the `+0x358` sub-state vocabulary: 0 is the law's
+default leg (maneuver leg `0x41d30b` → `0x41b560` `bl=0`, or pursuit
+`0x41dac1`), **1 is the program driver `0x4209b0`**, 2 is the route
+driver `0x4216e0` (`0x41d4f2` / `0x41da75`), 3 is the climb `0x41b560`
+`bl=1` (`0x41d2ca` / `0x41da80`), and `+0x358` > 3 falls out of the
+switch (`0x41d4fd` / `0x41e594`).
+
+`+0x358` writers (a byte scan for `mov [reg+0x358], …`): constructor 0
+(`0x4b08bf`), program arm **1** (`0x4208f7`, inside `0x4201a0`), route
+arm 2 (`0x4214d4`; also `0x489b0c` in the vehicle update, which raises
+`+0x358` to 2 whenever the route handle `+0x9bc` is non-null and
+`+0x358` < 2 — a pending route outranks the program), escape latch 3
+(`0x41f98e`), stun 4 (`0x420127`), route-in-progress 5 (`0x42180f` —
+the vehicle update skips the whole AI step `0x41c270` while it stands,
+`0x489a73`), and clears to 0 (`0x41f9a6` escape end, `0x489ae9` stun
+recovery when `clock ≥ +0xc0`, `0x421098` program exhausted,
+`0x490d09`).
+
+### 11.2 What `0x4209b0` computes: a per-leg target attitude, not a position
+
+`0x4209b0(this=esi)` drives a vector of 32-byte program entries held at
+`[esi+0x9a4]..[esi+0x9a8]` with index `[esi+0x9b0]` (the builder
+`0x4201a0` fills the vector from a 28-byte-row descriptor table indexed
+at `.bss` `0x71b210`, sets `+0x9b0` = −1 and arms `+0x358` = 1 at
+`0x4208ed`/`0x4208f7`). Each entry is {target attitude quaternion
+`+0x00..+0x0c` (w first), minimum dwell seconds `+0x10`, scripted stick
+triple `+0x14`/`+0x18`/`+0x1c`}. Per tick:
+
+1. **First tick** (`+0x9b0` = −1 → 0, `0x4209c2`..`0x4209fd`): the leg
+   deadline `+0x89c` = `clock + entry.dwell` (`fld [eax+ecx+0x10]`,
+   `fadd [0x71c470]`, `fstp [esi+0x89c]`).
+2. **Throttle** (`0x420a03`..`0x420a77`): `+0x124` slews by `dt·0.35`
+   (`fld [0x9ad744]` × `0x603508` = 0.35) up when own speed `+0x934` is
+   under **80.467 m/s** (`0x6036b8`) and down otherwise, clamped to
+   [0.8, 1.1] (`0x61fb68`/`0x61fb6c`) — a fixed cruise-speed hold, not
+   a station range law.
+3. **Scripted-stick leg** (entry `+0x14`/`+0x18`/`+0x1c` not all
+   `0x6032c8` = 0.0, `0x420a86`..`0x420ac5` → `0x420e60`): the triple is
+   written literally — `+0x14` → `+0x108` (pitch), `+0x18` → `+0x10c`
+   (yaw), `+0x1c` → `+0x100` (roll) — and the residual is forced to the
+   identity quaternion `(1,0,0,0)` at `[ebp-0x30]` (`0x420e75`), so the
+   leg advances on its deadline alone.
+4. **Attitude leg** (all-zero triple): the body-frame attitude error
+   `Δ = conj(+0x150) ⊗ entry` is built by `0x53f8d0` (copies dword 0,
+   sign-flips dwords 1..3 — a quaternion conjugate) and `0x53f920`
+   (quaternion product, w-first layout), at `0x420ac5`..`0x420b17`.
+   `+0x150` is the AI's own orientation quaternion: `Δ` is the rotation
+   that carries the current attitude to the leg's target attitude —
+   the routine steers toward an **attitude**, not a waypoint.
+   * **Fine band** (`|Δ.x|` and `|Δ.z|` both under the `f64` 0.05 at
+     `0x6036b0`, `0x420b17`..`0x420b63`): `+0x100` = 0, `+0x10c` =
+     `Δ.y·sign(Δ.w)` (shortest-arc yaw), `+0x108` = 0.
+   * **General** (`0x420b64`..): `0x53fb40(out, Δ, (0,0,−1))` rotates
+     the forward axis constant `0x6034c8` = `(0,0,−1,37.5)` (only the
+     first three components are read) by `Δ` — the **desired nose
+     direction in the current body frame**. `r = √(x²+y²)`; when
+     `dir.z > 0` (the target attitude points behind) `x,y` are
+     normalized by `r`, else kept raw (`0x420b79`..`0x420bd9`). Then a
+     bank-to-turn split: `+0x10c` = 0 (`0x420be2`); `+0x100` = `−x′`
+     when `y′ ≥ 0`, else `x′` or a hard ±1.0 bank split at `V ≥ 0.35`
+     (`0x61fb80`, where `V` is `r` ahead and 1.0 behind,
+     `0x420be8`..`0x420c29`); `+0x108` = `y′` only while `|x′| < 0.06`
+     (`0x61fb70`, `0x420c2f`..`0x420c56`), else 0; and when `|x′|` and
+     `|y′|` are both under 0.06 (`0x61fb74`) the roll word is replaced
+     by `Δ.z·sign(Δ.w)`, the residual heading term
+     (`0x420c56`..`0x420c8d`).
+5. **Gain finish** (`0x420e9d`..`0x421015`): each stick word is scaled
+   by `+0x8c4`/`+0x8c8`/`+0x8cc`, clamped to ±`+0x8d0`/`+0x8d4`/`+0x8d8`,
+   multiplied by the AI skill word `+0x974`, and stored to the same
+   outputs `+0x114`/`+0x11c`/`+0x120` as `0x41b560` through the identity
+   stub `0x460890` (`fld [esp+4]; ret`).
+6. **Leg advance** (`0x42101b`..`0x4210d3`): `0x53fca0` extracts the
+   residual's axis·angle form (`fpatan` of the vector magnitude —
+   `bits>>1 + 0x1fc00000` square-root hack — against the scalar, so the
+   output's magnitude is the quaternion half-angle); when it falls
+   under **0.15** (`0x6036a8`) and `clock ≥ +0x89c`, `+0x9b0`
+   increments, the next entry reloads `+0x89c` = `clock + dwell`, and
+   on exhaustion `+0x358` = 0 with `+0x89c` = `clock + 3.5`
+   (`0x6036a4`, a 3.5 s re-arm cooldown, `0x421098`..`0x4210b5`).
+
+So the goal `0x4209b0` steers toward is **the current leg's target
+attitude quaternion** (or a literal stick script when the triple is
+nonzero) — a scripted aerobatic/maneuver program player, the mode-0
+sibling of the `+0x358` = 2 route driver `0x4216e0`. It never reads a
+station slot, a leader, or the `+0xe0` goal the follower writes.
+
+### 11.3 The ∓0.05 writes are a minimum-authority floor on the dominant channel
+
+Between the attitude law and the gain finish (`0x420c9d`..`0x420e5e`)
+the routine picks the channel whose word has the strictly largest
+magnitude — `|+0x10c|` against `|+0x108|` and `|+0x100|` in that order —
+and, when that dominant word lies inside (−0.05, 0) ∪ (0, +0.05], snaps
+it to exactly −0.05/+0.05 (literal `0xbd4ccccd`/`0x3d4ccccd`; the same
+values also live at `0x6036ac`/`0x6034d8`). `+0x10c` is floored at
+`0x420cf9`/`0x420d36`, `+0x108` at `0x420d93`/`0x420dd0`, `+0x100` at
+`0x420e22`/`0x420e54`. Words above 0.05 pass through, and a zero word
+can never be the dominant one, so **the writes are a minimum-effective
+kick on the dominant channel — not a trim, not an altitude hold**. On
+the `+0x108` channel the floor raises a small proportional pitch demand
+to 0.05; downstream `+0x11c` = `+0x108·(+0x8c8)·(+0x974)` still scales
+it by the vehicle's pitch gain.
+
+### 11.4 Does it fly M01's wingman, in any phase? No.
+
+* M01's player-led wingman is spawned `+0x67c` = 4. At `0x41c2dd` the AI
+  step jumps `+0x67c` == 4 to `0x41c358`, whose only call is
+  `0x41e760` — the follower of §6.1. The `+0x2f0` split that leads to
+  either `0x4209b0` caller is on `+0x67c` ≠ 4, and both containing
+  routines re-test `+0x67c` == 0 before the `+0x358` switch.
+* The wingman's phases `[ai+0xd8]` 0 and 1 are states *inside* the
+  follower `0x41e760`; `0x4209b0` is not called there under any
+  `+0x358`. **A mode-4 wingman cannot reach either call site in any
+  phase.** The state words required are `+0x67c` = 0 ∧ `+0x358` = 1 ∧
+  `+0x2f0` ∈ {0,1,2} — mode 0 with an armed program — which is a
+  different AI, not a player-led follower.
+* `+0x358` = 1 itself is only armed by `0x4201a0`, whose callers are the
+  mode-0 pursuit branch (`0x41db9d`, reached from `0x41dac1`), a
+  directive path (`0x43e10e`) and an assignment path (`0x4b9ff8`) — and
+  even then a non-null route handle `+0x9bc` forces `+0x358` = 2 in the
+  vehicle update before the step runs (`0x489b0c`).
+* `+0x67c` does have runtime writers (e.g. `0x49c920` writes mode 0
+  with the asleep byte `+0x91d` = 1), so a mode-4→0 demotion is not
+  structurally impossible; but a demoted wingman is no longer the
+  player-led follower the question is about, and whether M01's wingman
+  ever takes that path is untraced (see unknowns).
+* Even hypothetically, the routine's pitch channel could not supply the
+  missing altitude authority of §10.3: `+0x11c` = `+0x108·(+0x8c8)·(+0x974)`
+  and the wingman's `+0x8c8` = `mode_alt` = 0.0, so every pitch word
+  `0x4209b0` writes — including the ∓0.05 floor — still lands on zero.
+
+So `0x4209b0` is **no** for M01's wingman in any phase, and it is also
+not the hidden altitude authority: the dead pitch axis is identical in
+both stick laws, which keeps §10.3's force-block/trim hypothesis open.
+
+### 11.5 Byte windows and unknowns
+
+| claim | window |
+| --- | --- |
+| `0x41d4e9` / `0x41da69` are `call 0x4209b0` | `e8 c2 34 00 00` at `0x41d4e9`; `e8 42 2f 00 00` at `0x41da69` |
+| both callers gate `+0x67c` == 0 | `8b 96 7c 06 00 00 85 d2 0f 85 bd 03 00 00` at `0x41d2a6` (`jne 0x41d671`); `8b 86 7c 06 00 00 85 c0 0f 85 a4 08 00 00` at `0x41da43` (`jne 0x41e2f5`) |
+| both dispatch `+0x358` by jump table | `83 fa 03 0f 87 … ff 24 95 d4 d8 41 00` at `0x41d2b4`..`0x41d2c9`; `83 f8 03 0f 87 … ff 24 85 44 e7 41 00` at `0x41da51`..`0x41da66`; tables `0x41d8d4`, `0x41e744` |
+| mode 4 → follower, not the split | `83 be 7c 06 00 00 04 74 72` at `0x41c2dd` (`je 0x41c358`); `56 e8 02 24 00 00` at `0x41c358` (`call 0x41e760`); `+0x2f0` dispatch `0x41c2e6`..`0x41c305` |
+| program vector walk and dwell | `+0x9b0`/`+0x9a4`/`+0x9a8`/`+0x89c` at `0x4209b9`..`0x4209fd`; 32-byte stride `c1 e0 05`; `sar edx,5` at `0x4209e5`/`0x421091` |
+| throttle slew and clamp | `0x420a03`..`0x420a77`; `0x6036b8` = 80.467, `0x603508` = 0.35, `0x61fb68`/`0x61fb6c` = 0.8/1.1, `0x9ad744` = dt |
+| entry stick triple → literal words | `0x420a86`/`0x420a9d`/`0x420ab1` test `0x6032c8` = 0.0; `0x420e60`..`0x420e7c` writes; `c7 45 d0 00 00 80 3f` forces the identity residual |
+| `Δ = conj(+0x150) ⊗ entry` | `lea ecx,[esi+0x150]` `0x420ad9`; `call 0x53f8d0` `0x420b01`; `call 0x53f920` `0x420b12`; `0x53f8d0` flips dwords 1..3 via `xor …,0x80000000` at `0x53f8f8`..`0x53f909` |
+| desired-forward construction | `push 0x6034c8` `0x420b6b`; `call 0x53fb40` `0x420b71`; `0x6034c8` = `(0,0,−1,37.5)`; small band `fcomp qword [0x6036b0]` `0x420b1f` (f64 0.05) |
+| ∓0.05 floor | six stores `c7 86 <off> 01 00 00 cd cc 4c (3d|bd)` at `0x420cf9`/`0x420d36`/`0x420d93`/`0x420dd0`/`0x420e22`/`0x420e54` |
+| gain finish and outputs | `+0x8c4`/`+0x8c8`/`+0x8cc` at `0x420e9d`/`0x420eb2`/`0x420ec7`; `+0x8d0`/`+0x8d4`/`+0x8d8` at `0x420edc`/`0x420f19`/`0x420f55`; `+0x974` at `0x420f91`; `+0x114`/`+0x11c`/`+0x120` at `0x420fe3`/`0x420ff9`/`0x421015`; `0x460890` = `d9 44 24 04 c3` |
+| leg advance | `call 0x53fca0` `0x421023`; `fcomp [0x6036a8]` `0x421052` (0.15); `fcomp [esi+0x89c]` `0x421065`; `+0x9b0`++ `0x421072`; exhaust `89 be 58 03 00 00` `0x421098`, cooldown `fadd [0x6036a4]` `0x4210a4` (3.5) |
+| `+0x358` = 1 arm | `c7 87 b0 09 00 00 ff ff ff ff` `0x4208ed` (`+0x9b0` = −1); `c7 87 58 03 00 00 01 00 00 00` `0x4208f7` (`+0x358` = 1); `0x4201a0` callers `0x41db9d`/`0x43e10e`/`0x4b9ff8` |
+| route outranks program | `89 86 58 03 00 00` `0x489b0c` (`+0x358` = 2); stun clear `c7 86 58 03 00 00 00 00 00 00` `0x489ae9`; `call 0x41c270` `0x489b14` |
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| what fills the `0x71b210` descriptor table at runtime (it is `.bss`, not image data) | which entities can ever run a `+0x358` = 1 program, and whether M01's wingman is ever scripted into one | trace the `0x71b210` writers and the `0x4201a0` directive/assignment call paths (`0x43e10e`, `0x4b9ff8`) against M01's script |
+| whether M01's wingman's `+0x67c` is ever demoted from 4 (runtime writers exist: `0x49c920` writes mode 0 with `+0x91d` = 1) | the strict form of "in any phase" — a demoted wingman is no longer the follower, but the demotion path is untraced | trace `0x49c920`'s caller chain in retail M01 |
+| the exact semantic of `+0x2f0`/`+0x2f4`/`+0x300`/`+0x308` (leg selector, next selector, re-eval deadline) | which mode-0 entities take the maneuver vs pursuit split | decode the `+0x2f0` writers (`0x49ca25`, `0x41c299`) |
+| whether `+0x150` is maintained as the orientation quaternion or refreshed per tick | the precision of "attitude error" phrasing | trace the `+0x150` writers |
 
 Nothing here is `verified_original`.
 

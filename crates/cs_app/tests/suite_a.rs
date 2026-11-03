@@ -83,6 +83,7 @@ mod campaign {
     mod m01_window_fire;
     mod m01_window_world_draw;
     mod m01_window_world_import;
+    mod m01_wingman_4209b0;
     mod m01_wingman_callsite;
     mod m01_wingman_drift;
     mod m01_wingman_formation;
