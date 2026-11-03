@@ -255,3 +255,314 @@ fn accept_m01_wingman_drift_pitch_command_is_zero_outside_the_climb() {
     );
     assert!(rows.iter().any(|r| r.climbing && r.pitch > 0.5));
 }
+
+// ------------------------------------------------- altitude authority ---
+//
+// M01-WINGMAN-ALTITUDE-AUTHORITY (#2296): the image windows behind
+// `docs/findings/2026-11-02-m01-wingman-gains.md` §11 — the three torque
+// inputs, the identity response curve, the Level-Off assist and its
+// player-only flag, and the fact that no AI path gives the pitch word a
+// non-zero value.
+
+/// Every instruction in `.text` that writes a register-based `[reg + disp]`
+/// through one of `forms`, with `mod = 10` and a base that is neither `esp`
+/// nor `ebp` (displacements, not stack frames). For `d9` only the x87 stores
+/// (`/2`, `/3`) count, so the block's `fld` reads never appear.
+fn stores_into(text: &[u8], text_va: u64, disp: u32, forms: &[u8]) -> Vec<u64> {
+    let want = disp.to_le_bytes();
+    let mut sites = Vec::new();
+    for i in 1..text.len().saturating_sub(5) {
+        let modrm = text[i];
+        if modrm & 0xc0 != 0x80 || matches!(modrm & 7, 4 | 5) {
+            continue;
+        }
+        if text[i + 1..i + 5] != want[..] {
+            continue;
+        }
+        let opcode = text[i - 1];
+        if !forms.contains(&opcode) {
+            continue;
+        }
+        if opcode == 0xd9 && !matches!((modrm >> 3) & 7, 2 | 3) {
+            continue;
+        }
+        sites.push(text_va + i as u64 - 1);
+    }
+    sites
+}
+
+/// Writes of a 32-bit `[reg + 0x11c]`: `mov` (`89`), `mov imm32` (`c7`) and
+/// `fst`/`fstp` (`d9 /2`, `/3`).
+fn pitch_input_writers(text: &[u8], text_va: u64) -> Vec<u64> {
+    stores_into(text, text_va, 0x11c, &[0x89, 0xc7, 0xd9])
+}
+
+/// Writes of the byte `[reg + 0x12c]`: `mov r/m8, r8` (`88`) and
+/// `mov r/m8, imm8` (`c6`).
+fn level_off_flag_writers(text: &[u8], text_va: u64) -> Vec<u64> {
+    stores_into(text, text_va, 0x12c, &[0x88, 0xc6])
+}
+
+fn within(sites: &[u64], start: u64, end: u64) -> Vec<u64> {
+    sites
+        .iter()
+        .copied()
+        .filter(|site| (start..end).contains(site))
+        .collect()
+}
+
+/// The image windows §11 rests on: the force block reads the three stick
+/// words `+0x114/+0x11c/+0x120` as its torque inputs (the roll and yaw
+/// terms are skipped while they are zero and the pitch term is a jump over
+/// the whole term), the law's response curve `0x460890` is the identity, and
+/// the only zero-input term is the Level-Off assist, gated on a per-vehicle
+/// flag whose only writer for a non-player is the constructor.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_altitude_windows_match_the_image() {
+    use cs_app::engine_facts::engine_facts;
+    use cs_content::coordinates::load_engine_image;
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let facts = engine_facts().expect("the committed table parses");
+    let at = |va: u64| usize::try_from(facts.image_offset(va).expect("va in image")).expect("off");
+    let window = |va: u64, bytes: &[u8]| {
+        let i = at(va);
+        assert_eq!(
+            &loaded.bytes[i..i + bytes.len()],
+            bytes,
+            "window at {va:#x}"
+        );
+    };
+    // 1. The force block: the three inputs and the tests that skip them.
+    //    Roll: `fld [esi+0x114]`, the torque `+0x644`, the body Z axis.
+    window(0x48ca7a, &[0xd9, 0x86, 0x14, 0x01, 0x00, 0x00]);
+    window(0x48ca80, &[0xd8, 0x1d, 0xc8, 0x32, 0x60, 0x00]);
+    window(0x48ca88, &[0xf6, 0xc4, 0x40]);
+    window(0x48ca8b, &[0x75, 0x5d]);
+    window(0x48ca8d, &[0xd9, 0x86, 0x44, 0x06, 0x00, 0x00]);
+    window(0x48caaa, &[0xd8, 0x8e, 0x98, 0x01, 0x00, 0x00]);
+    //    Pitch: `fld [esi+0x11c]`, `jne` over the whole term, `+0x648`, body X.
+    window(0x48caea, &[0xd9, 0x86, 0x1c, 0x01, 0x00, 0x00]);
+    window(0x48caf0, &[0xd8, 0x1d, 0xc8, 0x32, 0x60, 0x00]);
+    window(0x48cafb, &[0x0f, 0x85, 0x9f, 0x00, 0x00, 0x00]);
+    window(0x48cb07, &[0xd8, 0x8e, 0x48, 0x06, 0x00, 0x00]);
+    window(0x48cb0d, &[0x8d, 0x86, 0x80, 0x01, 0x00, 0x00]);
+    window(0x48cb1f, &[0xd8, 0x8e, 0x1c, 0x01, 0x00, 0x00]);
+    //    Yaw: `fld [esi+0x120]`, the rudder torque `+0x64c`, body Y.
+    window(0x48cba0, &[0xd9, 0x86, 0x20, 0x01, 0x00, 0x00]);
+    window(0x48cbb1, &[0x0f, 0x85, 0x9f, 0x00, 0x00, 0x00]);
+    window(0x48cbb7, &[0xd9, 0x86, 0x4c, 0x06, 0x00, 0x00]);
+    window(0x48cbc6, &[0x8d, 0x86, 0x8c, 0x01, 0x00, 0x00]);
+    //    The zero the tests compare against is a real 0.0.
+    window(0x6032c8, &[0x00, 0x00, 0x00, 0x00]);
+
+    // 2. The definition chain: each key's slot and the vehicle field it fills.
+    for (va, text) in [
+        (0x627fa4_u64, &b"roll_torque\0"[..]),
+        (0x627f94, b"pitch_torque\0"),
+        (0x627fb0, b"rudder_torque\0"),
+        (0x627fc0, b"level_off_rate\0"),
+    ] {
+        window(va, text);
+    }
+    window(0x47ad3d, &[0x89, 0x8f, 0x04, 0x01, 0x00, 0x00]); // pitch_torque -> def+0x104
+    window(0x47ad5b, &[0x89, 0x87, 0x00, 0x01, 0x00, 0x00]); // roll_torque -> def+0x100
+    window(0x47ad79, &[0x89, 0x97, 0x08, 0x01, 0x00, 0x00]); // rudder_torque -> def+0x108
+    window(0x47ad97, &[0x89, 0x8f, 0x0c, 0x01, 0x00, 0x00]); // level_off_rate -> def+0x10c
+    window(0x475bdc, &[0x8b, 0x8d, 0x00, 0x01, 0x00, 0x00]);
+    window(0x475be2, &[0x89, 0x8b, 0x44, 0x06, 0x00, 0x00]); // -> veh+0x644
+    window(0x475be8, &[0x8b, 0x95, 0x04, 0x01, 0x00, 0x00]);
+    window(0x475bee, &[0x89, 0x93, 0x48, 0x06, 0x00, 0x00]); // -> veh+0x648
+    window(0x475bf4, &[0x8b, 0x85, 0x08, 0x01, 0x00, 0x00]);
+    window(0x475bfa, &[0x89, 0x83, 0x4c, 0x06, 0x00, 0x00]); // -> veh+0x64c
+    window(0x475c00, &[0x8b, 0x8d, 0x0c, 0x01, 0x00, 0x00]);
+    window(0x475c06, &[0x89, 0x8b, 0x50, 0x06, 0x00, 0x00]); // -> veh+0x650
+
+    // 3. The law's words reach the force block through an identity curve.
+    window(0x460890, &[0xd9, 0x44, 0x24, 0x04, 0xc3]); // fld [esp+4]; ret
+    window(0x41bfc6, &[0x75, 0x56]); // the emergency set skips the pre-scale
+    window(0x41bfcd, &[0xd9, 0x86, 0x74, 0x09, 0x00, 0x00]);
+    window(0x41bff8, &[0xd8, 0x8e, 0x00, 0x01, 0x00, 0x00]);
+    window(0x41c006, &[0xd8, 0x8e, 0x08, 0x01, 0x00, 0x00]);
+    window(0x41c01e, &[0x8b, 0x8e, 0x00, 0x01, 0x00, 0x00]);
+    window(0x41c024, &[0x68, 0x00, 0x00, 0x80, 0x3f]);
+    window(0x41c029, &[0x68, 0x00, 0x00, 0x00, 0x3f]);
+    window(0x41c02f, &[0xe8, 0x5c, 0x48, 0x04, 0x00]);
+    window(0x41c034, &[0xd9, 0x9e, 0x14, 0x01, 0x00, 0x00]);
+    window(0x41c03a, &[0x8b, 0x96, 0x08, 0x01, 0x00, 0x00]);
+    window(0x41c050, &[0xd9, 0x9e, 0x1c, 0x01, 0x00, 0x00]);
+    window(0x41c056, &[0x8b, 0x86, 0x0c, 0x01, 0x00, 0x00]);
+    window(0x41c06c, &[0xd9, 0x9e, 0x20, 0x01, 0x00, 0x00]);
+
+    // 4. The Level-Off assist: flag, both zero-input gates, body Y to world up,
+    //    and the rate it reads.
+    window(0x48ce45, &[0x8a, 0x86, 0x2c, 0x01, 0x00, 0x00]);
+    window(0x48ce4d, &[0x0f, 0x84, 0x2b, 0x01, 0x00, 0x00]);
+    window(0x48ce53, &[0xd9, 0x86, 0x14, 0x01, 0x00, 0x00]);
+    window(0x48ce64, &[0x0f, 0x84, 0x14, 0x01, 0x00, 0x00]);
+    window(0x48ce6a, &[0xd9, 0x86, 0x1c, 0x01, 0x00, 0x00]);
+    window(0x48ce7b, &[0x0f, 0x84, 0xfd, 0x00, 0x00, 0x00]);
+    window(0x48ce81, &[0x8d, 0x86, 0x8c, 0x01, 0x00, 0x00]);
+    window(0x6379c0, &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f]);
+    window(0x48ced6, &[0xd9, 0x05, 0x6c, 0xc5, 0x71, 0x00]);
+    window(0x48cedc, &[0xd8, 0x8e, 0x50, 0x06, 0x00, 0x00]);
+
+    // 5. The flag's writers: the player input routine's clear-on-input, the
+    //    player-vehicle toggle, and the constructor.
+    window(0x487d4e, &[0xf6, 0xc4, 0x40]);
+    window(0x487d51, &[0x74, 0x43]);
+    window(0x487d64, &[0x74, 0x30]);
+    window(0x487d77, &[0x74, 0x1d]);
+    window(0x487d96, &[0xc6, 0x86, 0x2c, 0x01, 0x00, 0x00, 0x00]);
+    window(0x488640, &[0x8b, 0x0d, 0x98, 0xc2, 0x71, 0x00]);
+    window(0x488663, &[0x8a, 0x81, 0x2c, 0x01, 0x00, 0x00]);
+    window(0x48866e, &[0x88, 0x81, 0x2c, 0x01, 0x00, 0x00]);
+    window(0x4b0645, &[0x88, 0x9e, 0x2c, 0x01, 0x00, 0x00]);
+    // The constructor zeroes the whole control block beside it (`ebx = 0`).
+    window(0x4b062d, &[0x89, 0x9e, 0x1c, 0x01, 0x00, 0x00]);
+    window(0x4b0633, &[0x89, 0x9e, 0x20, 0x01, 0x00, 0x00]);
+
+    // 6. The AI's seat differences: the lift target is always `|v| * nose`,
+    //    the demand is `lift_accel_rate * (Vt - V) + gravity`, and the
+    //    weathervane is the player's.
+    window(0x48c6e9, &[0xd9, 0x45, 0x80]);
+    window(0x48c6ec, &[0xd9, 0xe0]);
+    window(0x48c6f0, &[0xd8, 0x8e, 0x98, 0x01, 0x00, 0x00]);
+    window(0x48c746, &[0xd9, 0x05, 0x48, 0xc4, 0x71, 0x00]);
+    window(0x48c77b, &[0xd8, 0x81, 0xc4, 0x00, 0x00, 0x00]);
+    window(0x48cd3e, &[0x3b, 0x35, 0x98, 0xc2, 0x71, 0x00]);
+    window(0x48cd44, &[0x0f, 0x85, 0xfb, 0x00, 0x00, 0x00]);
+    // The bank coupling is unconditional in both of its parts.
+    window(0x48cc61, &[0xd9, 0x05, 0xf8, 0x89, 0x62, 0x00]);
+    window(0x48cc6a, &[0xd8, 0x8e, 0x84, 0x01, 0x00, 0x00]);
+    window(0x48ccc1, &[0xd9, 0xe1]);
+    window(0x48ccc3, &[0xd8, 0x0d, 0xfc, 0x89, 0x62, 0x00]);
+}
+
+/// No AI path gives the pitch input `+0x11c` a non-zero value: the writers
+/// in the AI code are the follower law, the stun zeroing and a law no mode-4
+/// follower reaches; the follower and the force block contain none; and the
+/// Level-Off flag `+0x12c` has exactly three writers, only one of which is
+/// not a write of `0` — the player-vehicle toggle.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_altitude_has_no_ai_pitch_authority() {
+    use cs_app::engine_facts::engine_facts;
+    use cs_content::coordinates::load_engine_image;
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let facts = engine_facts().expect("the committed table parses");
+    let at = |va: u64| usize::try_from(facts.image_offset(va).expect("va in image")).expect("off");
+    let text_va = 0x401000_u64;
+    let text = &loaded.bytes[at(text_va)..at(text_va) + 0x2014bd];
+
+    let writers = pitch_input_writers(text, text_va);
+    assert_eq!(
+        within(&writers, 0x41b560, 0x421800),
+        [0x41c050, 0x420185, 0x420ff9],
+        "every writer of the pitch input in the AI code"
+    );
+    assert!(
+        within(&writers, 0x41e760, 0x41f00a).is_empty(),
+        "the follower routine never writes the pitch input itself"
+    );
+    assert!(
+        within(&writers, 0x48c470, 0x48d2b7).is_empty(),
+        "the force block only reads the pitch input"
+    );
+    assert_eq!(
+        within(&writers, 0x487400, 0x488800),
+        [0x487dcc, 0x487e3c, 0x487e5b],
+        "the player input routine: the curve and its two clamps"
+    );
+    assert_eq!(
+        within(&writers, 0x4b0500, 0x4b0700),
+        [0x4b062d],
+        "the vehicle reset zeroes it"
+    );
+
+    // `0x4209b0` (the only other AI law) is reached from the two bodies the
+    // mode-4 dispatch does not call, and writes +0x108 from `∓0.05`, which the
+    // same zero pitch scale would zero anyway.
+    assert_eq!(
+        within(&writers, 0x4209b0, 0x421800),
+        [0x420ff9],
+        "the second AI law's only pitch-input write"
+    );
+    let window = |va: u64, bytes: &[u8]| {
+        let i = at(va);
+        assert_eq!(
+            &loaded.bytes[i..i + bytes.len()],
+            bytes,
+            "window at {va:#x}"
+        );
+    };
+    window(0x41c2dd, &[0x83, 0xbe, 0x7c, 0x06, 0x00, 0x00, 0x04]);
+    window(0x41c2e4, &[0x74, 0x72]);
+    window(0x41c2fa, &[0xe8, 0xf1, 0x16, 0x00, 0x00]); // call 0x41d9f0
+    window(0x41c305, &[0xe8, 0xe6, 0x0e, 0x00, 0x00]); // call 0x41d1f0
+    window(0x41c359, &[0xe8, 0x02, 0x24, 0x00, 0x00]); // call 0x41e760 (mode 4)
+    window(0x41d4e9, &[0xe8, 0xc2, 0x34, 0x00, 0x00]); // call 0x4209b0
+    window(0x41da69, &[0xe8, 0x42, 0x2f, 0x00, 0x00]); // call 0x4209b0
+    window(
+        0x420d93,
+        &[0xc7, 0x86, 0x08, 0x01, 0x00, 0x00, 0xcd, 0xcc, 0x4c, 0xbd],
+    );
+    window(
+        0x420dd0,
+        &[0xc7, 0x86, 0x08, 0x01, 0x00, 0x00, 0xcd, 0xcc, 0x4c, 0x3d],
+    );
+    // The stun latch's zeroing.
+    window(0x42015a, &[0x89, 0x9e, 0x00, 0x01, 0x00, 0x00]);
+    window(0x420185, &[0x89, 0x9e, 0x1c, 0x01, 0x00, 0x00]);
+
+    // Exactly three byte stores of the Level-Off flag survive in the image,
+    // and two of them write zero: the input routine's clear and the
+    // constructor. The third is the player-vehicle toggle.
+    assert_eq!(
+        level_off_flag_writers(text, text_va),
+        [0x487d96, 0x48866e, 0x4b0645],
+        "writers of vehicle+0x12c"
+    );
+    window(0x48866b, &[0x0f, 0x94, 0xc0]); // sete al: the toggle
+}
+
+/// The port's M01 wingman flies the AI seat with the Level-Off assist clear,
+/// so the force block's only zero-input term cannot run for it — the same
+/// state the image gives every vehicle that is not the player's.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_wingman_altitude_level_off_is_the_players_toggle() {
+    let root = game_dir();
+    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plans");
+    let stage = stage_for(&root, &plan).expect("stage reads");
+    let mut app = build_headless(&stage).expect("composes");
+    app.update();
+    let betty = {
+        let world = app.world_mut();
+        world
+            .query::<(Entity, &ScriptedAircraftActor)>()
+            .iter(world)
+            .find(|(_, actor)| actor.record.name == "wingman_1")
+            .map(|(entity, _)| entity)
+            .expect("wingman_1")
+    };
+    let flight = app
+        .world()
+        .get::<PlaytestOriginalFlight>(betty)
+        .expect("wingman_1 flies the original law");
+    assert!(
+        !flight.is_player,
+        "the scripted wingman must fly the AI seat of the law"
+    );
+    assert!(
+        !flight.state.level_off,
+        "the Level-Off assist is the player's Shift+L toggle (`+0x12c`), so \
+         the AI body starts with it clear and no AI path sets it"
+    );
+    assert!(
+        flight.model.airframe.level_off_rate > 0.0,
+        "`+0x650` would level the wings if the flag were ever set: {}",
+        flight.model.airframe.level_off_rate
+    );
+    teardown(&mut app);
+}

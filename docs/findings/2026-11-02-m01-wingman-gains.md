@@ -896,3 +896,181 @@ follower (§1) and was not decoded here.
 | the role of `0x4209b0` (callers `0x41d4e9`, `0x41da69`) | whether it flies M01's wingman in any phase | decode its callers' mode gates |
 
 Nothing here is `verified_original`.
+
+## 11. No AI trim or auto-level exists: `+0x114/+0x11c/+0x120` are the stick inputs, and the Level-Off assist is the player's (task #2296)
+
+Static reads of the owner image (`llvm-objdump -d -M intel`) and of `vehicle.zrd`; claim id
+`OWNER-STATIC-2026-10-29`, nothing `verified_original`. `accept_m01_wingman_altitude_windows_match_the_image`,
+`accept_m01_wingman_altitude_has_no_ai_pitch_authority` (image-gated) and
+`accept_m01_wingman_altitude_level_off_is_the_players_toggle` (retail-gated) re-read every window below.
+Implementer: `deepseek-1`.
+
+### 11.1 Answer
+
+**No such term exists.** Nothing outside the follower law gives an AI vehicle pitch authority, and the port
+reproduces every term that acts with a zero pitch word. §10.3's three candidates are not force coefficients at
+all: `+0x114`, `+0x11c` and `+0x120` are **the three stick words themselves** — the force block's roll, pitch and
+yaw torque inputs — so a zero pitch word means the pitch torque term is skipped outright (`0x48cafb`). The one
+term in the block gated on both inputs being zero is the Level-Off assist, and it needs a per-vehicle byte
+`+0x12c` that only the **player vehicle's** `Shift+L` handler ever sets; every AI vehicle is constructed with it
+clear and no AI code touches it.
+
+What holds an M01 wingman's altitude is therefore the **lift law**, not a pitch term: the AI's lift target is
+always its own nose (`0x48c6e9`), the demanded acceleration is `lift_accel_rate * (Vt - V) + (0, g, 0)`
+(`0x48c746`, `0x48c77b`), and `CL` is chosen so that `qS * CL` along the normal `(nx, ny)` reproduces that
+demand's component in the plane normal to the nose. With the velocity along the nose the demand is pure gravity,
+so the lift equals the weight and the aircraft accelerates neither up nor down: it holds *its own* altitude and
+cannot follow a leader that climbs. That is the whole of the original's "holds altitude", and the port flies it
+already (§11.5). Nothing was changed: the default M01 follower, the pins, the smoke and the player's flight model
+are untouched, and `original_stick` stays off.
+
+### 11.2 The three torque terms and their inputs
+
+`0x48c470..0x48d2b7` is the force/rotation block. Each of the three control torques is
+`input * fade * torque * dt`, skipped entirely while the input is exactly `0.0`:
+
+| term | input read (skip test) | torque word | axis | window |
+| --- | --- | --- | --- | --- |
+| roll | `+0x114` (`fld` `0x48ca7a`, `fcomp 0.0` `0x48ca80`, `jne` `0x48ca8b`) | `+0x644` (`0x48ca8d`) | body Z `+0x198` (`0x48caaa`) | `d9 86 14 01 00 00`, `d9 86 44 06 00 00` |
+| pitch | `+0x11c` (`fld` `0x48caea`, `fcomp 0.0` `0x48caf0`, `jne 0x48cba0` `0x48cafb`) | `+0x648` (`0x48cb07`) | body X `+0x180` (`0x48cb0d`) | `d9 86 1c 01 00 00`, `d8 8e 48 06 00 00`, `8d 86 80 01 00 00` |
+| yaw | `+0x120` (`fld` `0x48cba0`, `fcomp` `0x48cba6`, `jne 0x48cc56` `0x48cbb1`) | `+0x64c` (`0x48cbb7`) | body Y `+0x18c` (`0x48cbc6`) | `d9 86 20 01 00 00`, `d9 86 4c 06 00 00`, `8d 86 8c 01 00 00` |
+
+The skip is a jump over the whole term, not a multiply by zero: for the pitch word the two instructions between
+the test and the axis load (`fmul [esi+0x648]` at `0x48cb07`, `fmul [esi+0x11c]` at `0x48cb1f`) are simply not
+executed. The torque word names are the definition keys, read from the `vehicle.zrd` parser and loader:
+
+| key (text VA) | parser slot | loader → vehicle slot | windows |
+| --- | --- | --- | --- |
+| `roll_torque` `0x627fa4` | `def+0x100` `0x47ad5b` `89 87 00 01 00 00` | `0x475bdc` `8b 8d 00 01 00 00` → `0x475be2` `89 8b 44 06 00 00` (`+0x644`) | see parser/loader |
+| `pitch_torque` `0x627f94` | `def+0x104` `0x47ad3d` `89 8f 04 01 00 00` | `0x475be8` `8b 95 04 01 00 00` → `0x475bee` `89 93 48 06 00 00` (`+0x648`) | see parser/loader |
+| `rudder_torque` `0x627fb0` | `def+0x108` `0x47ad79` `89 97 08 01 00 00` | `0x475bf4` `8b 85 08 01 00 00` → `0x475bfa` `89 83 4c 06 00 00` (`+0x64c`) | see parser/loader |
+| `level_off_rate` `0x627fc0` | `def+0x10c` `0x47ad97` `89 8f 0c 01 00 00` | `0x475c00` `8b 8d 0c 01 00 00` → `0x475c06` `89 8b 50 06 00 00` (`+0x650`) | see parser/loader |
+
+Each parser store is `mov [edi+def_slot], <value>` after the key lookup (`push <key text>` at `0x47ad43`,
+`0x47ad25`, `0x47ad61`, `0x47ad7f`); the loader copies the record's `+0x100..+0x10c` into the vehicle at
+`0x475bdc`..`0x475c06`.
+
+**Where the inputs come from.** Step 7 of the follower law writes the words `+0x100/+0x108/+0x10c`
+(§2.3), then, unless the emergency set is in use (`bl != 0`, `jne 0x41c01e` at `0x41bfc6`), scales all three by
+`+0x974` (`0x41bfcd`, `0x41bff8`, `0x41c006`) and finally passes each through `0x460890` into the force block's
+inputs:
+
+| word | curve call | store |
+| --- | --- | --- |
+| `+0x100` → `+0x114` | `mov ecx,[esi+0x100]` `0x41c01e`, `call 0x460890` `0x41c02f` | `fstp [esi+0x114]` `0x41c034` (`d9 9e 14 01 00 00`) |
+| `+0x108` → `+0x11c` | `mov edx,[esi+0x108]` `0x41c03a`, `call` `0x41c04b` | `fstp [esi+0x11c]` `0x41c050` (`d9 9e 1c 01 00 00`) |
+| `+0x10c` → `+0x120` | `mov eax,[esi+0x10c]` `0x41c056`, `call` `0x41c067` | `fstp [esi+0x120]` `0x41c06c` (`d9 9e 20 01 00 00`) |
+
+`0x460890` is `fld dword [esp+4]; ret` (`d9 44 24 04 c3`) — **the response curve is the identity**, and the two
+other arguments the law pushes (`0x3f000000` = `0.5` at `0x41c029`, `0x3f800000` = `1.0` at `0x41c024`) are
+ignored. So the force block's pitch input equals the law's pitch word exactly, and with `mode_alt` `0.0` (§6.2,
+§10.3) that is `0.0`. The `+0x974` scale and the `+0xb4` clock gate around it do not matter for a zero word.
+
+**Writers of the pitch input.** A scan of `.text` for every dword store to a register-based `[reg+0x11c]`
+(`89`/`c7`, and `d9 /2`/`/3` for the x87 stores, `mod=10`, base neither `esp` nor `ebp`) finds 21 sites; the ones
+that write a *vehicle* are:
+
+| site | window | writes | seat |
+| --- | --- | --- | --- |
+| `0x41c050` | `d9 9e 1c 01 00 00` | the follower law's curve of `+0x108` | every vehicle the law flies |
+| `0x420185` | `89 9e 1c 01 00 00` | `0` — the stun latch zeroing (`0x42015a`..`0x420185`) | any |
+| `0x420ff9` | `d9 9e 1c 01 00 00` | the curve of `0x4209b0`'s word, whose only sources are `∓0.05` (`0x420d93` `cd cc 4c bd`, `0x420dd0` `cd cc 4c 3d`) | modes other than 4 only |
+| `0x487dcc` | `d9 9e 1c 01 00 00` (+ the clamps `mov [esi+0x11c], 1.0` `0x487e3c`, `mov [esi+0x11c], -1.0` `0x487e5b`) | the player input routine's curve of `+0x108`, clamped to `±1` | the player |
+| `0x4b062d` | `89 9e 1c 01 00 00` | `0` — the vehicle's constructor/reset, which also clears `+0x100/+0x108/+0x10c/+0x114/+0x118/+0x120/+0x124/+0x128` (`0x4b0603`..`0x4b063f`, `ebx = 0`) | any |
+
+Inside the AI code (`0x41b560..0x421800`) the writer set is exactly `{0x41c050, 0x420185, 0x420ff9}`, and the
+follower routine `0x41e760..0x41f00a` and the force block `0x48c470..0x48d2b7` contain **none**. The `0x4209b0`
+words are unreachable for a mode-4 follower: `0x41c270` tests `[esi+0x67c] == 4` at `0x41c2dd`/`0x41c2e4` and
+calls `0x41e760` at `0x41c359`; the two other bodies it can call (`0x41d9f0` at `0x41c2fa`, `0x41d1f0` at
+`0x41c305`) are the only callers of `0x4209b0` (`0x41d4e9` `e8 c2 34 00 00`, `0x41da69` `e8 42 2f 00 00` —
+both inside `0x41d1f0..0x41d63e` and `0x41d9f0..0x41da7f`). And even if it ran, its `∓0.05` word goes through
+the same `+0x8c8 = 0.0` scale, so it is zero for this wingman too.
+
+### 11.3 The only zero-input term is the Level-Off assist, and it is the player's
+
+`0x48ce45`..`0x48cf7b`, entered from the weathervane's AI skip (`cmp esi,[0x71c298]` `0x48cd3e` /
+`jne 0x48ce45` `0x48cd44`):
+
+| window | bytes | effect |
+| --- | --- | --- |
+| `0x48ce45` | `8a 86 2c 01 00 00` | `al = [veh+0x12c]` — the assist's per-vehicle flag |
+| `0x48ce4d` | `0f 84 2b 01 00 00` | clear → `0x48cf7e`, no level-off at all |
+| `0x48ce53` | `d9 86 14 01 00 00` | `fld [veh+0x114]`; `fcomp 0.0`, `je 0x48cf7e` (`0x48ce64`) — a roll input cancels the term |
+| `0x48ce6a` | `d9 86 1c 01 00 00` | `fld [veh+0x11c]`; `fcomp 0.0`, `je 0x48cf7e` (`0x48ce7b`) — a pitch input cancels it |
+| `0x48ce81` | `8d 86 8c 01 00 00` | `lea eax,[esi+0x18c]` — the rotation is **from the body Y axis** |
+| `0x48ce92`..`0x48cea4` | — | world up `(0, 1, 0)` read at `0x6379c0` (`00 00 80 3f` at `+0x4`), the far end of the rotation |
+| `0x48ced6` | `d9 05 6c c5 71 00` | `dt` (`[0x71c56c]`) |
+| `0x48cedc` | `d8 8e 50 06 00 00` | `fmul [veh+0x650]` — `level_off_rate`, so the increment is `r(Y→up) * level_off_rate * dt`, scaled by `lambda` when it opposes the attack (`0x48cf2a`..`0x48cf52`) |
+
+So it is a **wing-leveler**, not a pitch term: it rotates the body's up axis toward world up, which changes the
+lift direction and the heading, never the angle of attack or the climb. It cannot supply altitude authority even
+when it runs.
+
+**Who sets `+0x12c`.** A scan of `.text` for every byte store to a register-based `[reg+0x12c]` (`88`/`c6`,
+`mod=10`, base neither `esp` nor `ebp`) finds **exactly three** sites:
+
+| site | window | writes |
+| --- | --- | --- |
+| `0x487d96` | `c6 86 2c 01 00 00 00` | `0` from the player input routine — reached when **any** of `+0x100`/`+0x108`/`+0x10c` is non-zero (`je 0x487d96` at `0x487d51`, `0x487d64`, `0x487d77`), i.e. any stick input turns the assist off |
+| `0x48866e` | `88 81 2c 01 00 00` (with `mov ecx,[0x71c298]` at `0x488640`, `sete al` at `0x48866b`) | the toggle: `[player+0x12c] = !old`, the `Shift+L` command handler |
+| `0x4b0645` | `88 9e 2c 01 00 00` | `0` — the vehicle constructor/reset, next to the whole control block it clears |
+
+The toggle loads the **player vehicle global** `0x71c298`, so no other vehicle can be toggled. Every AI vehicle
+therefore has `+0x12c = 0` for its whole life and the level-off term never runs for it — the port's own
+`OriginalState::level_off` (false at every spawn, toggled only by the playtest's `L`) is the same thing by another
+name.
+
+### 11.4 What is left for an AI attitude with a zero pitch word
+
+Both remaining terms in the block are unconditional (no seat gate, no stick gate):
+
+| term | window | effect |
+| --- | --- | --- |
+| bank coupling, yaw part | `0x48cc61` `d9 05 f8 89 62 00` (`fall_off`), `0x48cc6a` `d8 8e 84 01 00 00` (`X.y`) | `up * fall_off * X.y * dt` about body Y |
+| bank coupling, pitch part | `0x48ccbb` `fld [X.y]`, `0x48ccc1` `d9 e1` (`fabs`), `0x48ccc3` `d8 0d fc 89 62 00` (`bank_off`) | about body X: `(bank_off*|X.y| - fall_off*Y.y [Y.y < 0]) * dt` — a bank-proportional nose-up term, not a trim toward level |
+
+The two constants are image globals (`0x6289f8`, `0x6289fc`), not record words, so every vehicle gets the same
+coupling. The ground blow (`0x48c220`, `2026-10-25-force-block-reread.md` §4.1) also runs for every non-player,
+and is the only other AI attitude term; it needs a surface ahead and is a torque about the surface normal, not a
+climb command. Neither is a level-flight, trim or lift-versus-weight term, and neither can hold an altitude the
+lift law is not already holding.
+
+The AI's *seat* differences are all elsewhere and already ported: the lift target is always `|v| * nose`
+(`0x48c6e9` `fld [ebp-0x80]` / `fchs` / `fmul [esi+0x198]`), the demand is
+`lift_accel_rate * (Vt - V) + (0, g, 0)` (`0x48c746` `d9 05 48 c4 71 00`, `0x48c77b` `d8 81 c4 00 00 00`), the
+weathervane is player-only (`0x48cd3e`/`0x48cd44`), the stall is player-only, the ground blow is unconditional
+for AI, and AI aircraft get the nose-ward speed floor.
+
+### 11.5 The port against this
+
+| claim | `cs_sim` | verdict |
+| --- | --- | --- |
+| the three inputs are the stick words, torques about Z/X/Y | `rotation_increment`, `airframe.roll_torque/pitch_torque/rudder_torque` about `back/right/up` (`2026-10-25-force-block-reread.md` §2) | match |
+| a zero pitch word gives a zero pitch torque | `scale(right, pitch_torque * input.pitch * fade * dt)` with `input.pitch == 0` is the zero vector; the `lambda` sign test on a zero vector is never taken | match (computed, not skipped) |
+| the identity response curve | none needed: the law's words reach the block unscaled | match |
+| the Level-Off assist is gated on `+0x12c` and both inputs zero | `if level_off && input.roll == 0.0 && input.pitch == 0.0` (`crates/cs_sim/src/flight/original.rs`) | match |
+| `+0x650` is `level_off_rate` | `Airframe::level_off_rate`, imported from the record, default `DEFAULT_LEVEL_OFF_RATE` = 4.0 (`0x478a00`) | match |
+| every AI body starts with the assist clear | `OriginalState { level_off: false }` at every spawn (`mission_session::compose`, `mission_ai`, `playtest::scene`); only the playtest's `L` handler toggles it | match |
+| bank coupling, weathervane, stall, ground blow, AI lift target | the same functions (§2 of the re-read) | match |
+
+**Divergence found (player side, not fixed here).** The original *clears* `+0x12c` on any stick input
+(`0x487d51`/`0x487d64`/`0x487d77` → `0x487d96`), so after a player uses the stick the assist stays off until
+`Shift+L` is pressed again; the port keeps the flag and only suppresses the term inside the step, so the assist
+resumes as soon as the stick returns to zero. This is the player's seat, outside this task's owner paths and
+outside its "do not change the player's flight model" limit; it is filed as a follow-up. It cannot affect an AI
+vehicle, whose flag is never set.
+
+No term is missing, so nothing was added and no re-fly was needed; `original_stick` stays off and §10.1's trace is
+unchanged.
+
+### 11.6 Unknowns
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| `veh+0xf4`, whose `> 0` value also clears the assist hands-off (`0x487d83`..`0x487d96`) | the player's assist lifecycle, nothing on the AI seat | its writers (`0x4b05df` clears it at spawn) and readers |
+| the `+0x974` scale's record key and `veh+0xb4` clock value | how fast the stick words ramp in, never a zero word | the key table around `0x479240`, and `+0xb4`'s setup |
+| what `+0x110`/`+0x118` (written by `0x41c080` from `+0xfc`/`+0x104`) feed | a second AI law's output path; the force block reads none of the four | the consumer of `+0x110`/`+0x118`, in another flight model |
+| whether the *shipped* wingman really tracks the player's altitude | whether "holds altitude" means "does not sink" or "follows the leader" — the static reading only supports the first | an original capture (#358) of Betty's altitude against the player's |
+| the 14 non-vehicle `[reg+0x11c]` stores (pane rects, aiv documents, other classes) | completeness of the writer scan for other classes only | not reached by this law |
+
+Nothing here is `verified_original`.
