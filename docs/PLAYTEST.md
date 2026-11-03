@@ -79,8 +79,10 @@ What is provisional (all labelled, none original behaviour):
   chord Shift+L is not reproduced: `Left Shift` is already the throttle
   step-up here and the action map has no chord sources). The assist levels the
   wings only while it is on **and** the stick is hands-off; it starts off and
-  `R` reset returns to off. The binding is a designed slot for the original
-  command, not a measurement of the original's chord.
+  `R` reset returns to off. As in the original (`0x487d96`, #2298), **any stick
+  input clears it**, so after you use the stick the assist stays off until you
+  press `L` again. The binding is a designed slot for the original command, not
+  a measurement of the original's chord.
 * The aircraft's collider is **one box** measured from the composed extent of the
   drawn set (wingspan included), centred on the flight body; the parts do not
   collide individually.

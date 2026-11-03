@@ -1245,7 +1245,8 @@ for AI, and AI aircraft get the nose-ward speed floor.
 `Shift+L` is pressed again; the port keeps the flag and only suppresses the term inside the step, so the assist
 resumes as soon as the stick returns to zero. This is the player's seat, outside this task's owner paths and
 outside its "do not change the player's flight model" limit; it is filed as a follow-up. It cannot affect an AI
-vehicle, whose flag is never set.
+vehicle, whose flag is never set. *(Fixed by #2298: the port now clears the player's flag on any non-zero stick
+word — `2026-11-03-2298-level-off-clears-on-stick-input.md`.)*
 
 No term is missing, so nothing was added and no re-fly was needed; `original_stick` stays off and §10.1's trace is
 unchanged.
