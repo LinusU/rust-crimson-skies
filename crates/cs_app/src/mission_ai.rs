@@ -923,21 +923,23 @@ pub fn wingman_stick(body: Vec3, rows: [Vec3; 3], speed: f32, fine_aim_limit: f3
         }
     }
     let [row0, row1, row2] = rows;
-    // 5. Wings-level assist (0x41bd5c).
+    // 5. Wings-level assist (0x41bd5c). The sign selector reads `V+0x190`,
+    //    the second float of the `V+0x18c` row — `row1.y`, the "inverted?"
+    //    test, not `row1.x` (0x41bd98).
     if bx.abs() < STICK_AIM_THRESHOLD
         && by.abs() < STICK_AIM_THRESHOLD
         && row2.y.abs() < STICK_LEVEL_FORWARD_Y_MAX
     {
-        a100 = if row1.x < 0.0 {
+        a100 = if row1.y < 0.0 {
             if row0.y < 0.0 { 1.0 } else { -1.0 }
         } else {
             -row0.y
         } * STICK_LEVEL_GAIN;
     }
-    // 6. Dive / stall recovery (0x41bdef).
+    // 6. Dive / stall recovery (0x41bdef). Same `row1.y` read (0x41be15).
     let recover = row2.y < STICK_RECOVER_FORWARD_Y_MAX && speed < FOLLOW_SPEED_BAND_M_S;
     if recover {
-        a108 = if row1.x < 0.0 { 1.0 } else { -1.0 };
+        a108 = if row1.y < 0.0 { 1.0 } else { -1.0 };
     }
     // 7. The words go out raw; the pilot's scale and limit are step 7 of
     // `wingman_stick`'s caller (`0x41be53`..) and live in [`StickWords`].
