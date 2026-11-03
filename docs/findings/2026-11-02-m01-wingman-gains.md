@@ -1393,3 +1393,114 @@ on the table:
 | whether the *shipped* wingman really holds altitude beside a climbing player | "holds altitude" vs "follows the leader" | an original capture (#358): Betty's altitude against the player's |
 
 Nothing here is `verified_original`.
+
+## 13. The goal-`y` clamp's ceiling is `flight_ceiling` = 2500 m — and it never binds on the hillside trace (task #2300)
+
+Static reads of the owner image and the retail `vehicle.zrd`/`aiv.zrd`
+through the production parsers; claim id `OWNER-STATIC-2026-10-29`, nothing
+`verified_original`. `accept_m01_wingman_goal_y_clamp_windows_match_the_image`
+pins the bytes, `accept_m01_wingman_goal_y_retail_wingman_ceiling` pins the
+retail read, `accept_m01_wingman_goal_y_never_binds_on_the_hillside_trace`
+pins the answer, and the two `mission_ai::tests::accept_m01_wingman_goal_y_*`
+unit tests pin the port. Implementer: `swe2-max-1`.
+
+### 13.1 Answer
+
+`vehicle+0x314` is the vehicle definition's **`flight_ceiling`** key. For
+M01's `wingman_1` (template `wingman`) the resolved retail value is
+**2500.0 m**: `basic_airplane` declares `flight_ceiling: [2500.0]` and the
+`wingman` chain (`basic_airplane` → `devastator` → `wingman`) inherits it
+unmodified, so the definition constructor's 1000.0 default never reaches
+runtime. The floor global `[0x71c3f0]` is **20.0 m**, written once by the
+world setup at `0x47415b` — the same word the escape latch already reads as
+`ESCAPE_WORLD_FLOOR_M`. The effective band `wingman_1`'s law clamps the
+goal's world `y` into is therefore **[20.0, 2500.0]**.
+
+**It never binds on the hillside trace.** The station slot stays at
+~145–165 m absolute, the phase-0 goal is leader + 200 m, and the escape
+latch's `betty + 1000` tops out near ~1150 m — every row of the 45 s trace
+sits inside the band, so `G.y` passes through unchanged and the ported
+clamp is inert there. Re-flown after porting: `along / cross / vert / gap`
+at 45 s = **354.5 / 368.8 / −295.3 / 576.7 m**, the §10/§12 table
+reproduced row for row.
+
+### 13.2 Byte windows
+
+| window | bytes | shows |
+| --- | --- | --- |
+| `0x41b57e` | `d9 45 d0` | `fld [ebp-0x30]` — the goal copy's `y` |
+| `0x41b583` | `d8 9e 14 03 00 00` | `fcomp [esi+0x314]` — ceiling compare |
+| `0x41b59a`/`0x41b5a0` | `f6 c4 41` / `75 20` | `test ah,0x41`; `jne` over the ceiling store |
+| `0x41b5a5`/`0x41b5b1` | `8b 96 14 03 00 00` / `89 55 d0` | `+0x314` → goal copy `y` |
+| `0x41b5bb` | `c7 45 dc 00 00 00 00` | arg2 `y` = 0 when it was positive |
+| `0x41b5c5` | `d8 1d f0 c3 71 00` | `fcomp [0x71c3f0]` — floor compare |
+| `0x41b5d5` | `a1 f0 c3 71 00` | `mov eax,[0x71c3f0]` → goal copy `y` |
+| `0x47415b` | `c7 05 f0 c3 71 00 00 00 a0 41` | the floor's writer: `[0x71c3f0] = 20.0` |
+| `0x474151` | `c7 05 f4 c3 71 00 00 00 fa 45` | the neighbouring `[0x71c3f4] = 8000.0` (the escape ceiling) |
+| `0x627e14` | `flight_ceiling\0` | the parsed key's text |
+| `0x479c5b`/`0x479c73` | `68 14 7e 62 00` / `89 4f 30` | `0x479240` looks the key up; store `def+0x30` |
+| `0x478a4d`/`0x478a52` | `b8 00 00 7a 44` / `89 45 30` | def constructor default `0x447a0000` = 1000.0 → `def+0x30` |
+| `0x475a3f`/`0x475a42` | `8b 4d 30` / `89 8b 14 03 00 00` | spawn copy `def+0x30` → `vehicle+0x314` (`0x475820`, reached from `0x47c550` in loader `0x47c210`) |
+| `0x47d1d9`/`0x47d1e3` | `8b 43 30` / `89 81 80 09 00 00` | second reader: a non-negative `def+0x30` also lands on `vehicle+0x980` |
+| `0x4216f5`/`0x4216ff` | `c7 05 … ff ff 7f ff` / `c7 86 14 03 00 00 ff ff 7f 7f` | the `0x4216e0` caller disables the clamp (`±FLT_MAX`) around its own `0x41b560` call at `0x42176a` |
+| `0x421775`/`0x42177b` | `89 15 f0 c3 71 00` / `89 86 14 03 00 00` | both bounds restored after that call |
+
+### 13.3 The source chain
+
+`0x479240` (the vehicle-definition parser) looks up the `flight_ceiling`
+key (`push 0x627e14` at `0x479c5b`, `call 0x57a090`) and stores the value
+into `def+0x30` (`0x479c73`); the definition constructor (`0x478a00`)
+defaults the word to `0x447a0000` (1000.0). The spawn constructor
+`0x475820` — called at `0x47c550` inside the aircraft loader `0x47c210`
+with the resolved definition as `arg1` — copies `def+0x30` verbatim into
+`vehicle+0x314` (`0x475a3f`/`0x475a42`). A second reader at `0x47d1d9`
+mirrors the word into `vehicle+0x980` when it is non-negative as an
+integer. `aiv.zrd` is positional: `wingman_1` carries no `flight_ceiling`
+override of its own, so the mission always sees the definition value.
+
+Inside `0x41b560` the clamp runs before the goal delta is formed
+(`0x41b62e`.. computes `[clamped G] − vehicle+0x204`). The second argument
+(the leader's position, from the virtual getter at `0x41edbe`) has its `y`
+zeroed on the clamp side — positive on a ceiling bind, negative on a floor
+bind — which feeds the lead-distance magnitude `|v2|` at
+`0x41b6bb`..`0x41b743`. That magnitude is consumed only by the lead/aim
+arithmetic outside the ported window `0x41bc08`..`0x41be47`, so the port
+carries the `G.y` half only.
+
+### 13.4 The retail read
+
+Through `OriginalDocuments::read` + `resolve_vehicle_record`
+(`cs_content::original_airframe`):
+
+| record | declares `flight_ceiling` | value |
+| --- | --- | --- |
+| `basic_airplane` | yes | `2500.0` |
+| `devastator` | no | inherits 2500.0 |
+| `wingman` | no | inherits 2500.0 |
+| `wingman_1` (`ZBD/C3/M01/zrdr.zbd` `aiv.zrd`) | no such key — positional record | n/a |
+
+### 13.5 The port
+
+`goal_y_clamped(here, to_goal, ceiling)` in `mission_ai.rs` applies
+`G.y = clamp(G.y, GOAL_Y_FLOOR_M, ceiling)` to the absolute goal point —
+on the delta the port carries, `clamp(here.y + to_goal.y, 20, ceiling) −
+here.y`. It runs at the `original_stick` call site after the escape
+latch's goal substitution (the original's escape goal passes through the
+same `0x41b560` call), reading `MissionAircraftAi::goal_y_ceiling` =
+`M01_WINGMAN_GOAL_Y_CEILING_M` (`vehicle+0x314`). `original_stick` and the
+designed follower are unchanged; the default follower never sees it.
+
+Re-flown 45 s after the port (same `fly_trace(true)`): `along 354.5 /
+cross 368.8 / vert −295.3 / gap 576.7` — unchanged, as §13.1 predicts.
+
+### 13.6 Unknowns
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| the `0x4216e0` caller's identity — the one site that disables the clamp around its own `0x41b560` call | which original behaviour flies unclamped | tracing the `0x4216e0` call graph |
+| `vehicle+0x980`, the second `def+0x30` copy (`0x47d1d9`) | whatever reads `+0x980` sees the same ceiling | readers of `+0x980` |
+| whether `[0x71c3f0]` is ever re-written after the world setup for another mission/zone | the floor in non-M01 stages | writers of `0x71c3f0` outside `0x47415b` (none found in `.text` besides `0x4216f5`/`0x421777`'s save-restore) |
+| the 80 m push's direction (§12.4, still open) | the same law's goal | a runtime read of `+0xd8`-phase goal writes |
+| whether the *shipped* wingman really holds altitude beside a climbing player | "holds altitude" vs "follows the leader" | an original capture (#358) |
+
+Nothing here is `verified_original`.
