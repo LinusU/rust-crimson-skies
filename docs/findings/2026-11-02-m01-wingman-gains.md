@@ -925,16 +925,18 @@ driver `0x4216e0` (`0x41d4f2` / `0x41da75`), 3 is the climb `0x41b560`
 `bl=1` (`0x41d2ca` / `0x41da80`), and `+0x358` > 3 falls out of the
 switch (`0x41d4fd` / `0x41e594`).
 
-`+0x358` writers (a byte scan for `mov [reg+0x358], …`): constructor 0
-(`0x4b08bf`), program arm **1** (`0x4208f7`, inside `0x4201a0`), route
-arm 2 (`0x4214d4`; also `0x489b0c` in the vehicle update, which raises
-`+0x358` to 2 whenever the route handle `+0x9bc` is non-null and
-`+0x358` < 2 — a pending route outranks the program), escape latch 3
-(`0x41f98e`), stun 4 (`0x420127`), route-in-progress 5 (`0x42180f` —
-the vehicle update skips the whole AI step `0x41c270` while it stands,
-`0x489a73`), and clears to 0 (`0x41f9a6` escape end, `0x489ae9` stun
-recovery when `clock ≥ +0xc0`, `0x421098` program exhausted,
-`0x490d09`).
+`+0x358` writers (a byte scan for `mov [reg+0x358], …`; both censuses
+are pinned in `accept_m01_wingman_4209b0_substate1_is_armed_by_program_start`):
+constructor 0 (`0x4b08bf`), program arm **1** (`0x4208f7`, inside
+`0x4201a0`), route arm 2 (`0x4214d4`; `0x42167e`, the route-assign path
+that writes the route handle `+0x9bc` = esi at `0x421670` alongside;
+and `0x489b0c` in the vehicle update, which raises `+0x358` to 2
+whenever the route handle `+0x9bc` is non-null and `+0x358` < 2 — a
+pending route outranks the program), escape latch 3 (`0x41f98e`), stun
+4 (`0x420127`), route-in-progress 5 (`0x42180f` — the vehicle update
+skips the whole AI step `0x41c270` while it stands, `0x489a73`), and
+clears to 0 (`0x41f9a6` escape end, `0x489ae9` stun recovery when
+`clock ≥ +0xc0`, `0x421098` program exhausted, `0x490d09`).
 
 ### 11.2 What `0x4209b0` computes: a per-leg target attitude, not a position
 
@@ -1058,18 +1060,19 @@ both stick laws, which keeps §10.3's force-block/trim hypothesis open.
 | --- | --- |
 | `0x41d4e9` / `0x41da69` are `call 0x4209b0` | `e8 c2 34 00 00` at `0x41d4e9`; `e8 42 2f 00 00` at `0x41da69` |
 | both callers gate `+0x67c` == 0 | `8b 96 7c 06 00 00 85 d2 0f 85 bd 03 00 00` at `0x41d2a6` (`jne 0x41d671`); `8b 86 7c 06 00 00 85 c0 0f 85 a4 08 00 00` at `0x41da43` (`jne 0x41e2f5`) |
-| both dispatch `+0x358` by jump table | `83 fa 03 0f 87 … ff 24 95 d4 d8 41 00` at `0x41d2b4`..`0x41d2c9`; `83 f8 03 0f 87 … ff 24 85 44 e7 41 00` at `0x41da51`..`0x41da66`; tables `0x41d8d4`, `0x41e744` |
+| both dispatch `+0x358` by jump table | `83 fa 03 0f 87 3a 02 00 00 ff 24 95 d4 d8 41 00` at `0x41d2ba`..`0x41d2c9` (`ja 0x41d4fd`); `83 f8 03 0f 87 34 0b 00 00 ff 24 85 44 e7 41 00` at `0x41da57`..`0x41da66` (`ja 0x41e594`); tables `0x41d8d4`, `0x41e744` |
 | mode 4 → follower, not the split | `83 be 7c 06 00 00 04 74 72` at `0x41c2dd` (`je 0x41c358`); `56 e8 02 24 00 00` at `0x41c358` (`call 0x41e760`); `+0x2f0` dispatch `0x41c2e6`..`0x41c305` |
 | program vector walk and dwell | `+0x9b0`/`+0x9a4`/`+0x9a8`/`+0x89c` at `0x4209b9`..`0x4209fd`; 32-byte stride `c1 e0 05`; `sar edx,5` at `0x4209e5`/`0x421091` |
 | throttle slew and clamp | `0x420a03`..`0x420a77`; `0x6036b8` = 80.467, `0x603508` = 0.35, `0x61fb68`/`0x61fb6c` = 0.8/1.1, `0x9ad744` = dt |
-| entry stick triple → literal words | `0x420a86`/`0x420a9d`/`0x420ab1` test `0x6032c8` = 0.0; `0x420e60`..`0x420e7c` writes; `c7 45 d0 00 00 80 3f` forces the identity residual |
+| entry stick triple → literal words | `0x420a86`/`0x420a9d`/`0x420ab1` test `0x6032c8` = 0.0; `0x420e60`..`0x420e7c` writes; `c7 45 d0 00 00 80 3f` + `c7 45 d4`/`d8`/`dc 00 00 00 00` force the identity residual `(1,0,0,0)` |
 | `Δ = conj(+0x150) ⊗ entry` | `lea ecx,[esi+0x150]` `0x420ad9`; `call 0x53f8d0` `0x420b01`; `call 0x53f920` `0x420b12`; `0x53f8d0` flips dwords 1..3 via `xor …,0x80000000` at `0x53f8f8`..`0x53f909` |
-| desired-forward construction | `push 0x6034c8` `0x420b6b`; `call 0x53fb40` `0x420b71`; `0x6034c8` = `(0,0,−1,37.5)`; small band `fcomp qword [0x6036b0]` `0x420b1f` (f64 0.05) |
+| desired-forward construction | `push 0x6034c8` `0x420b6b`; `call 0x53fb40` `0x420b71`; `0x6034c8` = `(0,0,−1,37.5)`; small band `fcomp qword [0x6036b0]` `0x420b1f` (`|Δ.x|`) and `0x420b31` (`|Δ.z|`) (f64 0.05); `+0x108` = `y′` `89 96` `0x420c50`, = 0 `89 be` `0x420c97` |
 | ∓0.05 floor | six stores `c7 86 <off> 01 00 00 cd cc 4c (3d|bd)` at `0x420cf9`/`0x420d36`/`0x420d93`/`0x420dd0`/`0x420e22`/`0x420e54` |
 | gain finish and outputs | `+0x8c4`/`+0x8c8`/`+0x8cc` at `0x420e9d`/`0x420eb2`/`0x420ec7`; `+0x8d0`/`+0x8d4`/`+0x8d8` at `0x420edc`/`0x420f19`/`0x420f55`; `+0x974` at `0x420f91`; `+0x114`/`+0x11c`/`+0x120` at `0x420fe3`/`0x420ff9`/`0x421015`; `0x460890` = `d9 44 24 04 c3` |
 | leg advance | `call 0x53fca0` `0x421023`; `fcomp [0x6036a8]` `0x421052` (0.15); `fcomp [esi+0x89c]` `0x421065`; `+0x9b0`++ `0x421072`; exhaust `89 be 58 03 00 00` `0x421098`, cooldown `fadd [0x6036a4]` `0x4210a4` (3.5) |
 | `+0x358` = 1 arm | `c7 87 b0 09 00 00 ff ff ff ff` `0x4208ed` (`+0x9b0` = −1); `c7 87 58 03 00 00 01 00 00 00` `0x4208f7` (`+0x358` = 1); `0x4201a0` callers `0x41db9d`/`0x43e10e`/`0x4b9ff8` |
-| route outranks program | `89 86 58 03 00 00` `0x489b0c` (`+0x358` = 2); stun clear `c7 86 58 03 00 00 00 00 00 00` `0x489ae9`; `call 0x41c270` `0x489b14` |
+| route outranks program | `89 86 58 03 00 00` `0x489b0c` (`+0x358` = 2); stun clear `c7 86 58 03 00 00 00 00 00 00` `0x489ae9`; `call 0x41c270` `0x489b14`; `+0x358` = 5 step-skip `83 f9 05 0f 84 a0 00 00 00` `0x489a79` (`je 0x489b22`, past the call) |
+| route assign also arms 2 | `89 b5 bc 09 00 00` `0x421670` (`+0x9bc` = esi); `c7 85 58 03 00 00 02 00 00 00` `0x42167e` (`+0x358` = 2, ebp-based) |
 
 | unknown | affects | resolving step |
 | --- | --- | --- |
