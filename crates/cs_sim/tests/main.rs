@@ -73,6 +73,7 @@ mod accept_m02_b_fu3_objective_address;
 mod accept_m02_b_fu4_directive_family;
 mod accept_m02_b_fu5_directive_driver;
 mod accept_t1319_coast_then_detonate;
+mod accept_t2298_level_off_clears_on_stick_input;
 mod accept_t397_animation_event_identity;
 mod accept_t442_shared_damage_identity;
 mod accept_t447_loop_route_progress;

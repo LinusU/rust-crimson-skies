@@ -580,6 +580,13 @@ pub struct OriginalState {
     /// player's throttle.
     pub fuel: f64,
     /// The Level-Off assist toggle (Shift+L, command 47).
+    ///
+    /// The player's `Shift+L` handler sets it (`0x488640`..`0x48866e`) and the
+    /// player's input routine clears it again on any non-zero stick word
+    /// (`0x487d3d`..`0x487d96`), so [`OriginalFlightModel::step`] clears it in
+    /// the same step a stick input reaches the law. No AI body ever has it
+    /// set: the toggle reads the player vehicle global `0x71c298` and the
+    /// vehicle constructor clears the byte (`0x4b0645`).
     pub level_off: bool,
 }
 
@@ -1196,6 +1203,28 @@ impl OriginalFlightModel {
         state.validate()?;
         let input = input.clamped();
         let airframe = &self.airframe;
+
+        // 0. The player's own input routine clears the Level-Off flag as soon
+        //    as **any** of its three stick words is non-zero: `0x487d3d` loads
+        //    `+0x100`, `0x487d53` `+0x108`, `0x487d66` `+0x10c`, and each
+        //    `fcomp 0.0` / `test ah, 0x40` / `je 0x487d96`
+        //    (`0x487d4e`..`0x487d51`, `0x487d61`..`0x487d64`,
+        //    `0x487d74`..`0x487d77`) takes the first non-zero word to
+        //    `0x487d96` `c6 86 2c 01 00 00 00` (`[esi+0x12c] = 0`). The three
+        //    words are the same raw stick the curve `0x460890` (the identity)
+        //    copies into the force block's `+0x114/+0x11c/+0x120`, so a
+        //    non-zero [`OriginalInput`] word is a non-zero raw word.
+        //
+        //    The routine is the **player's**: the only writer that sets the
+        //    flag is the player-vehicle `Shift+L` handler
+        //    (`0x488640`..`0x48866e`, `mov ecx,[0x71c298]`, `sete al`), and
+        //    the vehicle constructor clears it (`0x4b0645`). An AI body
+        //    therefore never has it set and this clear never applies to it.
+        //    The assist's own gate inside the force block stays what §11.3
+        //    reads: `+0x114 == 0 && +0x11c == 0` (`0x48ce53`, `0x48ce6a`).
+        if input.is_player && (input.roll != 0.0 || input.pitch != 0.0 || input.yaw != 0.0) {
+            state.level_off = false;
+        }
 
         // 1. Throttle slew and player fuel.
         let frozen = input.is_player && state.fuel <= 0.0;
@@ -2162,7 +2191,9 @@ mod tests {
         );
 
         // Stick deflected, the toggle changes nothing: the gate suppresses the
-        // assist, so the two steps are bit-identical.
+        // assist, so the two steps are bit-identical — and the player input
+        // routine clears the flag itself on any non-zero stick word
+        // (`0x487d3d`..`0x487d96`), so the on case ends the step with it off.
         let mut off = at();
         off.level_off = false;
         let mut on = at();
@@ -2176,6 +2207,11 @@ mod tests {
         assert_eq!(
             off_step.world_torque, on_step.world_torque,
             "a deflected stick must suppress the assist entirely"
+        );
+        assert!(
+            !on.level_off,
+            "the player input routine clears the toggle on stick input \
+             (`0x487d96`), so the on case cannot stay armed"
         );
         let mut on_state = on;
         on_state.level_off = off.level_off;
