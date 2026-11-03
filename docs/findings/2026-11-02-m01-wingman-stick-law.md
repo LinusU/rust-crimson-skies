@@ -14,10 +14,14 @@ nothing is `verified_original`. Flight numbers are port behaviour only.
 bytes (the branch conditions, the `by` sign flip of the fine branch, and the
 exact wings-level rule, which §4 only summarised):
 
-* wings-level (`0x41bd98`..): `A100 = 0.2 * (row1.x < 0 ? (row0.y < 0 ? +1 : -1) : -row0.y)`
-  with `row0.y = [V+0x184]`, `row1.x = [V+0x190]` (the vehicle's own basis rows
+* wings-level (`0x41bd98`..): `A100 = 0.2 * (row1.y < 0 ? (row0.y < 0 ? +1 : -1) : -row0.y)`
+  with `row0.y = [V+0x184]`, `row1.y = [V+0x190]` (the vehicle's own basis rows
   at `V+0x180/0x18c/0x198`; the same rows project the goal delta into
-  `(bx, by, bz)`).
+  `(bx, by, bz)`). *(Corrected by #2299, `2026-11-02-m01-wingman-gains.md`
+  §12.3: this note originally labelled `[V+0x190]` `row1.x`; it is the second
+  float of the `+0x18c` row — `row1.y`, the up axis' vertical part — and the
+  recovery select at `0x41be15` reads the same word. The port's `row1.x` reads
+  in both branches were fixed.)*
 * The words become `FlightInput` as `roll = -A100`, `pitch = A108`,
   `yaw = A10c` (`StickWords::flight_input`), per the measured force-block reads
   of `+0x114/+0x11c/+0x120` (roll, pitch, yaw; #2262). The **sign** of each is
