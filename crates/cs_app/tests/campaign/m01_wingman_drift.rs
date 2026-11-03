@@ -17,12 +17,20 @@ use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{MissionPlayerBody, build_headless, stage_for, teardown};
 use cs_app::physics::BASELINE_FIXED_HZ;
 use cs_app::playtest::scene::PlaytestOriginalFlight;
+use cs_sim::flight::original::lift_target;
 
 use crate::campaign::common::label;
 use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// One trace row: slot error on the leader's axes, speeds, the stick words
 /// and throttle as commanded, and the follower's latches.
+///
+/// The `#2299` columns split `vert` into absolute altitudes: the leader's
+/// and Betty's own heights and vertical speeds, the slot's height above the
+/// leader (the attitude part), the lift demand the port computes for Betty
+/// (`lift_accel_rate * (Vt - V) + (0, g, 0)`, the `0x48c746`/`0x48c77b`
+/// terms, against gravity) and her bank, so a climb of the leader and a
+/// sink of Betty read as different numbers instead of one difference.
 #[derive(Debug, Clone, Copy)]
 struct Row {
     t: f32,
@@ -38,6 +46,40 @@ struct Row {
     throttle: f64,
     engaged: bool,
     climbing: bool,
+    /// The leader's absolute altitude and world vertical speed.
+    leader_alt: f32,
+    leader_vy: f32,
+    /// Betty's absolute altitude and world vertical speed.
+    betty_alt: f32,
+    betty_vy: f32,
+    /// `slot.y - leader.y`: the part of the slot's height that comes from
+    /// the leader's attitude rather than its position.
+    slot_dy: f32,
+    /// The player's held stick: `true` while roll, pitch and yaw are all
+    /// `0.0`, so a leader climb cannot be a commanded climb.
+    leader_neutral: bool,
+    /// The `0x48c746`/`0x48c77b` demand `steer` for Betty, in m/s^2:
+    /// `dem_y` its world-vertical part, `dem_side`/`dem_up` its projections
+    /// on her body right/up axes (the `(ax, ay)` the load command uses),
+    /// `grav` the gravity term it is added to.
+    dem_y: f64,
+    dem_side: f64,
+    dem_up: f64,
+    grav: f64,
+    /// `asin` of her body-right axis' world `y`, degrees — the `X.y` the
+    /// image's bank coupling reads (`0x48cc6a`).
+    bank_deg: f64,
+    /// Her body-up axis' world `y`: the fraction of the lift-plane up that
+    /// is still vertical, so `1 - up_y` is the share banking costs.
+    up_y: f64,
+    /// Her nose axis' world `y` as an elevation angle, degrees — the lift
+    /// target's direction, `Vt.y = |v| * nose.y`, that her velocity follows.
+    nose_deg: f64,
+    /// Her world angular momentum (the `L` the rotation increments write
+    /// into), its `x` and `y` parts: the bank coupling pitches about the
+    /// body X and yaws about the body Y.
+    mom_x: f64,
+    mom_y: f64,
 }
 
 fn pose(app: &App, entity: Entity) -> (Vec3, bevy::prelude::Quat, Vec3) {
@@ -50,6 +92,10 @@ fn pose(app: &App, entity: Entity) -> (Vec3, bevy::prelude::Quat, Vec3) {
 }
 
 fn fly_trace(use_stick: bool) -> Vec<Row> {
+    fly_trace_opts(use_stick, false)
+}
+
+fn fly_trace_opts(use_stick: bool, zero_betty_blow: bool) -> Vec<Row> {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plans");
     let stage = stage_for(&root, &plan).expect("stage reads");
@@ -79,6 +125,15 @@ fn fly_trace(use_stick: bool) -> Vec<Row> {
             .map(|(entity, _)| entity)
             .expect("wingman_1")
     };
+    if zero_betty_blow {
+        let world = app.world_mut();
+        world
+            .get_mut::<PlaytestOriginalFlight>(betty)
+            .expect("flight")
+            .model
+            .globals
+            .groundblow_mag = 0.0;
+    }
     let timestep = app.world().resource::<Time<bevy::time::Fixed>>().timestep();
     let hz = u64::from(BASELINE_FIXED_HZ);
     let mut rows = Vec::new();
@@ -89,7 +144,7 @@ fn fly_trace(use_stick: bool) -> Vec<Row> {
         if tick % (hz / 2) != 0 {
             continue;
         }
-        let (b, _, bv) = pose(&app, betty);
+        let (b, bq, bv) = pose(&app, betty);
         let (p, po, pv) = pose(&app, player);
         let slot = station_point(p, po, STATION_OFFSET_PLAYER_M);
         let err = slot - b;
@@ -104,11 +159,40 @@ fn fly_trace(use_stick: bool) -> Vec<Row> {
             .max(0.0)
             .sqrt();
         let ai = app.world().get::<MissionAircraftAi>(betty).expect("law");
-        let cmd = app
+        let flight = app
             .world()
             .get::<PlaytestOriginalFlight>(betty)
-            .expect("flight")
+            .expect("flight");
+        let cmd = flight.command;
+        let player_cmd = app
+            .world()
+            .get::<PlaytestOriginalFlight>(player)
+            .expect("player flight")
             .command;
+        // The `0x48c746`/`0x48c77b` demand as the port's `aero` computes it:
+        // `steer = lift_accel_rate * (Vt - V) + (0, g, 0)` on the body axes
+        // the driver seeds the law's state from each tick (its own post-step
+        // `state.orientation` is what the body's `Rotation` was written
+        // from). For the AI seat `lift_target` is `|v|` along the nose.
+        let v3 = |v: Vec3| [f64::from(v.x), f64::from(v.y), f64::from(v.z)];
+        let right = v3(bq * Vec3::X);
+        let up = v3(bq * Vec3::Y);
+        let nose = v3(bq * Vec3::NEG_Z);
+        let velocity = v3(bv);
+        let target = lift_target(
+            nose,
+            velocity,
+            flight.model.globals.lift_aoa_deg,
+            flight.is_player,
+        );
+        let rate = flight.model.globals.lift_accel_rate;
+        let grav = flight.model.airframe.gravity;
+        let steer = [
+            (target[0] - velocity[0]) * rate,
+            (target[1] - velocity[1]) * rate + grav,
+            (target[2] - velocity[2]) * rate,
+        ];
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         rows.push(Row {
             t: tick as f32 / hz as f32,
             along,
@@ -123,6 +207,23 @@ fn fly_trace(use_stick: bool) -> Vec<Row> {
             throttle: cmd.throttle,
             engaged: ai.follow_engaged,
             climbing: ai.escape.climbing,
+            leader_alt: p.y,
+            leader_vy: pv.y,
+            betty_alt: b.y,
+            betty_vy: bv.y,
+            slot_dy: slot.y - p.y,
+            leader_neutral: player_cmd.roll == 0.0
+                && player_cmd.pitch == 0.0
+                && player_cmd.yaw == 0.0,
+            dem_y: steer[1],
+            dem_side: dot(steer, right),
+            dem_up: dot(steer, up),
+            grav,
+            bank_deg: right[1].clamp(-1.0, 1.0).asin().to_degrees(),
+            up_y: up[1],
+            nose_deg: nose[1].clamp(-1.0, 1.0).asin().to_degrees(),
+            mom_x: flight.state.angular_momentum_world[0],
+            mom_y: flight.state.angular_momentum_world[1],
         });
     }
     teardown(&mut app);
@@ -576,4 +677,216 @@ fn accept_m01_wingman_altitude_level_off_is_the_players_toggle() {
         flight.model.airframe.level_off_rate
     );
     teardown(&mut app);
+}
+
+// ------------------------------------------------- vertical source ------
+//
+// M01-WINGMAN-VERT-SOURCE (#2299): §10 records only `vert = slot.y -
+// Betty.y`, which cannot tell the leader's climb from Betty's sink. The
+// extended row records both absolute altitudes and vertical speeds, the
+// `0x48c746`/`0x48c77b` lift demand against gravity, and her bank, so the
+// decomposition in `docs/findings/2026-11-02-m01-wingman-gains.md` §12 reads
+// in numbers.
+
+/// Prints the vertical-source columns of the 0.5 s hillside trace with
+/// `original_stick` on (`CS_VERT_TRACE=1`); not a pin on the outcome.
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_vert_source_trace_hillside() {
+    let rows = fly_trace(true);
+    assert_eq!(rows.len(), 90);
+    if std::env::var_os("CS_VERT_TRACE").is_some() {
+        for r in &rows {
+            println!(
+                "t={:5.1} L={:7.1}/{:+5.2} B={:7.1}/{:+5.2} vert={:7.1} sdy={:+5.2} \
+                 dem(y,side,up)={:+6.2}/{:+6.2}/{:+6.2} g={:5.2} bank={:+6.1} up_y={:5.3} \
+                 nose={:+6.2} stick(r,y)={:+5.2}/{:+5.3} L(x,y)={:+7.3}/{:+7.3} \
+                 ntrl={} eng={} esc={}",
+                r.t,
+                r.leader_alt,
+                r.leader_vy,
+                r.betty_alt,
+                r.betty_vy,
+                r.vert,
+                r.slot_dy,
+                r.dem_y,
+                r.dem_side,
+                r.dem_up,
+                r.grav,
+                r.bank_deg,
+                r.up_y,
+                r.nose_deg,
+                r.roll,
+                r.yaw,
+                r.mom_x,
+                r.mom_y,
+                u8::from(r.leader_neutral),
+                u8::from(r.engaged),
+                u8::from(r.climbing),
+            );
+        }
+    }
+}
+
+/// The same trace with Betty's `groundblow_mag` forced to `0.0`
+/// (`CS_VERT_TRACE=1`): whether the sink survives the removal of the only
+/// attitude term the hillside finding isolated is the §12 cross-check.
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_vert_source_trace_without_her_blow() {
+    let rows = fly_trace_opts(true, true);
+    assert_eq!(rows.len(), 90);
+    if std::env::var_os("CS_VERT_TRACE").is_some() {
+        for r in &rows {
+            println!(
+                "t={:5.1} L={:7.1}/{:+5.2} B={:7.1}/{:+5.2} vert={:7.1} sdy={:+5.2} \
+                 dem(y,side,up)={:+6.2}/{:+6.2}/{:+6.2} g={:5.2} bank={:+6.1} up_y={:5.3} \
+                 nose={:+6.2} stick(r,y)={:+5.2}/{:+5.3} L(x,y)={:+7.3}/{:+7.3} \
+                 ntrl={} eng={} esc={}",
+                r.t,
+                r.leader_alt,
+                r.leader_vy,
+                r.betty_alt,
+                r.betty_vy,
+                r.vert,
+                r.slot_dy,
+                r.dem_y,
+                r.dem_side,
+                r.dem_up,
+                r.grav,
+                r.bank_deg,
+                r.up_y,
+                r.nose_deg,
+                r.roll,
+                r.yaw,
+                r.mom_x,
+                r.mom_y,
+                u8::from(r.leader_neutral),
+                u8::from(r.engaged),
+                u8::from(r.climbing),
+            );
+        }
+    }
+}
+
+/// `vert` splits exactly into `(leader.y - Betty.y) + (slot.y - leader.y)`:
+/// the absolute-altitude split is arithmetic, not a fit, so every row must
+/// close.
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_vert_source_error_is_the_altitude_split() {
+    for r in fly_trace(true) {
+        let split = f64::from(r.leader_alt - r.betty_alt) + f64::from(r.slot_dy);
+        assert!(
+            (f64::from(r.vert) - split).abs() < 0.01,
+            "t={}: vert={} but the altitude split is {split}",
+            r.t,
+            r.vert
+        );
+    }
+}
+
+/// The corrected sign selects: both the wings-level assist and the recovery
+/// branch discriminate on `row1.y` (the up axis' vertical part — "inverted?"),
+/// never on `row1.x`. With `row1.x < 0` but `row1.y > 0` (tilted, not
+/// inverted) the old read picked the saturated branch the image does not.
+#[test]
+fn accept_m01_wingman_vert_source_sign_selects_read_row1_y() {
+    use cs_app::mission_ai::{STICK_LEVEL_GAIN, wingman_stick};
+
+    // Banked ~60 deg to the side the up row tilts toward -x: `row1.x` is
+    // negative while `row1.y` is still positive (not inverted). The aim is
+    // centred (bz <= 0 keeps it un-normalised), so the wings-level assist
+    // runs; its upright branch is `-row0.y * 0.2`, not the saturated
+    // `+/-1 * 0.2`.
+    let tilted = [
+        Vec3::new(1.0, -0.4, 0.0),
+        Vec3::new(-0.5, 0.87, 0.0),
+        Vec3::NEG_Z,
+    ];
+    let words = wingman_stick(Vec3::new(0.01, 0.01, -1.0), tilted, 60.0, 0.0);
+    assert!(
+        (words.a100 - 0.4 * STICK_LEVEL_GAIN).abs() < 1e-6,
+        "row1.y > 0 keeps the proportional wing-level word: {words:?}"
+    );
+
+    // The same tilt during a slow nose-down recovery: `row1.y > 0` picks the
+    // `-1` pitch word the image writes for an upright body.
+    let dive = [
+        Vec3::new(1.0, -0.4, 0.0),
+        Vec3::new(-0.5, 0.87, 0.0),
+        Vec3::new(0.0, -0.8, -0.6),
+    ];
+    let words = wingman_stick(Vec3::new(10.0, 0.0, 10.0), dive, 20.0, 0.0);
+    assert_eq!(words.a108, -1.0, "row1.y > 0: {words:?}");
+}
+
+/// The image windows §12's demand and bank columns rest on: the AI lift
+/// target is `|v|` along the nose (`0x48c6e9`..`0x48c6f0`), the demand adds
+/// the gravity word (`0x48c746`) into its `y` (`0x48c77b`), and the bank
+/// coupling reads the body X axis' `y` (`0x48cc6a`) with no seat gate.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_vert_source_demand_windows_match_the_image() {
+    use cs_app::engine_facts::engine_facts;
+    use cs_content::coordinates::load_engine_image;
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let facts = engine_facts().expect("the committed table parses");
+    let at = |va: u64| usize::try_from(facts.image_offset(va).expect("va in image")).expect("off");
+    let window = |va: u64, bytes: &[u8]| {
+        let i = at(va);
+        assert_eq!(
+            &loaded.bytes[i..i + bytes.len()],
+            bytes,
+            "window at {va:#x}"
+        );
+    };
+    // The AI seat's lift target `Vt = |v| * nose`: `fld [ebp-0x80]` /
+    // `fchs` / `fmul [esi+0x198]` (the body Z axis).
+    window(0x48c6e9, &[0xd9, 0x45, 0x80]);
+    window(0x48c6ec, &[0xd9, 0xe0]);
+    window(0x48c6f0, &[0xd8, 0x8e, 0x98, 0x01, 0x00, 0x00]);
+    // The demand's gravity term: `fld [0x71c448]` and `fadd [ecx+0xc4]`.
+    window(0x48c746, &[0xd9, 0x05, 0x48, 0xc4, 0x71, 0x00]);
+    window(0x48c77b, &[0xd8, 0x81, 0xc4, 0x00, 0x00, 0x00]);
+    // The bank coupling is unconditional: `fall_off` `fmul [esi+0x184]`
+    // (X.y) about body Y; `fabs` / `bank_off` about body X.
+    window(0x48cc61, &[0xd9, 0x05, 0xf8, 0x89, 0x62, 0x00]);
+    window(0x48cc6a, &[0xd8, 0x8e, 0x84, 0x01, 0x00, 0x00]);
+    window(0x48ccc1, &[0xd9, 0xe1]);
+    window(0x48ccc3, &[0xd8, 0x0d, 0xfc, 0x89, 0x62, 0x00]);
+}
+
+/// The two sign selects the fix reads: the wings-level assist's `fld
+/// [esi+0x190]` and the recovery's `fld [esi+0x190]` both take the second
+/// float of the `V+0x18c` row — `row1.y`, the "inverted?" test. The bank
+/// coupling's own yaw part writes `scalar * [0x18c]/[0x190]/[0x194]` as the
+/// up vector, which pins the layout: `+0x190` is `row1.y`, not `row1.x`
+/// (`0x18c` itself). Both selects were ported as `row1.x`; §12 records the
+/// correction.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m01_wingman_vert_source_sign_windows_match_the_image() {
+    use cs_app::engine_facts::engine_facts;
+    use cs_content::coordinates::load_engine_image;
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let facts = engine_facts().expect("the committed table parses");
+    let at = |va: u64| usize::try_from(facts.image_offset(va).expect("va in image")).expect("off");
+    let window = |va: u64, bytes: &[u8]| {
+        let i = at(va);
+        assert_eq!(
+            &loaded.bytes[i..i + bytes.len()],
+            bytes,
+            "window at {va:#x}"
+        );
+    };
+    // The up vector as the yaw part writes it: `scalar * row1.x/.y/.z`
+    // at `+0x18c`/`+0x190`/`+0x194` — `+0x190` is the row's second float.
+    window(0x48cc7b, &[0xd8, 0x8e, 0x8c, 0x01, 0x00, 0x00]);
+    window(0x48cc86, &[0xd8, 0x8e, 0x90, 0x01, 0x00, 0x00]);
+    window(0x48cc8f, &[0xd8, 0x8e, 0x94, 0x01, 0x00, 0x00]);
+    // The wings-level assist's sign select: `fld [esi+0x190]` = row1.y.
+    window(0x41bd98, &[0xd9, 0x86, 0x90, 0x01, 0x00, 0x00]);
+    // The recovery branch's sign select: `fld [esi+0x190]` = row1.y.
+    window(0x41be15, &[0xd9, 0x86, 0x90, 0x01, 0x00, 0x00]);
 }
