@@ -1262,3 +1262,134 @@ unchanged.
 | the 14 non-vehicle `[reg+0x11c]` stores (pane rects, aiv documents, other classes) | completeness of the writer scan for other classes only | not reached by this law |
 
 Nothing here is `verified_original`.
+
+## 12. The vertical error is Betty sinking, not the leader climbing — and the audited stick law had two `row1.x`/`row1.y` sign-select bugs (task #2299)
+
+Port trace plus static reads of the owner image; claim id `OWNER-STATIC-2026-10-29`,
+nothing `verified_original`. The trace is the §10 flight extended with absolute
+altitudes (`CS_VERT_TRACE=1 cargo test -p cs_app --test cs_app_tests_a --
+accept_m01_wingman_vert_source_trace --include-ignored --nocapture`);
+`accept_m01_wingman_vert_source_error_is_the_altitude_split`,
+`accept_m01_wingman_vert_source_sign_selects_read_row1_y`,
+`accept_m01_wingman_vert_source_demand_windows_match_the_image` and
+`accept_m01_wingman_vert_source_sign_windows_match_the_image` pin what is quoted
+below. Implementer: `swe2-max-1`.
+
+### 12.1 The answer in numbers: (b) — Betty sinks
+
+Columns: `L` leader altitude / world vy, `B` Betty altitude / world vy,
+`sdy` the slot's height above the leader, `dem(y,side,up)` the
+`0x48c746`/`0x48c77b` demand `steer` in world-y and on her body axes,
+`g` the gravity term, `bank` `asin(X.y)` in degrees, `up_y` the up axis'
+vertical part, `nose` the nose's elevation in degrees.
+
+| t (s) | L alt/vy | B alt/vy | vert | sdy | dem_y | g | bank | up_y | nose |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.5 | 150.0/−0.00 | 147.5/−9.00 | 2.5 | +0.00 | +26.75 | 20 | −1.1 | 1.000 | +0.0 |
+| 3.0 | 150.0/−0.00 | 131.2/−4.18 | 18.8 | +0.00 | +19.83 | 20 | −40.3 | 0.761 | −2.5 |
+| 10.0 | 150.0/−0.00 | 100.0/−5.58 | 50.0 | +0.00 | +20.24 | 20 | +22.6 | 0.922 | −2.7 |
+| 17.0 | 150.0/−0.00 | 76.6/−2.13 | 73.4 | +0.00 | +19.82 | 20 | −38.3 | 0.785 | −1.2 |
+| 23.0 | 150.0/−0.00 | 64.3/−0.61 | 85.7 | +0.00 | +20.34 | 20 | +12.8 | 0.975 | −0.1 |
+| 28.0 | 150.0/−0.00 | 59.6/−4.81 | 90.4 | +0.00 | +18.28 | 20 | +54.6 | 0.575 | −3.9 |
+| 30.0 | 150.0/−0.00 | 44.5/−9.47 | 105.5 | +0.00 | +23.50 | 20 | +50.9 | 0.629 | −2.7 |
+| 34.5 | 150.0/−0.00 | 31.8/−1.29 | 118.2 | +0.00 | +20.49 | 20 | +11.7 | 0.979 | −0.4 |
+| 35.0 | 150.0/−0.00 | 31.2/−0.89 | 118.8 | +0.00 | +20.49 | 20 | +1.9 | 0.999 | −0.1 |
+| 35.5 | 150.0/−0.00 | 30.9/+0.01 | 119.1 | +0.00 | +28.94 | 20 | −0.3 | 0.993 | +6.6 |
+| 37.0 | 150.0/+0.00 | 65.6/+42.99 | 84.4 | +0.00 | +34.49 | 20 | −15.1 | 0.534 | +53.6 |
+| 40.0 | 157.2/+4.90 | 233.0/+60.48 | −74.0 | +1.75 | +18.84 | 20 | −40.0 | −0.192 | +47.9 |
+| 45.0 | 211.9/+12.90 | 509.5/+45.87 | −295.3 | +2.31 | +15.11 | 20 | −43.2 | −0.593 | +25.1 |
+
+`vert = (leader.y − Betty.y) + slot_dy` closes to <0.01 m on every row
+(`accept_m01_wingman_vert_source_error_is_the_altitude_split`). For the whole
+sink (0.5..35 s) the leader holds **150.0 m with vy = −0.00**; `vert` grows
+2.5 → 118.8 m while Betty falls 147.5 → 31.2 m (−116.3 m) — the vertical error
+is *all* her altitude loss. The slot sits at the leader's own height
+(`sdy ≈ +0.00`, rising to +2.3 only in the late overshoot), so this is not a
+station-geometry effect. The leader does climb eventually — from t ≈ 37.5 s,
++12.9 m/s — but by then Betty's escape climb has already overshot 120 m above
+him; that climb is the §10.2 overshoot's tail, not the cause of the 2 → 118 m.
+
+The first two rows are the launch transient, not the law: she spawns at 22 m/s
+behind a 69 m/s leader (§10.2), so she falls ballistically (−9.00 m/s at 0.5 s)
+until she is fast. The steady sink from ~3 s on is the question this task set,
+and the demand column answers it mechanically: `dem_y` sits at ≈ `g` the whole
+time — the lift law's demanded vertical acceleration is already satisfied
+(lift ≈ weight), so she neither accelerates up nor down *at constant attitude*.
+She loses altitude because `nose` holds −1°…−6° while banked (the lift target
+is `|v|` along the nose, `0x48c6e9`): `dem_y = rate·(|v|·nose.y − v.y) + g ≈ g`
+means `v.y` is tracking `|v|·nose.y`, a few degrees of down-slope at ~105 m/s.
+The `nose` column shows the mechanism directly — it sags to −2.5°…−6.2° under
+banks of ±30…60° and recovers toward −0.3° whenever the wings come level —
+which is the bank coupling's `fall_off·X.y` yaw about the *tilted* up axis
+dipping the nose into every correction roll, with `bank_off·|X.y|` returning it
+only part-way before the next correction.
+
+### 12.2 The audit: which ported term does it, and what did not
+
+Every term that acts with a dead pitch word was compared against its §11.4
+window, byte for byte; the cross-check column is the ported code:
+
+| candidate | image | port | verdict |
+| --- | --- | --- | --- |
+| AI lift target `= \|v\|·nose` | `0x48c6e9`..`0x48c6f0` (`fchs`, `fmul [esi+0x198]`) | `lift_target` | match — `nose_deg` is what it aims at |
+| demand `+ (0,g,0)` into `y` | `0x48c746` `fld [0x71c448]`, `0x48c77b` `fadd [ecx+0xc4]` | `steer[1] += gravity` | match — `dem_y`/`grav` columns |
+| bank coupling yaw part | `fall_off·X.y·dt` about body Y (`0x48cc61`, `0x48cc6a`) | `rotation_increment` | match — the term that dips the nose into each bank |
+| bank coupling pitch part | `(bank_off·\|X.y\| − fall_off·Y.y[Y.y<0])·dt` about X (`0x48ccbb`..) | `rotation_increment` | match — partial nose-up return |
+| `fall_off`, `bank_off` | `0.205` `0x6289f8`, `0.165` `0x6289fc` | `FALL_OFF`, `BANK_OFF` | byte-equal constants |
+| `+0x974` stick-word scale | initialized `1.0f` (`0x4b02df`), no other writer | omitted | exact |
+| `+0xb4` post-spawn stick attenuation | `now < V+0xb4` scales by `0.1` (`0x41bfc8`); no site ever writes `+0xb4` nonzero for this seat | omitted | unreachable in this session |
+| fine-aim gate `def+0x260` | `rudder_tol`, ctor `0.2` (`0x47b37e` reads key `0x6281a4`) | `RUDDER_TOL = 0.2` | correct |
+| ground-blow torque | `ai_groundblow·groundblow_mag`, unconditional for AI | `WorldSegmentProbe` | **experimentally eliminated**: with `groundblow_mag = 0.0` she sinks *faster* (to ~1 m by t≈34) — `accept_m01_wingman_vert_source_trace_without_her_blow`; the blow was mildly protective |
+| `0x4209b0` second law | mode-0 attitude program | — | cannot fly her (§11, #2297) |
+
+### 12.3 The two real bugs found: the sign selects read `row1.x`, the image reads `row1.y`
+
+While comparing the stick law branch by branch (`0x41bc08`..`0x41be47`), two
+byte-verified mismatches surfaced in `wingman_stick` — the routine that runs
+only behind `MissionAircraftAi::original_stick`:
+
+| branch | image | port was | fixed to |
+| --- | --- | --- | --- |
+| wings-level assist sign (`0x41bd98`) | `fld [esi+0x190]` — `d9 86 90 01 00 00` | `row1.x` (`V+0x18c`) | `row1.y` |
+| dive/stall recovery sign (`0x41be15`) | `fld [esi+0x190]` — `d9 86 90 01 00 00` | `row1.x` (`V+0x18c`) | `row1.y` |
+
+`+0x18c` is the base of the up row: `+0x190` is its *second* float, `row1.y` —
+the up axis' vertical part, the "inverted?" test — not `row1.x`. The layout is
+proved by the bank coupling's own yaw part, which writes
+`scalar·[0x18c]/[0x190]/[0x194]` as the three components of that vector
+(`0x48cc7b`/`0x48cc86`/`0x48cc8f`, pinned by
+`accept_m01_wingman_vert_source_sign_windows_match_the_image`). With `row1.y <
+0` (inverted) the image saturates the word at ±1; upright it writes
+`−row0.y` (wings-level) or `−1` (recovery). The port's `row1.x` read picked the
+saturated branch for a merely tilted aircraft. Both selects are corrected in
+`crates/cs_app/src/mission_ai.rs`; `accept_m01_wingman_vert_source_sign_selects_read_row1_y`
+asserts a `row1.x < 0, row1.y > 0` tilt takes the upright branch, and the
+existing `accept_m01_wingman_stick_*` tests still pass. The finding's own
+earlier label of `+0x190` as `row1.x` in §11-era notes was wrong; the bytes
+above are the authority.
+
+**Effect on this trace: none at print precision.** Neither corrected branch
+fires during the observed sink — the wings-level gate needs the aim centred
+(`|bx|, |by| < 0.06`) while the goal is far from centred, and the recovery
+branch needs `row2.y < −0.5` (nose below ~−30°) with speed under the band; she
+never sags past −7°. Re-flown after the fix (same 45 s, same seed of inputs):
+`along / cross / vert / gap` at 45 s = **354.5 / 368.8 / −295.3 / 576.7 m**,
+the §10.1 table reproduced row for row — the fix is a fidelity correction to
+the audited law, not the sink's cause.
+
+### 12.4 What this leaves open
+
+The sink itself is now fully accounted for: dead pitch word (§10) + a lift law
+that holds the *velocity* on the nose (§11) + a bank coupling that sags the
+nose into every roll correction = a mode-4 follower that cannot hold altitude
+against a sliding slot. What the *shipped* wingman does under the same inputs
+is still an original-capture question, and two unmeasured engine inputs remain
+on the table:
+
+| unknown | affects | resolving step |
+| --- | --- | --- |
+| `vehicle+0x314` (the goal-y clamp's ceiling, `G.y = clamp(G.y, [0x71c3f0], +0x314)`, `0x41b57e`..`0x41b5f1`) is copied from spawn-record `+0x30` (`0x475a42`); its runtime value for `wingman_1` is unmeasured — if nonzero it re-shapes `by` and with it every branch of the law | whether the port's goal even matches the original's | the record key behind spawn `+0x30` in M01's own data |
+| the decoded 80 m push's direction (§7-era note) | the same law's goal | a runtime read of `+0xd8`-phase goal writes |
+| whether the *shipped* wingman really holds altitude beside a climbing player | "holds altitude" vs "follows the leader" | an original capture (#358): Betty's altitude against the player's |
+
+Nothing here is `verified_original`.
