@@ -32,29 +32,29 @@ use crate::campaign::vs_m01_rt_window::game_dir;
 /// terms, against gravity) and her bank, so a climb of the leader and a
 /// sink of Betty read as different numbers instead of one difference.
 #[derive(Debug, Clone, Copy)]
-struct Row {
-    t: f32,
-    along: f32,
-    cross: f32,
-    vert: f32,
-    gap: f32,
-    own_speed: f32,
-    leader_speed: f32,
-    roll: f64,
-    pitch: f64,
-    yaw: f64,
-    throttle: f64,
-    engaged: bool,
-    climbing: bool,
+pub(crate) struct Row {
+    pub(crate) t: f32,
+    pub(crate) along: f32,
+    pub(crate) cross: f32,
+    pub(crate) vert: f32,
+    pub(crate) gap: f32,
+    pub(crate) own_speed: f32,
+    pub(crate) leader_speed: f32,
+    pub(crate) roll: f64,
+    pub(crate) pitch: f64,
+    pub(crate) yaw: f64,
+    pub(crate) throttle: f64,
+    pub(crate) engaged: bool,
+    pub(crate) climbing: bool,
     /// The leader's absolute altitude and world vertical speed.
-    leader_alt: f32,
-    leader_vy: f32,
+    pub(crate) leader_alt: f32,
+    pub(crate) leader_vy: f32,
     /// Betty's absolute altitude and world vertical speed.
-    betty_alt: f32,
-    betty_vy: f32,
+    pub(crate) betty_alt: f32,
+    pub(crate) betty_vy: f32,
     /// `slot.y - leader.y`: the part of the slot's height that comes from
     /// the leader's attitude rather than its position.
-    slot_dy: f32,
+    pub(crate) slot_dy: f32,
     /// The player's held stick: `true` while roll, pitch and yaw are all
     /// `0.0`, so a leader climb cannot be a commanded climb.
     leader_neutral: bool,
@@ -68,18 +68,18 @@ struct Row {
     grav: f64,
     /// `asin` of her body-right axis' world `y`, degrees — the `X.y` the
     /// image's bank coupling reads (`0x48cc6a`).
-    bank_deg: f64,
+    pub(crate) bank_deg: f64,
     /// Her body-up axis' world `y`: the fraction of the lift-plane up that
     /// is still vertical, so `1 - up_y` is the share banking costs.
-    up_y: f64,
+    pub(crate) up_y: f64,
     /// Her nose axis' world `y` as an elevation angle, degrees — the lift
     /// target's direction, `Vt.y = |v| * nose.y`, that her velocity follows.
-    nose_deg: f64,
+    pub(crate) nose_deg: f64,
     /// Her world angular momentum (the `L` the rotation increments write
     /// into), its `x` and `y` parts: the bank coupling pitches about the
     /// body X and yaws about the body Y.
-    mom_x: f64,
-    mom_y: f64,
+    pub(crate) mom_x: f64,
+    pub(crate) mom_y: f64,
 }
 
 fn pose(app: &App, entity: Entity) -> (Vec3, bevy::prelude::Quat, Vec3) {
@@ -91,7 +91,7 @@ fn pose(app: &App, entity: Entity) -> (Vec3, bevy::prelude::Quat, Vec3) {
     )
 }
 
-fn fly_trace(use_stick: bool) -> Vec<Row> {
+pub(crate) fn fly_trace(use_stick: bool) -> Vec<Row> {
     fly_trace_opts(use_stick, false)
 }
 

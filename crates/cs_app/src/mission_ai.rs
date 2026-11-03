@@ -416,6 +416,11 @@ pub struct MissionAircraftAi {
     /// The `0x41f810` escape-climb latch (`vehicle+0x358 == 3`, timer
     /// `+0xf0`). Only consulted while [`Self::original_stick`] is on.
     pub escape: EscapeClimbLatch,
+    /// `vehicle+0x314`: the goal-`y` clamp's upper bound — the vehicle
+    /// definition's `flight_ceiling` ([`M01_WINGMAN_GOAL_Y_CEILING_M`] for
+    /// the retail M01 wingman). Only consulted while
+    /// [`Self::original_stick`] is on.
+    pub goal_y_ceiling: f32,
 }
 
 impl MissionAircraftAi {
@@ -464,6 +469,7 @@ impl MissionAircraftAi {
             original_stick: false,
             pilot_gains: M01_WINGMAN_PILOT_GAINS,
             escape: EscapeClimbLatch::default(),
+            goal_y_ceiling: M01_WINGMAN_GOAL_Y_CEILING_M,
         }
     }
 
@@ -708,6 +714,22 @@ pub const ESCAPE_REARM_FACTOR: f32 = 0.5;
 /// i.e. the emergency gains ([`PILOT_GAINS_AI_INPUT_KEYS`]).
 pub const ESCAPE_GOAL_UP_M: f32 = 1000.0;
 
+/// **Measured (static)**: the goal-`y` clamp's lower bound in
+/// `0x41b560`'s `G.y = clamp(G.y, [0x71c3f0], vehicle+0x314)`
+/// (`0x41b57e`..`0x41b5f1`) — the same global the escape latch reads as its
+/// world floor (`0x41f829`), so [`ESCAPE_WORLD_FLOOR_M`].
+pub const GOAL_Y_FLOOR_M: f32 = ESCAPE_WORLD_FLOOR_M;
+
+/// **Measured (static + retail), M01's wingman**: the goal-`y` clamp's
+/// upper bound `vehicle+0x314`, the vehicle definition's `flight_ceiling`
+/// key (`def+0x30`, looked up at `0x479c5b`, stored at `0x479c73`, spawn
+/// copy `0x475a3f`/`0x475a42`). The constructor's default `0x447a0000`
+/// (1000.0, `0x478a4d`) does not apply: `basic_airplane` declares
+/// `flight_ceiling` = 2500.0 and the retail `wingman` chain
+/// (`basic_airplane` → `devastator` → `wingman`) inherits it —
+/// `accept_m01_wingman_goal_y_retail_wingman_ceiling` pins the read.
+pub const M01_WINGMAN_GOAL_Y_CEILING_M: f32 = 2500.0;
+
 /// The world query behind `0x4c8f70`: does the segment `from -> to` touch
 /// the world. The original's call reports a hit as a zero return with a
 /// non-zero out byte (`0x41f95b`..`0x41f96b`); the runtime wiring
@@ -880,8 +902,12 @@ impl StickWords {
 /// three world-space rows (`vehicle+0x180/0x18c/0x198`) and `speed` is
 /// `vehicle+0x934`. `fine_aim_limit` is the unmeasured `def+0x260`.
 ///
-/// Not ported (unmeasured): the goal-`y` clamp to `+0x314`/`[0x71c3f0]`, the
-/// 80 m push, the pilot gains and limits (see [`StickWords::flight_input`]).
+/// Not ported (unmeasured): the 80 m push, the pilot gains and limits (see
+/// [`StickWords::flight_input`]). The goal-`y` clamp is ported at the call
+/// site as [`goal_y_clamped`]; its second half (zeroing the second
+/// argument's `y`, which feeds the lead-distance magnitude at
+/// `0x41b6bb`..`0x41b743`) has no consumer inside the ported window
+/// `0x41bc08`..`0x41be47`.
 #[must_use]
 pub fn wingman_stick(body: Vec3, rows: [Vec3; 3], speed: f32, fine_aim_limit: f32) -> StickWords {
     let (mut bx, mut by, bz) = (body.x, body.y, body.z);
@@ -949,6 +975,21 @@ pub fn wingman_stick(body: Vec3, rows: [Vec3; 3], speed: f32, fine_aim_limit: f3
         a10c,
         recover_throttle: recover,
     }
+}
+
+/// The goal-`y` clamp of `0x41b57e`..`0x41b5f1`:
+/// `G.y = clamp(G.y, [0x71c3f0], vehicle+0x314)`. The original clamps the
+/// goal point's world `y` before the delta to the follower's own position
+/// is formed, so on the delta this port carries that is
+/// `clamp(here.y + to_goal.y, floor, ceiling) - here.y`. `ceiling` is the
+/// aircraft's `flight_ceiling` ([`MissionAircraftAi::goal_y_ceiling`]).
+#[must_use]
+pub fn goal_y_clamped(here: Vec3, to_goal: Vec3, ceiling: f32) -> Vec3 {
+    Vec3::new(
+        to_goal.x,
+        (here.y + to_goal.y).clamp(GOAL_Y_FLOOR_M, ceiling) - here.y,
+        to_goal.z,
+    )
 }
 
 /// [`wingman_stick`] for an aircraft at `orientation` flying toward the
@@ -1758,6 +1799,10 @@ fn decide_mission_aircraft_ai(
                 ai.escape.step(here, own_velocity.0, clock, rand, probe);
                 let pilot_gains = ai.pilot_gains;
                 let (goal, gains) = ai.escape.goal(error, pilot_gains);
+                // The clamp lands on the absolute goal point (`+0xe0.y`),
+                // after the latch's substitution — the escape goal passes
+                // through the same `0x41b560` call in the original.
+                let goal = goal_y_clamped(here, goal, ai.goal_y_ceiling);
                 let words =
                     wingman_stick_command(orientation, goal, own_velocity.0.length(), RUDDER_TOL);
                 if words.recover_throttle {
@@ -2101,6 +2146,54 @@ mod tests {
             latch.goal(error, M01_WINGMAN_PILOT_GAINS),
             (Vec3::new(0.0, 1000.0, 0.0), PILOT_GAINS_AI_INPUT_KEYS)
         );
+    }
+
+    /// `0x41b57e`..`0x41b5f1` on a delta: the clamp touches only an
+    /// out-of-band absolute goal altitude — the band tests
+    /// `here.y + to_goal.y`, not the delta itself.
+    #[test]
+    fn accept_m01_wingman_goal_y_clamp_lands_on_the_absolute_goal() {
+        let here = Vec3::new(10.0, 150.0, -20.0);
+        let level = Vec3::new(3.0, -2.0, 40.0);
+        // In band (148 m absolute): the delta is untouched.
+        assert_eq!(
+            goal_y_clamped(here, level, M01_WINGMAN_GOAL_Y_CEILING_M),
+            level
+        );
+        // Above the ceiling (150 + 2600 = 2750): `y` lands on 2500 - 150.
+        let high = Vec3::new(3.0, 2600.0, 40.0);
+        assert_eq!(
+            goal_y_clamped(here, high, M01_WINGMAN_GOAL_Y_CEILING_M),
+            Vec3::new(3.0, M01_WINGMAN_GOAL_Y_CEILING_M - 150.0, 40.0)
+        );
+        // Below the floor (150 - 200 = -50): `y` lands on 20 - 150.
+        let low = Vec3::new(3.0, -200.0, 40.0);
+        assert_eq!(
+            goal_y_clamped(here, low, M01_WINGMAN_GOAL_Y_CEILING_M),
+            Vec3::new(3.0, GOAL_Y_FLOOR_M - 150.0, 40.0)
+        );
+        // The escape goal `here + 1000` at 150 m stays under wingman_1's
+        // 2500 m ceiling — inert on the hillside trace.
+        let escape = goal_y_clamped(
+            here,
+            Vec3::Y * ESCAPE_GOAL_UP_M,
+            M01_WINGMAN_GOAL_Y_CEILING_M,
+        );
+        assert_eq!(escape, Vec3::Y * ESCAPE_GOAL_UP_M);
+    }
+
+    /// The spawn defaults: `original_stick` stays off (the designed
+    /// follower flies M01) and the ceiling is the measured M01 word.
+    #[test]
+    fn accept_m01_wingman_goal_y_defaults_keep_the_designed_law() {
+        let ai = MissionAircraftAi::for_record(
+            &record("wingman_1", Some(1), Some("player"), false),
+            Some(1),
+        );
+        assert!(!ai.original_stick);
+        assert_eq!(ai.goal_y_ceiling, M01_WINGMAN_GOAL_Y_CEILING_M);
+        assert_eq!(GOAL_Y_FLOOR_M, 20.0);
+        assert_eq!(M01_WINGMAN_GOAL_Y_CEILING_M, 2500.0);
     }
 
     #[test]
