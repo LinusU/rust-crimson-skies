@@ -32,6 +32,48 @@ fn jump_table_base(bytes: &[u8], va: u64) -> u64 {
     u32::from_le_bytes(window[3..7].try_into().expect("disp32")) as u64
 }
 
+/// Every `e8` rel32 call site in the image whose target is `target`, in
+/// image order — the byte-scan census §11's "the only callers" claims use.
+fn e8_sites_to(bytes: &[u8], target: u64) -> Vec<u64> {
+    (0..bytes.len().saturating_sub(5))
+        .filter(|&i| bytes[i] == 0xe8)
+        .map(|i| i as u64 + 0x400000)
+        .filter(|&va| {
+            let rel =
+                i32::from_le_bytes(bytes_at(bytes, va, 5)[1..5].try_into().expect("rel32")) as i64;
+            va as i64 + 5 + rel == target as i64
+        })
+        .collect()
+}
+
+/// The `mov [reg+0x358], …` census of §11.1: `c7` immediate stores as
+/// `(site, value)` pairs and `89` register stores as a site list (their
+/// values ride the register). The `modrm` low-three-bits = 4 case is a
+/// SIB encoding whose disp32 sits one byte later; none exists here.
+fn substate_writers(bytes: &[u8]) -> (Vec<(u64, u32)>, Vec<u64>) {
+    let mut immediates = Vec::new();
+    let mut stores = Vec::new();
+    for i in 0..bytes.len().saturating_sub(10) {
+        let (op, modrm) = (bytes[i], bytes[i + 1]);
+        if !(0x80..0xc0).contains(&modrm) || modrm & 0x07 == 0x04 {
+            continue;
+        }
+        let va = i as u64 + 0x400000;
+        if bytes_at(bytes, va + 2, 4) != [0x58, 0x03, 0x00, 0x00] {
+            continue;
+        }
+        match op {
+            0xc7 => immediates.push((
+                va,
+                u32::from_le_bytes(bytes_at(bytes, va + 6, 4).try_into().expect("imm32")),
+            )),
+            0x89 => stores.push(va),
+            _ => {}
+        }
+    }
+    (immediates, stores)
+}
+
 /// **The call sites.** Both are the `+0x358` = 1 slot of a `+0x67c` = 0
 /// sub-state switch inside the mode-0 laws `0x41d1f0` (maneuver, `+0x2f0`
 /// ∈ {0,2}) and `0x41d9f0` (pursuit, `+0x2f0` = 1) — and the scan result:
@@ -43,9 +85,15 @@ fn accept_m01_wingman_4209b0_call_sites_are_substate1_of_mode0_switches() {
         cs_content::coordinates::load_engine_image().expect("CS_ENGINE_IMAGE names the image");
     let bytes = &image.bytes;
 
-    // The two call instructions reach `0x4209b0`.
+    // The two call instructions reach `0x4209b0` — and they are the only
+    // `e8` call sites in the image that do (§11.1's byte scan).
     assert_eq!(call_target(bytes, 0x41d4e9), 0x4209b0, "caller 0x41d4e9");
     assert_eq!(call_target(bytes, 0x41da69), 0x4209b0, "caller 0x41da69");
+    assert_eq!(
+        e8_sites_to(bytes, 0x4209b0),
+        &[0x41d4e9, 0x41da69],
+        "the e8 census reaches 0x4209b0 from exactly these two sites"
+    );
 
     // `0x41d1f0`'s mode gate: `+0x67c` != 0 jumps to `0x41d671`, not the
     // switch. `8b 96 7c 06 00 00 85 d2 0f 85 bd 03 00 00`.
@@ -56,11 +104,16 @@ fn accept_m01_wingman_4209b0_call_sites_are_substate1_of_mode0_switches() {
         ],
         "mov edx,[esi+0x67c]; test edx,edx; jne 0x41d671"
     );
-    // `+0x358` > 3 falls out (`0x41d4fd`); the switch indexes `0x41d8d4`.
+    // `+0x358` > 3 falls out (`ja 0x41d4fd`); the switch indexes `0x41d8d4`.
     assert_eq!(
         bytes_at(bytes, 0x41d2b4, 8),
         &[0x8b, 0x96, 0x58, 0x03, 0x00, 0x00, 0x83, 0xfa],
         "mov edx,[esi+0x358]; cmp edx,3"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x41d2bd, 6),
+        &[0x0f, 0x87, 0x3a, 0x02, 0x00, 0x00],
+        "ja 0x41d4fd: +0x358 > 3 leaves the switch"
     );
     assert_eq!(jump_table_base(bytes, 0x41d2c3), 0x41d8d4);
     let table = bytes_at(bytes, 0x41d8d4, 16);
@@ -87,6 +140,11 @@ fn accept_m01_wingman_4209b0_call_sites_are_substate1_of_mode0_switches() {
         bytes_at(bytes, 0x41da51, 8),
         &[0x8b, 0x86, 0x58, 0x03, 0x00, 0x00, 0x83, 0xf8],
         "mov eax,[esi+0x358]; cmp eax,3"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x41da5a, 6),
+        &[0x0f, 0x87, 0x34, 0x0b, 0x00, 0x00],
+        "ja 0x41e594: +0x358 > 3 leaves the switch"
     );
     assert_eq!(jump_table_base(bytes, 0x41da60), 0x41e744);
     let table = bytes_at(bytes, 0x41e744, 16);
@@ -124,6 +182,11 @@ fn accept_m01_wingman_4209b0_mode4_dispatches_to_the_follower() {
         0x41e760,
         "mode 4 calls the follower 0x41e760"
     );
+    assert_eq!(
+        e8_sites_to(bytes, 0x41e760),
+        &[0x41c359],
+        "the e8 census calls the follower only from the mode-4 dispatch"
+    );
 
     // The `+0x2f0` dispatch on `+0x67c` != 4: {0,2} -> `0x41d1f0`,
     // {1} -> `0x41d9f0`, anything else -> ret.
@@ -133,9 +196,11 @@ fn accept_m01_wingman_4209b0_mode4_dispatches_to_the_follower() {
         "mov eax,[esi+0x2f0]"
     );
     assert_eq!(
-        bytes_at(bytes, 0x41c2ec, 10),
-        &[0x83, 0xe8, 0x00, 0x74, 0x13, 0x48, 0x74, 0x05, 0x48, 0x74],
-        "sub eax,0 / je / dec / je / dec / je"
+        bytes_at(bytes, 0x41c2ec, 11),
+        &[
+            0x83, 0xe8, 0x00, 0x74, 0x13, 0x48, 0x74, 0x05, 0x48, 0x74, 0x0d
+        ],
+        "sub eax,0 / je case0 / dec / je case1 / dec / je case2->0x41c304"
     );
     assert_eq!(
         bytes_at(bytes, 0x41c2f7, 2),
@@ -157,14 +222,24 @@ fn accept_m01_wingman_4209b0_mode4_dispatches_to_the_follower() {
     // `+0x358` = 5 skips the step (`0x489a73`..`0x489a82`), a non-null
     // `+0x9bc` raises `+0x358` to 2 — a pending route outranks the program.
     assert_eq!(
+        bytes_at(bytes, 0x489a73, 6),
+        &[0x8b, 0x8e, 0x58, 0x03, 0x00, 0x00],
+        "mov ecx,[esi+0x358]"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x489a79, 9),
+        &[0x83, 0xf9, 0x05, 0x0f, 0x84, 0xa0, 0x00, 0x00, 0x00],
+        "cmp ecx,5; je 0x489b22 — +0x358 = 5 jumps past the AI-step call"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x489b03, 5),
+        &[0xb8, 0x02, 0x00, 0x00, 0x00],
+        "mov eax,2"
+    );
+    assert_eq!(
         bytes_at(bytes, 0x489b0c, 6),
         &[0x89, 0x86, 0x58, 0x03, 0x00, 0x00],
         "mov [esi+0x358],eax with eax = 2 (route arm)"
-    );
-    assert_eq!(
-        bytes_at(bytes, 0x489b03, 3),
-        &[0xb8, 0x02, 0x00],
-        "mov eax,2"
     );
     assert_eq!(
         call_target(bytes, 0x489b14),
@@ -202,8 +277,10 @@ fn accept_m01_wingman_4209b0_program_walker_throttle_and_leg_advance() {
         "mov ecx,[esi+0x9a4] (vector begin)"
     );
     assert_eq!(
-        bytes_at(bytes, 0x4209dd, 10),
-        &[0x8b, 0x96, 0xa8, 0x09, 0x00, 0x00, 0x2b, 0xd1, 0xc1, 0xfa],
+        bytes_at(bytes, 0x4209dd, 11),
+        &[
+            0x8b, 0x96, 0xa8, 0x09, 0x00, 0x00, 0x2b, 0xd1, 0xc1, 0xfa, 0x05
+        ],
         "mov edx,[esi+0x9a8]; sub edx,ecx; sar edx,5 (32-byte entries)"
     );
     assert_eq!(
@@ -285,6 +362,13 @@ fn accept_m01_wingman_4209b0_program_walker_throttle_and_leg_advance() {
         "mov eax,[esi+0x9b0]; inc eax; mov [esi+0x9b0],eax"
     );
     assert_eq!(
+        bytes_at(bytes, 0x421089, 11),
+        &[
+            0x8b, 0x96, 0xa8, 0x09, 0x00, 0x00, 0x2b, 0xd1, 0xc1, 0xfa, 0x05
+        ],
+        "the bounds check's sar edx,5: entry count = (end-begin)>>5"
+    );
+    assert_eq!(
         bytes_at(bytes, 0x421098, 6),
         &[0x89, 0xbe, 0x58, 0x03, 0x00, 0x00],
         "mov [esi+0x358],edi (0): program exhausted"
@@ -360,16 +444,36 @@ fn accept_m01_wingman_4209b0_attitude_error_path() {
         "xor ebx,0x80000000"
     );
 
-    // The fine band compares |Δ.x|,|Δ.z| against an f64 0.05.
+    // The fine band compares |Δ.x| (0x420b1f),|Δ.z| (0x420b31) against an
+    // f64 0.05; inside it `+0x100` = 0 and `+0x10c` = Δ.y·sign(Δ.w).
     assert_eq!(
         bytes_at(bytes, 0x420b1f, 6),
         &[0xdc, 0x1d, 0xb0, 0x36, 0x60, 0x00],
-        "fcomp qword [0x6036b0]"
+        "fcomp qword [0x6036b0] (|Δ.x|)"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x420b31, 6),
+        &[0xdc, 0x1d, 0xb0, 0x36, 0x60, 0x00],
+        "fcomp qword [0x6036b0] (|Δ.z|)"
     );
     assert_eq!(
         f64::from_le_bytes(bytes_at(bytes, 0x6036b0, 8).try_into().expect("f64")),
         f64::from_bits(0x3fa9_9999_a000_0000),
         "the f64 band is the f32 0.05 widened"
+    );
+
+    // The pitch word in the attitude leg: `+0x108` = the desired-forward
+    // y while |x′| < 0.06 (edx loaded from [ebp-0x10]), else 0 (edi) —
+    // and the fine band lands on the same zeroing store.
+    assert_eq!(
+        bytes_at(bytes, 0x420c4d, 9),
+        &[0x8b, 0x55, 0xf0, 0x89, 0x96, 0x08, 0x01, 0x00, 0x00],
+        "mov edx,[ebp-0x10]; mov [esi+0x108],edx (+0x108 = y′)"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x420c97, 6),
+        &[0x89, 0xbe, 0x08, 0x01, 0x00, 0x00],
+        "mov [esi+0x108],edi (+0x108 = 0; edi is xor'd at 0x4209c0)"
     );
 
     // `0x53fb40(out, Δ, 0x6034c8)` — the forward axis rotated by the error.
@@ -467,6 +571,15 @@ fn accept_m01_wingman_4209b0_deadband_floor_and_gain_finish() {
         ],
         "fld [ecx+0x1c]; mov [ebp-0x30],1.0 (identity residual); fstp [esi+0x100]"
     );
+    assert_eq!(
+        bytes_at(bytes, 0x420e82, 21),
+        &[
+            0xc7, 0x45, 0xd4, 0x00, 0x00, 0x00, 0x00, //
+            0xc7, 0x45, 0xd8, 0x00, 0x00, 0x00, 0x00, //
+            0xc7, 0x45, 0xdc, 0x00, 0x00, 0x00, 0x00
+        ],
+        "[ebp-0x2c/-0x28/-0x24] = 0: the residual is the full identity (1,0,0,0)"
+    );
 
     // The gain finish: scales, limits, skill, outputs — same offsets as
     // `0x41b560`'s step 7.
@@ -556,12 +669,17 @@ fn accept_m01_wingman_4209b0_substate1_is_armed_by_program_start() {
         "the assignment path"
     );
     assert_eq!(
+        e8_sites_to(bytes, 0x4201a0),
+        &[0x41db9d, 0x43e10e, 0x4b9ff8],
+        "the e8 census arms programs only through these three paths"
+    );
+    assert_eq!(
         bytes_at(bytes, 0x420236, 7),
         &[0x8b, 0x0c, 0x8d, 0x10, 0xb2, 0x71, 0x00],
         "mov ecx,[4*ecx+0x71b210] (the .bss descriptor table)"
     );
 
-    // The stun-recovery clear and the +0x358 = 5 step-skip bound the
+    // The stun-recovery clear and the +0x358 = 4 check bound the
     // sub-state vocabulary the two switches see.
     assert_eq!(
         bytes_at(bytes, 0x489ae9, 10),
@@ -572,6 +690,42 @@ fn accept_m01_wingman_4209b0_substate1_is_armed_by_program_start() {
         bytes_at(bytes, 0x489acd, 7),
         &[0x83, 0xbe, 0x58, 0x03, 0x00, 0x00, 0x04],
         "cmp dword [esi+0x358],4"
+    );
+
+    // The route-assign path arms `+0x358` = 2 alongside the route handle
+    // `+0x9bc` — the second `+0x358` = 2 writer of the §11.1 census.
+    assert_eq!(
+        bytes_at(bytes, 0x421670, 6),
+        &[0x89, 0xb5, 0xbc, 0x09, 0x00, 0x00],
+        "mov [ebp+0x9bc],esi (the route handle)"
+    );
+    assert_eq!(
+        bytes_at(bytes, 0x42167e, 10),
+        &[0xc7, 0x85, 0x58, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00],
+        "mov [ebp+0x358],2 (route assign)"
+    );
+
+    // The full `mov [reg+0x358], …` census: no SIB-encoded or push/pop
+    // forms exist; this is every writer §11.1 enumerates.
+    let (immediates, stores) = substate_writers(bytes);
+    assert_eq!(
+        immediates,
+        &[
+            (0x41f98e, 3), // escape latch
+            (0x41f9a6, 0), // escape end
+            (0x420127, 4), // stun
+            (0x4208f7, 1), // program arm
+            (0x4214d4, 2), // route arm
+            (0x42167e, 2), // route assign (above)
+            (0x42180f, 5), // route in progress
+            (0x489ae9, 0), // stun recovery
+        ],
+        "the c7 +0x358 writer census"
+    );
+    assert_eq!(
+        stores,
+        &[0x421098, 0x489b0c, 0x490d09, 0x4b08bf],
+        "the 89 +0x358 writer census (program exhaust, route raise, clears)"
     );
 }
 
