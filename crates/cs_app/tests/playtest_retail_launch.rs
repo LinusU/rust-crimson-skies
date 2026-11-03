@@ -1196,8 +1196,17 @@ fn accept_flight_original_levelop_input_slot_and_designed_bindings() {
 /// `apply_flight_command` → `OriginalState.level_off` → the recovered law's
 /// torque path. The off contrasts show the leveling is the assist's doing:
 /// with the toggle off the bank persists, and with it on but the stick
-/// deflected the gate suppresses the assist and the aircraft banks away
-/// instead.
+/// deflected the input clears the assist (and the term's own gate would
+/// suppress it anyway) and the aircraft banks away instead.
+///
+/// **Stick input also clears the toggle**, as the image's player input routine
+/// does: `0x487d3d`..`0x487d77` test the three stick words against `0.0` and
+/// the first non-zero one reaches `0x487d96` (`mov byte [esi+0x12c], 0`). So
+/// after the player uses the stick the assist is **off** when the stick
+/// returns to centre, and it takes a second `Shift+L` — the player-vehicle
+/// toggle `0x488640`..`0x48866e` — to arm it again. Task #2298 records the
+/// reading in `docs/findings/2026-11-03-2298-level-off-clears-on-stick-input.md`;
+/// nothing here is `verified_original`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_flight_original_levelop_bound_key_toggles_the_retail_level_off() {
@@ -1297,8 +1306,11 @@ fn accept_flight_original_levelop_bound_key_toggles_the_retail_level_off() {
         "with the assist off the same bank must persist, got {off_hands_off} deg"
     );
 
-    // Assist on but the stick deflected: the gate suppresses the assist and
-    // the roll command banks the aircraft away instead of leveling it.
+    // Assist on then the stick deflected: the image's player input routine
+    // clears the flag on the first non-zero stick word (`0x487d51` /
+    // `0x487d64` / `0x487d77` → `0x487d96`), so the roll command banks the
+    // aircraft away instead of leveling it and the assist does not come back
+    // on its own when the stick returns to centre.
     tap_key(&mut app, KeyCode::KeyL); // assist on
     assert!(level_off(&mut app));
     set_initial_condition(
@@ -1309,12 +1321,56 @@ fn accept_flight_original_levelop_bound_key_toggles_the_retail_level_off() {
         false,
     );
     hold(&mut app, KeyCode::KeyE);
-    run(&mut app, 1.5);
+    run(&mut app, 0.1);
+    assert!(
+        !level_off(&mut app),
+        "the first non-zero stick word must clear the assist in the same \
+         frame (`0x487d96`)"
+    );
+    run(&mut app, 1.4);
     let on_stick = bank(&mut app);
     println!("PLAYTEST-LEVELOFF bank_deg_on_stick={on_stick:.4}");
     assert!(
         on_stick > 15.0,
         "with the stick deflected the assist must not level the wings: \
          got {on_stick} deg"
+    );
+    assert!(
+        !level_off(&mut app),
+        "and a deflected stick keeps it cleared, not merely suppressed"
+    );
+
+    // The stick centred again does not re-arm it: the clear stands until the
+    // player presses `L` a second time, which arms the assist and levels a
+    // fresh 30-degree bank hands-off.
+    tap_key(&mut app, KeyCode::KeyE); // press and release: the stick is centred
+    assert!(
+        !level_off(&mut app),
+        "a centred stick must not re-arm the assist: only the player's \
+         Shift+L handler sets it (`0x488640`..`0x48866e`)"
+    );
+    tap_key(&mut app, KeyCode::KeyL); // second Shift+L, stick centred: re-arms
+    assert!(
+        level_off(&mut app),
+        "a second Shift+L with the stick centred arms the assist again"
+    );
+    set_initial_condition(
+        &mut app,
+        Vec3::new(spawn.x, 300.0, spawn.z),
+        rolled,
+        Vec3::new(0.0, 0.0, -RETAIL_START_SPEED_M_S as f32),
+        false,
+    );
+    run(&mut app, 3.0);
+    let rearmed = bank(&mut app);
+    println!("PLAYTEST-LEVELOFF bank_deg_rearmed={rearmed:.4}");
+    assert!(
+        rearmed < 5.0,
+        "the re-armed assist must level the 30-degree bank again, got \
+         {rearmed} deg"
+    );
+    assert!(
+        level_off(&mut app),
+        "and a hands-off step keeps the re-armed assist armed"
     );
 }
